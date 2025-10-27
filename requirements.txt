@@ -1,0 +1,27 @@
+# Data Processing and Analysis
+pandas
+numpy
+
+# Machine Learning
+scikit-learn
+joblib
+
+# Visualization
+matplotlib
+seaborn
+
+# Bluetooth Low Energy
+bleak
+bleakheart
+
+# Web Application
+streamlit
+
+# OpenAI Integration
+openai
+python-dotenv
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
