@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import RandomForestClassifier
@@ -34,7 +33,7 @@ scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-print(f"\nTraining Model (Random Forest)...")
+print("\nTraining Model (Random Forest)...")
 
 # Use Random Forest
 model = RandomForestClassifier(
@@ -61,7 +60,10 @@ accuracy = accuracy_score(y_test, y_pred)
 print(f"\nModel Accuracy: {accuracy:.3f}")
 
 print("\nClassification Report:")
-print(classification_report(y_test, y_pred, target_names=['no stress', 'stress']))
+print(classification_report(
+    y_test, y_pred,
+    target_names=['no stress', 'stress']
+))
 
 # Feature importance
 feature_importance = pd.DataFrame({
@@ -82,4 +84,4 @@ plt.show()
 # Save the model and scaler
 joblib.dump(model, 'improved_stress_model.pkl')
 joblib.dump(scaler, 'scaler.pkl')
-print(f"\nModel saved as 'improved_stress_model.pkl'")
+print("\nModel saved as 'improved_stress_model.pkl'")

@@ -64,20 +64,44 @@ if 'df' not in st.session_state:
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     ph1 = st.empty()
-    ph1.markdown("<span style='font-size:60px;'>❤️</span>", unsafe_allow_html=True)
-    ph1.markdown("<span style='font-size:40px;'>HR: -- bpm</span>", unsafe_allow_html=True)
+    ph1.markdown(
+        "<span style='font-size:60px;'>❤️</span>",
+        unsafe_allow_html=True
+    )
+    ph1.markdown(
+        "<span style='font-size:40px;'>HR: -- bpm</span>",
+        unsafe_allow_html=True
+    )
 with col2:
     ph2 = st.empty()
-    ph2.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
-    ph2.markdown("<span style='font-size:40px;'>HRV: -- ms</span>", unsafe_allow_html=True)
+    ph2.markdown(
+        "<span style='font-size:60px;'>📈</span>",
+        unsafe_allow_html=True
+    )
+    ph2.markdown(
+        "<span style='font-size:40px;'>HRV: -- ms</span>",
+        unsafe_allow_html=True
+    )
 with col3:
     ph3 = st.empty()
-    ph3.markdown("<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True)
-    ph3.markdown("<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
+    ph3.markdown(
+        "<span style='font-size:60px;'>😊</span>",
+        unsafe_allow_html=True
+    )
+    ph3.markdown(
+        "<span style='font-size:40px;'>No Stress</span>",
+        unsafe_allow_html=True
+    )
 with col4:
     ph4 = st.empty()
-    ph4.markdown("<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True)
-    ph4.markdown("<span style='font-size:20px;'>--</span>", unsafe_allow_html=True)
+    ph4.markdown(
+        "<span style='font-size:60px;'>📄</span>",
+        unsafe_allow_html=True
+    )
+    ph4.markdown(
+        "<span style='font-size:20px;'>--</span>",
+        unsafe_allow_html=True
+    )
 
 st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
@@ -106,20 +130,30 @@ with col7:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
 
-        if prompt := st.chat_input("Ask about your performance and strategy..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
+        prompt = st.chat_input(
+            "Ask about your performance and strategy..."
+        )
+        if prompt:
+            st.session_state.messages.append(
+                {"role": "user", "content": prompt}
+            )
             with placeholder.container():
                 with st.chat_message("user"):
                     st.markdown(prompt)
 
-            modified_prompt = f'''Please analyse trends in stress. 
-            Right now I am presenting in big meeting. Here is data {st.session_state.stress_trend}. 
-            Current HR: {st.session_state.hr_avg:.1f}, Current RMSSD: {st.session_state.rmssd:.4f}, 
-            Stress Status: {st.session_state.stress_result} from ML model with confidence {st.session_state.confidence:.1%}). {prompt} Give response in 10 words'''
+            modified_prompt = f'''Please analyse trends in stress.
+            Right now I am presenting in big meeting. Here is data
+            {st.session_state.stress_trend}.
+            Current HR: {st.session_state.hr_avg:.1f},
+            Current RMSSD: {st.session_state.rmssd:.4f},
+            Stress Status: {st.session_state.stress_result}
+            from ML model with confidence
+            {st.session_state.confidence:.1%}).
+            {prompt} Give response in 10 words'''
             api_messages = [
-                               {"role": m["role"], "content": m["content"]}
-                               for m in st.session_state.messages[:-1]
-                           ] + [{"role": "user", "content": modified_prompt}]
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.messages[:-1]
+            ] + [{"role": "user", "content": modified_prompt}]
 
             with placeholder.container():
                 with st.chat_message("assistant"):
@@ -129,9 +163,14 @@ with col7:
                         stream=True,
                     )
                     response = st.write_stream(stream)
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response}
+            )
     else:
-        st.info("LLM features are disabled. Add your OpenAI API key to .env to enable chat and insights.")
+        st.info(
+            "LLM features are disabled. Add your OpenAI API key "
+            "to .env to enable chat and insights."
+        )
 
 st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
@@ -187,7 +226,7 @@ def predict_stress(hr, rmssd):
             confidence = 1 - probability
 
         return result, confidence
-    except Exception as e:
+    except Exception:
         return "PREDICTION_ERROR", 0.0
 
 
@@ -198,7 +237,10 @@ def calculate_rmssd(rr_intervals):
         return None
 
     try:
-        rr_array = np.array([float(rr) for rr in rr_intervals if rr is not None and rr > 0])
+        rr_array = np.array([
+            float(rr) for rr in rr_intervals
+            if rr is not None and rr > 0
+        ])
 
         if len(rr_array) < 2:
             return None
@@ -209,13 +251,15 @@ def calculate_rmssd(rr_intervals):
         rmssd = np.sqrt(mean_sq_diff)
 
         return rmssd
-    except Exception as e:
+    except Exception:
         return None
 
 
 def print_hr_data(data):
-    """Callback to print HR/HRV every second and stress prediction every 15 seconds"""
-    global hrv_list, hr_list, last_stress_prediction_time, stress_result, column4_response, stress_auto, a, confidence, hr_avg, rmssd, stress_trend
+    """Callback to print HR/HRV and stress prediction"""
+    global hrv_list, hr_list, last_stress_prediction_time
+    global stress_result, column4_response, stress_auto
+    global a, confidence, hr_avg, rmssd
 
     if isinstance(data, tuple) and len(data) >= 3:
         hr_data = data[2]
@@ -239,30 +283,56 @@ def print_hr_data(data):
                 print(f"HR: {hr} bpm, HRV in RR:{hrv} ms")
 
                 new_data = pd.DataFrame([[hr, hrv]], columns=["hr", "hrv"])
-                st.session_state.df = pd.concat([st.session_state.df, new_data], ignore_index=True)
+                st.session_state.df = pd.concat(
+                    [st.session_state.df, new_data],
+                    ignore_index=True
+                )
 
                 if len(st.session_state.df) > 0:
                     chart1.add_rows(new_data[["hr"]])
                     chart2.add_rows(new_data[["hrv"]])
 
-            if current_time - last_stress_prediction_time >= prediction_interval:
+            time_since_last = current_time - last_stress_prediction_time
+            if time_since_last >= prediction_interval:
                 if len(hr_list) >= 5 and len(hrv_list) >= 3:
                     hr_avg = np.mean(hr_list[-10:])
-                    recent_rr = hrv_list[-20:] if len(hrv_list) >= 20 else hrv_list
+                    recent_rr = (hrv_list[-20:]
+                                 if len(hrv_list) >= 20
+                                 else hrv_list)
                     rmssd = calculate_rmssd(recent_rr)
                     a = 1
 
                     if rmssd is not None and model is not None:
-                        stress_result, confidence = predict_stress(hr_avg, rmssd)
+                        stress_result, confidence = predict_stress(
+                            hr_avg, rmssd
+                        )
 
                         if stress_result == "STRESS":
                             stress_auto = "STRESS"
-                            print(f"STRESS: HR={hr_avg:.1f}, RMSSD={rmssd:.4f} (Confidence: {confidence:.1%})")
-                            st.session_state.stress_trend += f"STRESS: Avg HR={hr_avg:.1f}, Avg in 15 seconds RMSSD={rmssd:.4f} (Confidence Score: {confidence:.1%})"
+                            print(
+                                f"STRESS: HR={hr_avg:.1f}, "
+                                f"RMSSD={rmssd:.4f} "
+                                f"(Confidence: {confidence:.1%})"
+                            )
+                            trend_msg = (
+                                f"STRESS: Avg HR={hr_avg:.1f}, "
+                                f"Avg in 15 seconds RMSSD={rmssd:.4f} "
+                                f"(Confidence Score: {confidence:.1%})"
+                            )
+                            st.session_state.stress_trend += trend_msg
                         else:
-                            print(f"NO STRESS: HR={hr_avg:.1f}, RMSSD={rmssd:.4f} (Confidence: {confidence:.1%})")
+                            print(
+                                f"NO STRESS: HR={hr_avg:.1f}, "
+                                f"RMSSD={rmssd:.4f} "
+                                f"(Confidence: {confidence:.1%})"
+                            )
                             stress_auto = "NO STRESS"
-                            st.session_state.stress_trend += f"NO STRESS: Avg HR={hr_avg:.1f}, Avg in 15 seconds RMSSD={rmssd:.4f} (Confidence Score: {confidence:.1%})"
+                            trend_msg = (
+                                f"NO STRESS: Avg HR={hr_avg:.1f}, "
+                                f"Avg in 15 seconds RMSSD={rmssd:.4f} "
+                                f"(Confidence Score: {confidence:.1%})"
+                            )
+                            st.session_state.stress_trend += trend_msg
                         print(st.session_state.stress_trend)
                     last_stress_prediction_time = current_time
 
@@ -272,34 +342,75 @@ def print_hr_data(data):
                     hrv_list = hrv_list[-50:]
 
             with ph1.container():
-                st.markdown("<span style='font-size:60px;'>❤️</span>", unsafe_allow_html=True)
-                st.markdown(f"<span style='font-size:40px;'>HR:{hr} bpm</span>", unsafe_allow_html=True)
+                st.markdown(
+                    "<span style='font-size:60px;'>❤️</span>",
+                    unsafe_allow_html=True
+                )
+                st.markdown(
+                    f"<span style='font-size:40px;'>HR:{hr} bpm</span>",
+                    unsafe_allow_html=True
+                )
             with ph2.container():
-                st.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
-                st.markdown(f"<span style='font-size:40px;'>HRV:{hrv} ms</span>", unsafe_allow_html=True)
+                st.markdown(
+                    "<span style='font-size:60px;'>📈</span>",
+                    unsafe_allow_html=True
+                )
+                st.markdown(
+                    f"<span style='font-size:40px;'>HRV:{hrv} ms</span>",
+                    unsafe_allow_html=True
+                )
             with ph3.container():
                 if stress_result == "NEUTRAL":
-                    st.markdown("<span style='font-size:60px;'>ML 😐</span>", unsafe_allow_html=True)
-                    st.markdown("<span style='font-size:40px;'>Predicting Stress...</span>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<span style='font-size:60px;'>ML 😐</span>",
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(
+                        "<span style='font-size:40px;'>"
+                        "Predicting Stress...</span>",
+                        unsafe_allow_html=True
+                    )
                 elif stress_result == "STRESS":
-                    st.markdown("<span style='font-size:60px;'>ML 😰</span>", unsafe_allow_html=True)
-                    st.markdown("<span style='font-size:40px;'>Stress</span>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<span style='font-size:60px;'>ML 😰</span>",
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(
+                        "<span style='font-size:40px;'>Stress</span>",
+                        unsafe_allow_html=True
+                    )
                     if rmssd is not None:
                         st.markdown(
-                            f"<span style='font-size:20px;'>HR={hr_avg:.1f}, RMSSD={rmssd:.4f} (Confidence: {confidence:.1%})</span>",
-                            unsafe_allow_html=True)
+                            f"<span style='font-size:20px;'>"
+                            f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
+                            f"(Confidence: {confidence:.1%})</span>",
+                            unsafe_allow_html=True
+                        )
                 else:
-                    st.markdown("<span style='font-size:60px;'>ML 😊</span>", unsafe_allow_html=True)
-                    st.markdown("<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<span style='font-size:60px;'>ML 😊</span>",
+                        unsafe_allow_html=True
+                    )
+                    st.markdown(
+                        "<span style='font-size:40px;'>No Stress</span>",
+                        unsafe_allow_html=True
+                    )
                     if rmssd is not None:
                         st.markdown(
-                            f"<span style='font-size:20px;'>HR={hr_avg:.1f}, RMSSD={rmssd:.4f} (Confidence: {confidence:.1%})</span>",
-                            unsafe_allow_html=True)
+                            f"<span style='font-size:20px;'>"
+                            f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
+                            f"(Confidence: {confidence:.1%})</span>",
+                            unsafe_allow_html=True
+                        )
 
-            if a == 10: # this is should be 1
-                hardcoded_prompt = f'''Analyze and suggest actionable insight based on average heart rate {hr_avg}, average RMSSD {rmssd}, 
-                and stress predicted from ML model which is {stress_auto} with confidence {confidence}. 
-                Right now I am giving a presentation on big meeting. Please suggest actionable insight in 10 words'''
+            if a == 10:  # this is should be 1
+                hardcoded_prompt = f'''Analyze and suggest actionable
+                insight based on average heart rate {hr_avg},
+                average RMSSD {rmssd},
+                and stress predicted from ML model which is
+                {stress_auto} with confidence {confidence}.
+                Right now I am giving a presentation on big meeting.
+                Please suggest actionable insight in 10 words'''
 
                 stream = client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -313,8 +424,15 @@ def print_hr_data(data):
                 a = 0
 
             with ph4.container():
-                st.markdown("<span style='font-size:60px;'>LLM 📄</span>", unsafe_allow_html=True)
-                st.markdown(f"<span style='font-size:20px;'>{column4_response}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    "<span style='font-size:60px;'>LLM 📄</span>",
+                    unsafe_allow_html=True
+                )
+                st.markdown(
+                    f"<span style='font-size:20px;'>"
+                    f"{column4_response}</span>",
+                    unsafe_allow_html=True
+                )
 
 
 async def main():
@@ -336,7 +454,12 @@ async def main():
         print(f"Found: {device.name}")
 
         async with BleakClient(device) as client:
-            heartrate = bh.HeartRate(client, callback=print_hr_data, instant_rate=True, unpack=True)
+            heartrate = bh.HeartRate(
+                client,
+                callback=print_hr_data,
+                instant_rate=True,
+                unpack=True
+            )
             await heartrate.start_notify()
 
             try:
