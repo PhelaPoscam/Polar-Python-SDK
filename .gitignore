@@ -59,3 +59,8 @@ Thumbs.db
 
 # Streamlit
 .streamlit/
+
+# Local Setup Guides (not needed in repo)
+GITHUB_PUSH_GUIDE.md
+QUICK_PUSH.md
+CHECKLIST.md

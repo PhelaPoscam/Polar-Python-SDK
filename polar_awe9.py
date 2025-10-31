@@ -10,9 +10,16 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import queue
+import os
 
 load_dotenv()
-client = OpenAI()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if OPENAI_API_KEY:
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    llm_enabled = True
+else:
+    client = None
+    llm_enabled = False
 warnings.filterwarnings('ignore')
 stress_trend = ""
 
@@ -58,19 +65,19 @@ col1, col2, col3, col4 = st.columns(4)
 with col1:
     ph1 = st.empty()
     ph1.markdown("<span style='font-size:60px;'>❤️</span>", unsafe_allow_html=True)
-    ph1.markdown(f"<span style='font-size:40px;'>HR: -- bpm</span>", unsafe_allow_html=True)
+    ph1.markdown("<span style='font-size:40px;'>HR: -- bpm</span>", unsafe_allow_html=True)
 with col2:
     ph2 = st.empty()
     ph2.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
-    ph2.markdown(f"<span style='font-size:40px;'>HRV: -- ms</span>", unsafe_allow_html=True)
+    ph2.markdown("<span style='font-size:40px;'>HRV: -- ms</span>", unsafe_allow_html=True)
 with col3:
     ph3 = st.empty()
     ph3.markdown("<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True)
-    ph3.markdown(f"<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
+    ph3.markdown("<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
 with col4:
     ph4 = st.empty()
     ph4.markdown("<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True)
-    ph4.markdown(f"<span style='font-size:20px;'>--</span>", unsafe_allow_html=True)
+    ph4.markdown("<span style='font-size:20px;'>--</span>", unsafe_allow_html=True)
 
 st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
@@ -87,41 +94,44 @@ with col6:
 with col7:
     st.subheader("LLM Chat Box")
     placeholder = st.empty()
-    if "openai_model" not in st.session_state:
-        st.session_state["openai_model"] = "gpt-4o-mini"
+    if llm_enabled:
+        if "openai_model" not in st.session_state:
+            st.session_state["openai_model"] = "gpt-4o-mini"
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    with placeholder.container():
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-    if prompt := st.chat_input("Ask about your performance and strategy..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with placeholder.container():
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-        modified_prompt = f'''Please analyse trends in stress. 
-        Right now I am presenting in big meeting. Here is data {st.session_state.stress_trend}. 
-        Current HR: {st.session_state.hr_avg:.1f}, Current RMSSD: {st.session_state.rmssd:.4f}, 
-        Stress Status: {st.session_state.stress_result} from ML model with confidence {st.session_state.confidence:.1%}). {prompt} Give response in 10 words'''
-        api_messages = [
-                           {"role": m["role"], "content": m["content"]}
-                           for m in st.session_state.messages[:-1]
-                       ] + [{"role": "user", "content": modified_prompt}]
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
 
         with placeholder.container():
-            with st.chat_message("assistant"):
-                stream = client.chat.completions.create(
-                    model=st.session_state["openai_model"],
-                    messages=api_messages,
-                    stream=True,
-                )
-                response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+        if prompt := st.chat_input("Ask about your performance and strategy..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with placeholder.container():
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+            modified_prompt = f'''Please analyse trends in stress. 
+            Right now I am presenting in big meeting. Here is data {st.session_state.stress_trend}. 
+            Current HR: {st.session_state.hr_avg:.1f}, Current RMSSD: {st.session_state.rmssd:.4f}, 
+            Stress Status: {st.session_state.stress_result} from ML model with confidence {st.session_state.confidence:.1%}). {prompt} Give response in 10 words'''
+            api_messages = [
+                               {"role": m["role"], "content": m["content"]}
+                               for m in st.session_state.messages[:-1]
+                           ] + [{"role": "user", "content": modified_prompt}]
+
+            with placeholder.container():
+                with st.chat_message("assistant"):
+                    stream = client.chat.completions.create(
+                        model=st.session_state["openai_model"],
+                        messages=api_messages,
+                        stream=True,
+                    )
+                    response = st.write_stream(stream)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+    else:
+        st.info("LLM features are disabled. Add your OpenAI API key to .env to enable chat and insights.")
 
 st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
@@ -178,7 +188,7 @@ def predict_stress(hr, rmssd):
 
         return result, confidence
     except Exception as e:
-        return f"PREDICTION_ERROR", 0.0
+        return "PREDICTION_ERROR", 0.0
 
 
 def calculate_rmssd(rr_intervals):
@@ -270,17 +280,17 @@ def print_hr_data(data):
             with ph3.container():
                 if stress_result == "NEUTRAL":
                     st.markdown("<span style='font-size:60px;'>ML 😐</span>", unsafe_allow_html=True)
-                    st.markdown(f"<span style='font-size:40px;'>Predicting Stress...</span>", unsafe_allow_html=True)
+                    st.markdown("<span style='font-size:40px;'>Predicting Stress...</span>", unsafe_allow_html=True)
                 elif stress_result == "STRESS":
                     st.markdown("<span style='font-size:60px;'>ML 😰</span>", unsafe_allow_html=True)
-                    st.markdown(f"<span style='font-size:40px;'>Stress</span>", unsafe_allow_html=True)
+                    st.markdown("<span style='font-size:40px;'>Stress</span>", unsafe_allow_html=True)
                     if rmssd is not None:
                         st.markdown(
                             f"<span style='font-size:20px;'>HR={hr_avg:.1f}, RMSSD={rmssd:.4f} (Confidence: {confidence:.1%})</span>",
                             unsafe_allow_html=True)
                 else:
                     st.markdown("<span style='font-size:60px;'>ML 😊</span>", unsafe_allow_html=True)
-                    st.markdown(f"<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
+                    st.markdown("<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
                     if rmssd is not None:
                         st.markdown(
                             f"<span style='font-size:20px;'>HR={hr_avg:.1f}, RMSSD={rmssd:.4f} (Confidence: {confidence:.1%})</span>",

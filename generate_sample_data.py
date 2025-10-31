@@ -54,14 +54,14 @@ def generate_sample_data(n_samples=1000, output_file='all_hrv_data3.csv'):
     
     # Save to CSV with semicolon delimiter
     df.to_csv(output_file, sep=';', index=False)
-    
+
     print(f"✓ Generated {n_samples} samples")
     print(f"✓ Saved to '{output_file}'")
-    print(f"\nDataset Statistics:")
+    print("\nDataset Statistics:")
     print(f"  Total samples: {len(df)}")
     print(f"  No stress samples: {(df['label'] == 0).sum()}")
     print(f"  Stress samples: {(df['label'] == 1).sum()}")
-    print(f"\nFeature Ranges:")
+    print("\nFeature Ranges:")
     print(f"  HR: {df['HR'].min():.1f} - {df['HR'].max():.1f} bpm")
     print(f"  RMSSD: {df['RMSSD'].min():.1f} - {df['RMSSD'].max():.1f} ms")
     
