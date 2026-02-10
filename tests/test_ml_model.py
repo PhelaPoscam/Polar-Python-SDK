@@ -1,5 +1,5 @@
 """
-Test suite for ML_model3.py - Stress prediction model training
+Test suite for train_model.py - Stress prediction model training
 """
 import pytest
 import pandas as pd

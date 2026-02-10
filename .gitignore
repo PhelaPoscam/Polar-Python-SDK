@@ -32,6 +32,7 @@ ENV/
 # IDE
 .vscode/
 .idea/
+.vs/
 *.swp
 *.swo
 *~
@@ -45,6 +46,8 @@ ENV/
 *.csv
 *.xlsx
 all_hrv_data*.csv
+datasets/
+Papers/
 
 # Keep sample generator script but ignore generated data
 !generate_sample_data.py

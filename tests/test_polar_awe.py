@@ -1,5 +1,5 @@
 """
-Test suite for polar_awe9.py - Stress monitoring application
+Test suite for app_streamlit.py - Stress monitoring application
 """
 import pytest
 import numpy as np

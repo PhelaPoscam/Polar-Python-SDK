@@ -144,7 +144,7 @@ class TestModelIntegration:
         mock_load.side_effect = load_side_effect
         
         import joblib
-        model = joblib.load('stress_prediction_model.pkl')
+        model = joblib.load('models/improved_stress_model.pkl')
         scaler = joblib.load('scaler.pkl')
         
         assert model is not None

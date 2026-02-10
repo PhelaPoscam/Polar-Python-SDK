@@ -35,30 +35,60 @@ A stress monitoring application using Polar H10 heart rate monitor, machine lear
    - Add your OpenAI API key to `.env`
 
 4. **Prepare training data**:
-   - Place your `all_hrv_data3.csv` file in the project directory
+   - Place your `all_hrv_data3.csv` file in `data/raw/`
    - Run the ML model training script:
    ```powershell
-   python ML_model3.py
+   python scripts/train_model.py
    ```
+
+## Dataset Acquisition (WESAD, SWELL, UBFC-Phys)
+
+These datasets have different access rules and may require registration or data-use approval.
+For compliance, download them from their official sources and place the raw files locally.
+
+Official sources (as referenced in Jui et al., 2026):
+
+- WESAD (UCI ML Repository): https://archive.ics.uci.edu/ml/datasets/WESAD
+- SWELL-KW (DANS / Radboud): https://cs.ru.nl/~skoldijk/SWELL-KW/Dataset.html
+   - Kaggle mirror: https://www.kaggle.com/qiriro/swell-heart-rate-variability-hrv
+- UBFC-Phys (IEEE DataPort): https://ieee-dataport.org/open-access/ubfc-phys
+   - Author page: https://sites.google.com/view/ybenezeth/ubfc-phys
+
+Recommended layout:
+- [datasets/WESAD](datasets/WESAD)
+- [datasets/SWELL](datasets/SWELL)
+- [datasets/UBFC-Phys](datasets/UBFC-Phys)
+
+Use the helper script to verify local availability and optionally extract archives:
+
+```powershell
+python scripts/download_datasets.py --verify-only
+```
+
+If you have ZIP archives, place them under [datasets](datasets) or [datasets/archives](datasets/archives) and run:
+
+```powershell
+python scripts/download_datasets.py --extract
+```
 
 ## Usage
 
 ### Train the ML Model
 
 ```powershell
-python ML_model3.py
+python scripts/train_model.py
 ```
 
 This will:
 - Load and process HRV data
 - Train a Random Forest classifier
-- Save the model as `improved_stress_model.pkl`
-- Save the scaler as `scaler.pkl`
+- Save the model as `models/improved_stress_model.pkl`
+- Save the scaler as `models/scaler.pkl`
 
 ### Run the Streamlit Application
 
 ```powershell
-streamlit run polar_awe9.py
+streamlit run scripts/app_streamlit.py
 ```
 
 This will:
@@ -76,8 +106,10 @@ pytest tests/ -v --cov=.
 
 ## Project Structure
 
-- `ML_model3.py`: Machine learning model training script
-- `polar_awe9.py`: Main Streamlit application
+- `src/awe_polar/`: Core application and training modules
+- `scripts/`: Entrypoints for training, data generation, and Streamlit
+- `data/raw/`: Raw HRV datasets
+- `models/`: Trained model artifacts
 - `requirements.txt`: Python dependencies
 - `tests/`: Unit tests directory
 

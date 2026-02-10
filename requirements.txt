@@ -1,10 +1,15 @@
 # Data Processing and Analysis
 pandas
-numpy
+numpy<2
+numba<0.60
 
 # Machine Learning
 scikit-learn
 joblib
+torch
+pytorch-tabnet
+shap
+lime
 
 # Visualization
 matplotlib

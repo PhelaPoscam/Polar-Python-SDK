@@ -20,12 +20,12 @@ if (-Not (Test-Path ".env")) {
     exit
 }
 
-if (-Not (Test-Path "improved_stress_model.pkl") -and -Not (Test-Path "stress_prediction_model.pkl")) {
+if (-Not (Test-Path "models\improved_stress_model.pkl")) {
     Write-Host "`nWarning: Model file not found!" -ForegroundColor Red
-    Write-Host "Please run 'python ML_model3.py' first to train the model" -ForegroundColor Yellow
+    Write-Host "Please run 'python scripts/train_model.py' first to train the model" -ForegroundColor Yellow
     exit
 }
 
 # Start the Streamlit app
 Write-Host "`nStarting Streamlit app..." -ForegroundColor Green
-streamlit run polar_awe9.py
+streamlit run scripts/app_streamlit.py

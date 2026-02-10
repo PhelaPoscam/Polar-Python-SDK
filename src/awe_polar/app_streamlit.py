@@ -1,16 +1,24 @@
-from bleak import BleakScanner, BleakClient
+from __future__ import annotations
+
 import asyncio as aio
-import bleakheart as bh
-import numpy as np
-import joblib
-import pandas as pd
+import os
+import queue
 import time
 import warnings
+from pathlib import Path
+
+import bleakheart as bh
+import joblib
+import numpy as np
+import pandas as pd
 import streamlit as st
+from bleak import BleakClient, BleakScanner
 from dotenv import load_dotenv
 from openai import OpenAI
-import queue
-import os
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MODEL_PATH = PROJECT_ROOT / "models" / "improved_stress_model.pkl"
+SCALER_PATH = PROJECT_ROOT / "models" / "scaler.pkl"
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -20,88 +28,64 @@ if OPENAI_API_KEY:
 else:
     client = None
     llm_enabled = False
-warnings.filterwarnings('ignore')
+warnings.filterwarnings("ignore")
 stress_trend = ""
 
 st.set_page_config(
     page_title="Polar AWE",
-    page_icon="❤️",
-    layout="wide"
+    page_icon="❤",
+    layout="wide",
 )
 
 st.title("Polar AWE: Stress Monitoring with ML and LLM")
 st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
 # Initialize session state for persistent data
-if 'hr_data' not in st.session_state:
+if "hr_data" not in st.session_state:
     st.session_state.hr_data = pd.DataFrame(columns=["hr", "hrv"])
-if 'stress_result' not in st.session_state:
+if "stress_result" not in st.session_state:
     st.session_state.stress_result = "NEUTRAL"
-if 'column4_response' not in st.session_state:
+if "column4_response" not in st.session_state:
     st.session_state.column4_response = "Waiting for data..."
-if 'stress_trend' not in st.session_state:
+if "stress_trend" not in st.session_state:
     st.session_state.stress_trend = ""
-if 'hr_avg' not in st.session_state:
+if "hr_avg" not in st.session_state:
     st.session_state.hr_avg = 0
-if 'rmssd' not in st.session_state:
+if "rmssd" not in st.session_state:
     st.session_state.rmssd = 0
-if 'confidence' not in st.session_state:
+if "confidence" not in st.session_state:
     st.session_state.confidence = 0
-if 'ble_data_queue' not in st.session_state:
+if "ble_data_queue" not in st.session_state:
     st.session_state.ble_data_queue = queue.Queue()
-if 'ble_running' not in st.session_state:
+if "ble_running" not in st.session_state:
     st.session_state.ble_running = False
-if 'latest_hr' not in st.session_state:
+if "latest_hr" not in st.session_state:
     st.session_state.latest_hr = 0
-if 'latest_hrv' not in st.session_state:
+if "latest_hrv" not in st.session_state:
     st.session_state.latest_hrv = 0
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if 'df' not in st.session_state:
+if "df" not in st.session_state:
     st.session_state.df = pd.DataFrame(columns=["hr", "hrv"])
 
 # Top 4 columns for metrics
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     ph1 = st.empty()
-    ph1.markdown(
-        "<span style='font-size:60px;'>❤️</span>",
-        unsafe_allow_html=True
-    )
-    ph1.markdown(
-        "<span style='font-size:40px;'>HR: -- bpm</span>",
-        unsafe_allow_html=True
-    )
+    ph1.markdown("<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True)
+    ph1.markdown("<span style='font-size:40px;'>HR: -- bpm</span>", unsafe_allow_html=True)
 with col2:
     ph2 = st.empty()
-    ph2.markdown(
-        "<span style='font-size:60px;'>📈</span>",
-        unsafe_allow_html=True
-    )
-    ph2.markdown(
-        "<span style='font-size:40px;'>HRV: -- ms</span>",
-        unsafe_allow_html=True
-    )
+    ph2.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
+    ph2.markdown("<span style='font-size:40px;'>HRV: -- ms</span>", unsafe_allow_html=True)
 with col3:
     ph3 = st.empty()
-    ph3.markdown(
-        "<span style='font-size:60px;'>😊</span>",
-        unsafe_allow_html=True
-    )
-    ph3.markdown(
-        "<span style='font-size:40px;'>No Stress</span>",
-        unsafe_allow_html=True
-    )
+    ph3.markdown("<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True)
+    ph3.markdown("<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
 with col4:
     ph4 = st.empty()
-    ph4.markdown(
-        "<span style='font-size:60px;'>📄</span>",
-        unsafe_allow_html=True
-    )
-    ph4.markdown(
-        "<span style='font-size:20px;'>--</span>",
-        unsafe_allow_html=True
-    )
+    ph4.markdown("<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True)
+    ph4.markdown("<span style='font-size:20px;'>--</span>", unsafe_allow_html=True)
 
 st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
@@ -130,13 +114,9 @@ with col7:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
 
-        prompt = st.chat_input(
-            "Ask about your performance and strategy..."
-        )
+        prompt = st.chat_input("Ask about your performance and strategy...")
         if prompt:
-            st.session_state.messages.append(
-                {"role": "user", "content": prompt}
-            )
+            st.session_state.messages.append({"role": "user", "content": prompt})
             with placeholder.container():
                 with st.chat_message("user"):
                     st.markdown(prompt)
@@ -163,9 +143,7 @@ with col7:
                         stream=True,
                     )
                     response = st.write_stream(stream)
-            st.session_state.messages.append(
-                {"role": "assistant", "content": response}
-            )
+            st.session_state.messages.append({"role": "assistant", "content": response})
     else:
         st.info(
             "LLM features are disabled. Add your OpenAI API key "
@@ -176,8 +154,8 @@ st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
 # Load your trained model and scaler
 try:
-    model = joblib.load('stress_prediction_model.pkl')
-    scaler = joblib.load('scaler.pkl')
+    model = joblib.load(MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
     print("Stress prediction model and scaler loaded successfully!")
 except FileNotFoundError:
     print("Model or scaler file not found.")
@@ -237,10 +215,7 @@ def calculate_rmssd(rr_intervals):
         return None
 
     try:
-        rr_array = np.array([
-            float(rr) for rr in rr_intervals
-            if rr is not None and rr > 0
-        ])
+        rr_array = np.array([float(rr) for rr in rr_intervals if rr is not None and rr > 0])
 
         if len(rr_array) < 2:
             return None
@@ -283,10 +258,7 @@ def print_hr_data(data):
                 print(f"HR: {hr} bpm, HRV in RR:{hrv} ms")
 
                 new_data = pd.DataFrame([[hr, hrv]], columns=["hr", "hrv"])
-                st.session_state.df = pd.concat(
-                    [st.session_state.df, new_data],
-                    ignore_index=True
-                )
+                st.session_state.df = pd.concat([st.session_state.df, new_data], ignore_index=True)
 
                 if len(st.session_state.df) > 0:
                     chart1.add_rows(new_data[["hr"]])
@@ -296,16 +268,12 @@ def print_hr_data(data):
             if time_since_last >= prediction_interval:
                 if len(hr_list) >= 5 and len(hrv_list) >= 3:
                     hr_avg = np.mean(hr_list[-10:])
-                    recent_rr = (hrv_list[-20:]
-                                 if len(hrv_list) >= 20
-                                 else hrv_list)
+                    recent_rr = hrv_list[-20:] if len(hrv_list) >= 20 else hrv_list
                     rmssd = calculate_rmssd(recent_rr)
                     a = 1
 
                     if rmssd is not None and model is not None:
-                        stress_result, confidence = predict_stress(
-                            hr_avg, rmssd
-                        )
+                        stress_result, confidence = predict_stress(hr_avg, rmssd)
 
                         if stress_result == "STRESS":
                             stress_auto = "STRESS"
@@ -342,65 +310,58 @@ def print_hr_data(data):
                     hrv_list = hrv_list[-50:]
 
             with ph1.container():
-                st.markdown(
-                    "<span style='font-size:60px;'>❤️</span>",
-                    unsafe_allow_html=True
-                )
+                st.markdown("<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True)
                 st.markdown(
                     f"<span style='font-size:40px;'>HR:{hr} bpm</span>",
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
             with ph2.container():
-                st.markdown(
-                    "<span style='font-size:60px;'>📈</span>",
-                    unsafe_allow_html=True
-                )
+                st.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
                 st.markdown(
                     f"<span style='font-size:40px;'>HRV:{hrv} ms</span>",
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
             with ph3.container():
                 if stress_result == "NEUTRAL":
                     st.markdown(
                         "<span style='font-size:60px;'>ML 😐</span>",
-                        unsafe_allow_html=True
+                        unsafe_allow_html=True,
                     )
                     st.markdown(
-                        "<span style='font-size:40px;'>"
-                        "Predicting Stress...</span>",
-                        unsafe_allow_html=True
+                        "<span style='font-size:40px;'>Predicting Stress...</span>",
+                        unsafe_allow_html=True,
                     )
                 elif stress_result == "STRESS":
                     st.markdown(
                         "<span style='font-size:60px;'>ML 😰</span>",
-                        unsafe_allow_html=True
+                        unsafe_allow_html=True,
                     )
                     st.markdown(
                         "<span style='font-size:40px;'>Stress</span>",
-                        unsafe_allow_html=True
+                        unsafe_allow_html=True,
                     )
                     if rmssd is not None:
                         st.markdown(
                             f"<span style='font-size:20px;'>"
                             f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
                             f"(Confidence: {confidence:.1%})</span>",
-                            unsafe_allow_html=True
+                            unsafe_allow_html=True,
                         )
                 else:
                     st.markdown(
                         "<span style='font-size:60px;'>ML 😊</span>",
-                        unsafe_allow_html=True
+                        unsafe_allow_html=True,
                     )
                     st.markdown(
                         "<span style='font-size:40px;'>No Stress</span>",
-                        unsafe_allow_html=True
+                        unsafe_allow_html=True,
                     )
                     if rmssd is not None:
                         st.markdown(
                             f"<span style='font-size:20px;'>"
                             f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
                             f"(Confidence: {confidence:.1%})</span>",
-                            unsafe_allow_html=True
+                            unsafe_allow_html=True,
                         )
 
             if a == 10:  # this is should be 1
@@ -424,14 +385,11 @@ def print_hr_data(data):
                 a = 0
 
             with ph4.container():
-                st.markdown(
-                    "<span style='font-size:60px;'>LLM 📄</span>",
-                    unsafe_allow_html=True
-                )
+                st.markdown("<span style='font-size:60px;'>LLM 📄</span>", unsafe_allow_html=True)
                 st.markdown(
                     f"<span style='font-size:20px;'>"
                     f"{column4_response}</span>",
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
 
 
@@ -458,7 +416,7 @@ async def main():
                 client,
                 callback=print_hr_data,
                 instant_rate=True,
-                unpack=True
+                unpack=True,
             )
             await heartrate.start_notify()
 
