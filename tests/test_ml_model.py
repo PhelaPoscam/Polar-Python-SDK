@@ -190,12 +190,22 @@ class TestFeatureImportance:
         assert np.isclose(sum(importances), 1.0)
 
 
-@pytest.fixture
-def sample_training_data():
-    """Fixture for sample training data"""
-    np.random.seed(42)
-    return pd.DataFrame({
-        'HR': np.random.randint(60, 100, 100),
-        'RMSSD': np.random.uniform(20, 60, 100),
-        'label': np.random.randint(0, 2, 100)
-    })
+class TestHyperparameterTuning:
+    """Test hyperparameter tuning"""
+
+    @patch('src.awe_polar.train_model.GridSearchCV')
+    def test_tune_hyperparameters_returns_dict(self, mock_grid_search_cv):
+        """Test that tune_hyperparameters returns a dictionary."""
+        from src.awe_polar.train_model import tune_hyperparameters
+        # Configure the mock
+        mock_instance = mock_grid_search_cv.return_value
+        mock_instance.best_params_ = {"n_estimators": 100}
+
+        X_train = np.random.rand(10, 2)
+        y_train = np.random.randint(0, 2, 10)
+
+        best_params = tune_hyperparameters("random_forest", X_train, y_train)
+
+        assert isinstance(best_params, dict)
+        assert "n_estimators" in best_params
+

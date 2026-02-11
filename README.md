@@ -1,42 +1,52 @@
 # AWE Polar Project
 
-A stress monitoring application using Polar H10 heart rate monitor, machine learning, and LLM for real-time stress detection and insights.
+Stress monitoring application using Polar H10 heart rate monitor, machine learning, and LLM-based insights. The project now includes scaffolding for Phase 2 (TabNet pipeline) and Phase 3 (bio-adaptive game loop).
+
+## Status Snapshot
+
+- Core ML pipeline implemented for HR/RMSSD with Random Forest and Gradient Boosting.
+- Hyperparameter tuning via GridSearchCV.
+- Model versioning with timestamped artifacts.
+- Streamlit dashboard with gauge chart and password-based access.
+- Dataset helpers and sample data generator.
+- CI pipeline via GitHub Actions.
+- Phase 2/3 scaffolds and tests added for future work.
 
 ## Features
 
-- **Real-time Heart Rate Monitoring**: Connect to Polar H10 via Bluetooth
-- **ML-based Stress Detection**: Random Forest classifier for stress prediction
-- **Interactive Dashboard**: Streamlit-based web interface
-- **LLM Insights**: OpenAI-powered actionable recommendations
-- **HRV Analysis**: RMSSD calculation for stress assessment
+- Real-time heart rate monitoring via Bluetooth (Polar H10)
+- ML-based stress detection (Random Forest, Gradient Boosting)
+- Streamlit dashboard with gauge visualization
+- LLM-based insights (OpenAI)
+- HRV analysis (RMSSD)
 
 ## Prerequisites
 
 - Python 3.8+
 - Polar H10 heart rate monitor
 - Bluetooth-enabled device
-- OpenAI API key
+- OpenAI API key (optional; enables LLM features)
 
 ## Setup
 
-1. **Create a virtual environment**:
+1. Create a virtual environment:
    ```powershell
    python -m venv venv
    .\venv\Scripts\Activate.ps1
    ```
 
-2. **Install dependencies**:
+2. Install dependencies:
    ```powershell
    pip install -r requirements.txt
    ```
 
-3. **Configure environment variables**:
+3. Configure environment variables:
    - Copy `.env.example` to `.env`
    - Add your OpenAI API key to `.env`
 
-4. **Prepare training data**:
-   - Place your `all_hrv_data3.csv` file in `data/raw/`
-   - Run the ML model training script:
+4. Prepare training data:
+   - Place `all_hrv_data3.csv` in `data/raw/`
+   - Run the ML training script:
    ```powershell
    python scripts/train_model.py
    ```
@@ -44,20 +54,20 @@ A stress monitoring application using Polar H10 heart rate monitor, machine lear
 ## Dataset Acquisition (WESAD, SWELL, UBFC-Phys)
 
 These datasets have different access rules and may require registration or data-use approval.
-For compliance, download them from their official sources and place the raw files locally.
+Download them from their official sources and place the raw files locally.
 
 Official sources (as referenced in Jui et al., 2026):
 
 - WESAD (UCI ML Repository): https://archive.ics.uci.edu/ml/datasets/WESAD
 - SWELL-KW (DANS / Radboud): https://cs.ru.nl/~skoldijk/SWELL-KW/Dataset.html
-   - Kaggle mirror: https://www.kaggle.com/qiriro/swell-heart-rate-variability-hrv
+  - Kaggle mirror: https://www.kaggle.com/qiriro/swell-heart-rate-variability-hrv
 - UBFC-Phys (IEEE DataPort): https://ieee-dataport.org/open-access/ubfc-phys
-   - Author page: https://sites.google.com/view/ybenezeth/ubfc-phys
+  - Author page: https://sites.google.com/view/ybenezeth/ubfc-phys
 
 Recommended layout:
-- [datasets/WESAD](datasets/WESAD)
-- [datasets/SWELL](datasets/SWELL)
-- [datasets/UBFC-Phys](datasets/UBFC-Phys)
+- datasets/WESAD
+- datasets/SWELL
+- datasets/UBFC-Phys
 
 Use the helper script to verify local availability and optionally extract archives:
 
@@ -65,7 +75,7 @@ Use the helper script to verify local availability and optionally extract archiv
 python scripts/download_datasets.py --verify-only
 ```
 
-If you have ZIP archives, place them under [datasets](datasets) or [datasets/archives](datasets/archives) and run:
+If you have ZIP archives, place them under `datasets/` or `datasets/archives/` and run:
 
 ```powershell
 python scripts/download_datasets.py --extract
@@ -81,9 +91,8 @@ python scripts/train_model.py
 
 This will:
 - Load and process HRV data
-- Train a Random Forest classifier
-- Save the model as `models/improved_stress_model.pkl`
-- Save the scaler as `models/scaler.pkl`
+- Train a Random Forest or Gradient Boosting classifier
+- Save the model and scaler under `models/` with timestamps
 
 ### Run the Streamlit Application
 
@@ -96,7 +105,7 @@ This will:
 - Connect to your Polar H10 device
 - Display real-time HR and HRV data
 - Predict stress levels every 15 seconds
-- Provide LLM-based insights
+- Provide LLM-based insights (if configured)
 
 ## Running Tests
 
@@ -104,24 +113,109 @@ This will:
 pytest tests/ -v --cov=.
 ```
 
+Scaffold-only checks:
+
+```powershell
+pytest tests/test_advanced_models_scaffold.py -v
+pytest tests/test_game_bridge_scaffold.py -v
+```
+
 ## Project Structure
 
-- `src/awe_polar/`: Core application and training modules
-- `scripts/`: Entrypoints for training, data generation, and Streamlit
-- `data/raw/`: Raw HRV datasets
-- `models/`: Trained model artifacts
-- `requirements.txt`: Python dependencies
-- `tests/`: Unit tests directory
+```
+AWE_Polar_Project/
+  data/
+    raw/
+  datasets/
+  models/
+  scripts/
+  src/
+    awe_polar/
+      advanced_models/
+    game_bridge/
+  tests/
+```
 
-## Model Details
+## Phase 2 Scaffolding (TabNet Pipeline)
 
-- **Algorithm**: Random Forest Classifier
-- **Features**: Heart Rate (HR) and RMSSD
-- **Prediction Interval**: 15 seconds
-- **Output**: Stress/No Stress with confidence score
+Current scaffolds:
+- `src/awe_polar/advanced_models/features.py` (windowed feature extraction)
+- `src/awe_polar/advanced_models/tabnet_model.py` (TabNet config/build helpers)
+- `src/awe_polar/advanced_models/tabnet_trainer.py` (LOSO training skeleton)
+- `src/awe_polar/advanced_models/explainability.py` (SHAP/LIME entry points)
+
+## Phase 3 Scaffolding (Bio-Adaptive Game Loop)
+
+Current scaffolds:
+- `src/game_bridge/stress_engine.py` (UATR-style smoothing skeleton)
+- `src/game_bridge/game_connector.py` (game API connector)
+- `src/game_bridge/cognitive_agent.py` (adaptive state selection)
+
+## Work Completed
+
+- Project planning checklist added to this README.
+- Data preprocessing supports CSV, Excel, and Parquet with IQR outlier filtering.
+- Gradient Boosting added alongside Random Forest.
+- Hyperparameter tuning via GridSearchCV.
+- Model versioning with timestamped artifacts.
+- Streamlit UI with gauge chart and password-based authentication.
+- Tests expanded for data generation and hyperparameter tuning.
+- CI pipeline via GitHub Actions.
+- Phase 2 and 3 module scaffolds with basic tests.
+
+## TODO
+
+- [ ] Enhance data preprocessing (additional cleaning and transformations)
+- [ ] Add more visualizations to the Streamlit dashboard
+- [ ] Add module-level documentation and a docs/ directory
+- [x] Scaffold validation (advanced_models and game_bridge tests)
+- [ ] Decide whether to wire the TabNet training loop to real metrics
+- [ ] Implement a concrete UATR algorithm in the stress engine
+
+## Next Steps
+
+- [ ] Decide whether to wire the TabNet training loop to real metrics
+- [ ] Implement a concrete UATR algorithm in the stress engine
 
 ## Notes
 
-- Ensure your Polar H10 is paired and turned on before running the app
-- The application requires an active internet connection for OpenAI API calls
-- Model files (`*.pkl`) are generated after training and required for predictions
+- Ensure your Polar H10 is paired and turned on before running the app.
+- The application requires an active internet connection for OpenAI API calls.
+- Model files (`*.pkl`) are generated after training and required for predictions.
+
+## Future Roadmap & Research Goals
+
+### Phase 2: High-Fidelity Stress Detection (TabNet Pipeline)
+
+Implementation of the architecture described by Jui et al. (2026):
+
+- Advanced Feature Engineering (Jui et al., Table 2)
+  - Extract the 21 features (Mean, Median, Std, Var, Min, Max, Skew, Kurtosis, Range) for EDA and HR
+  - Interaction feature: covariance between EDA and HR
+  - Sliding window logic: 25-second windows with 50% overlap
+- TabNet Model Architecture
+  - Integrate pytorch_tabnet library
+  - Configure TabNetClassifier with paper-specific hyperparameters
+- Validation Strategy
+  - Leave-One-Subject-Out (LOSO) cross-validation loop
+  - Subject-based Z-score normalization
+- Explainable AI (XAI)
+  - SHAP global feature importance
+  - LIME local instance explanation
+
+### Phase 3: Bio-Adaptive Game Director (Closed-Loop System)
+
+Adaptation of the CPS framework by Yazdinejad et al. (2026):
+
+- Game Integration Layer
+  - Mock game environment (PyGame/Unity) accepting difficulty commands
+  - API hooks: SetSpawnRate(), SetEnemyAccuracy(), SetGameSpeed()
+- Stress Engine (Middleware)
+  - Connect real-time Polar H10 stream to TabNet predictions
+  - Utility-Aware Temporal Reasoner (UATR)
+- Cognitive Agent Logic (AI Director)
+  - SpeedyIBL-style rule set
+  - Adaptive states: MONITOR, ASSIST, DE-ESCALATE, PROVOKE
+- Validation Experiment
+  - Control vs adaptive mode test protocol
+  - Logging for time spent in high stress
