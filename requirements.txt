@@ -17,7 +17,6 @@ seaborn
 
 # Bluetooth Low Energy
 bleak
-bleakheart
 
 # Web Application
 streamlit

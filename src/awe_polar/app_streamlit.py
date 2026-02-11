@@ -8,7 +8,7 @@ import time
 import warnings
 from pathlib import Path
 
-import bleakheart as bh
+from . import bleakheart as bh
 import joblib
 import numpy as np
 import pandas as pd
