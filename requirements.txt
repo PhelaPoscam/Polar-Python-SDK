@@ -21,6 +21,7 @@ bleak
 
 # Web Application
 streamlit
+altair<5
 
 # OpenAI Integration
 openai
