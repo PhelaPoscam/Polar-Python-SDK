@@ -8,15 +8,18 @@ import time
 import warnings
 from pathlib import Path
 
-from . import bleakheart as bh
-import joblib
+from connector.stream.polar_h10_ble import HeartRate
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from bleak import BleakClient, BleakScanner
+from connector.exporters.queue_sink import QueueSink
+from connector.schemas import SignalPacket
 from dotenv import load_dotenv
 from openai import OpenAI
+from reader import StressPredictor, load_model_bundle
+from reader.realtime import ReaderConfig, run_reader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "models" / "improved_stress_model.pkl"
@@ -120,7 +123,7 @@ def main_app():
         with col4:
             ph4 = st.empty()
             ph4.markdown("<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True)
-            ph4.markdown("<span style='font-size:40px;'>No Stress</span>", unsafe_allow_html=True)
+            ph4.markdown("<span style='font-size:40px;'>Baseline</span>", unsafe_allow_html=True)
         with col5:
             ph5 = st.empty()
             ph5.markdown("<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True)
@@ -195,13 +198,14 @@ def main_app():
 
     # Load your trained model and scaler
     try:
-        model = joblib.load(MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
+        bundle = load_model_bundle(MODEL_PATH, SCALER_PATH)
+        predictor = StressPredictor(bundle, feature_order=["hr_bpm", "rmssd"])
         print("Stress prediction model and scaler loaded successfully!")
     except FileNotFoundError:
         print("Model or scaler file not found.")
-        model = None
-        scaler = None
+        predictor = None
+
+    queue_sink = QueueSink(st.session_state.ble_data_queue)
 
     hrv_list = []
     hr_list = []
@@ -212,41 +216,25 @@ def main_app():
     stress_auto = ""
     a = 0
     rmssd = 0
+    confidence = 0.0
 
 
-    def predict_stress(hr, rmssd):
-        """Predict stress level using the trained model"""
-        if model is None:
-            return "MODEL_NOT_LOADED", 0.0
+    def on_prediction(prediction):
+        nonlocal stress_result, confidence, stress_auto
+        confidence = prediction.confidence
 
-        try:
-            hr_float = float(hr)
-            rmssd_float = float(rmssd)
-        except (ValueError, TypeError):
-            return "INVALID_INPUT", 0.0
-
-        features = np.array([[hr_float, rmssd_float]])
-
-        # Scale features using the scaler
-        if scaler is not None:
-            features_scaled = scaler.transform(features)
+        if prediction.label == "High Stress":
+            stress_result = "STRESS"
+            stress_auto = "STRESS"
+        elif prediction.label == "Low Stress":
+            stress_result = "LOW STRESS"
+            stress_auto = "LOW STRESS"
         else:
-            features_scaled = features
+            stress_result = "BASELINE"
+            stress_auto = "BASELINE"
 
-        try:
-            prediction = model.predict(features_scaled)[0]
-            probability = model.predict_proba(features_scaled)[0][1]
-
-            if prediction == 1:
-                result = "STRESS"
-                confidence = probability
-            else:
-                result = "NO_STRESS"
-                confidence = 1 - probability
-
-            return result, confidence
-        except Exception:
-            return "PREDICTION_ERROR", 0.0
+        st.session_state.stress_result = stress_result
+        st.session_state.confidence = confidence
 
 
     def calculate_rmssd(rr_intervals):
@@ -320,8 +308,20 @@ def main_app():
                         rmssd = calculate_rmssd(recent_rr)
                         a = 1
 
-                        if rmssd is not None and model is not None:
-                            stress_result, confidence = predict_stress(hr_avg, rmssd)
+                        if rmssd is not None and predictor is not None:
+                            packet = SignalPacket(
+                                source="polar_h10",
+                                signals={"hr_bpm": hr_avg},
+                                features={"rmssd": rmssd},
+                            )
+                            queue_sink.send(packet)
+                            run_reader(
+                                predictor,
+                                st.session_state.ble_data_queue,
+                                on_prediction,
+                                config=ReaderConfig(poll_interval=0.0),
+                                stop_on_empty=True,
+                            )
 
                             if stress_result == "STRESS":
                                 stress_auto = "STRESS"
@@ -416,13 +416,29 @@ def main_app():
                                 f"(Confidence: {confidence:.1%})</span>",
                                 unsafe_allow_html=True,
                             )
+                    elif stress_result == "LOW STRESS":
+                        st.markdown(
+                            "<span style='font-size:60px;'>ML 😌</span>",
+                            unsafe_allow_html=True,
+                        )
+                        st.markdown(
+                            "<span style='font-size:40px;'>Low Stress</span>",
+                            unsafe_allow_html=True,
+                        )
+                        if rmssd is not None:
+                            st.markdown(
+                                f"<span style='font-size:20px;'>"
+                                f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
+                                f"(Confidence: {confidence:.1%})</span>",
+                                unsafe_allow_html=True,
+                            )
                     else:
                         st.markdown(
                             "<span style='font-size:60px;'>ML 😊</span>",
                             unsafe_allow_html=True,
                         )
                         st.markdown(
-                            "<span style='font-size:40px;'>No Stress</span>",
+                            "<span style='font-size:40px;'>Baseline</span>",
                             unsafe_allow_html=True,
                         )
                         if rmssd is not None:
@@ -494,7 +510,7 @@ def main_app():
             print(f"Found: {device.name}")
 
             async with BleakClient(device) as client:
-                heartrate = bh.HeartRate(
+                heartrate = HeartRate(
                     client,
                     callback=print_hr_data,
                     instant_rate=True,

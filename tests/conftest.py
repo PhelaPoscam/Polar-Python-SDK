@@ -5,8 +5,11 @@ import pytest
 import sys
 import os
 
-# Add project root to Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Add project root and src to Python path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+src_root = os.path.join(project_root, "src")
+sys.path.insert(0, project_root)
+sys.path.insert(0, src_root)
 
 
 @pytest.fixture(scope="session")
