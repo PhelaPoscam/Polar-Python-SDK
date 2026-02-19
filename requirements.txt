@@ -2,7 +2,7 @@
 pandas
 openpyxl
 numpy<2
-numba<0.60
+numba<0.60; python_version < "3.13"
 
 # Machine Learning
 scikit-learn
