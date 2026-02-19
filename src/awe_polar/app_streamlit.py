@@ -103,6 +103,10 @@ def main_app():
         st.session_state.messages = []
     if "df" not in st.session_state:
         st.session_state.df = pd.DataFrame(columns=["hr", "hrv"])
+    if "hr_list" not in st.session_state:
+        st.session_state.hr_list = []
+    if "hrv_list" not in st.session_state:
+        st.session_state.hrv_list = []
 
     # Main content with two columns
     main_col1, main_col2 = st.columns([2, 1])
@@ -207,8 +211,6 @@ def main_app():
 
     queue_sink = QueueSink(st.session_state.ble_data_queue)
 
-    hrv_list = []
-    hr_list = []
     last_stress_prediction_time = 0
     prediction_interval = 15  # seconds
     stress_result = "NEUTRAL"
@@ -217,6 +219,7 @@ def main_app():
     a = 0
     rmssd = 0
     confidence = 0.0
+    hr_avg = 0.0
 
 
     def on_prediction(prediction):
@@ -261,9 +264,9 @@ def main_app():
 
     def print_hr_data(data):
         """Callback to print HR/HRV and stress prediction"""
-        global hrv_list, hr_list, last_stress_prediction_time
-        global stress_result, column4_response, stress_auto
-        global a, confidence, hr_avg, rmssd
+        nonlocal last_stress_prediction_time
+        nonlocal stress_result, column4_response, stress_auto
+        nonlocal a, confidence, hr_avg, rmssd
 
         if isinstance(data, tuple) and len(data) >= 3:
             hr_data = data[2]
@@ -275,13 +278,13 @@ def main_app():
                 current_time = time.time()
 
                 if hr is not None:
-                    hr_list.append(hr)
+                    st.session_state.hr_list.append(hr)
 
                 if hrv is not None:
                     if isinstance(hrv, list):
-                        hrv_list.extend(hrv)
+                        st.session_state.hrv_list.extend(hrv)
                     elif isinstance(hrv, (int, float)):
-                        hrv_list.append(hrv)
+                        st.session_state.hrv_list.append(hrv)
 
                 if hr is not None:
                     print(f"HR: {hr} bpm, HRV in RR:{hrv} ms")
@@ -302,9 +305,13 @@ def main_app():
 
                 time_since_last = current_time - last_stress_prediction_time
                 if time_since_last >= prediction_interval:
-                    if len(hr_list) >= 5 and len(hrv_list) >= 3:
-                        hr_avg = np.mean(hr_list[-10:])
-                        recent_rr = hrv_list[-20:] if len(hrv_list) >= 20 else hrv_list
+                    if len(st.session_state.hr_list) >= 5 and len(st.session_state.hrv_list) >= 3:
+                        hr_avg = np.mean(st.session_state.hr_list[-10:])
+                        recent_rr = (
+                            st.session_state.hrv_list[-20:]
+                            if len(st.session_state.hrv_list) >= 20
+                            else st.session_state.hrv_list
+                        )
                         rmssd = calculate_rmssd(recent_rr)
                         a = 1
 
@@ -352,10 +359,10 @@ def main_app():
                             print(st.session_state.stress_trend)
                         last_stress_prediction_time = current_time
 
-                    if len(hr_list) > 50:
-                        hr_list = hr_list[-30:]
-                    if len(hrv_list) > 100:
-                        hrv_list = hrv_list[-50:]
+                    if len(st.session_state.hr_list) > 50:
+                        st.session_state.hr_list = st.session_state.hr_list[-30:]
+                    if len(st.session_state.hrv_list) > 100:
+                        st.session_state.hrv_list = st.session_state.hrv_list[-50:]
 
                 with ph1.container():
                     st.markdown("<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True)
@@ -478,17 +485,38 @@ def main_app():
                     )
 
 
-    def mock_ble_data():
-        """Generate mock heart rate data for UI testing."""
-        hr = 70
-        hrv = 40
-        while True:
-            hr += np.random.randint(-2, 3)
-            hrv += np.random.randint(-3, 4)
-            hr = np.clip(hr, 60, 100)
-            hrv = np.clip(hrv, 30, 60)
-            print_hr_data((None, None, (hr, [hrv])))
-            time.sleep(1)
+    def mock_step() -> None:
+        """Generate one mock heart rate sample per rerun."""
+        if "mock_hr" not in st.session_state:
+            st.session_state.mock_hr = 70
+            st.session_state.mock_hrv = 40
+
+        hr = st.session_state.mock_hr + np.random.randint(-2, 3)
+        hrv = st.session_state.mock_hrv + np.random.randint(-3, 4)
+        hr = float(np.clip(hr, 60, 100))
+        hrv = float(np.clip(hrv, 30, 60))
+
+        st.session_state.mock_hr = hr
+        st.session_state.mock_hrv = hrv
+        print_hr_data((None, None, (hr, [hrv])))
+
+
+    def maybe_autorefresh(interval_ms: int = 1000) -> None:
+        refresher = getattr(st, "autorefresh", None)
+        if callable(refresher):
+            try:
+                refresher(interval=interval_ms, key="mock_autorefresh")
+            except TypeError:
+                refresher(interval_ms, key="mock_autorefresh")
+
+
+    def is_mock_enabled() -> bool:
+        param = st.query_params.get("mock")
+        if isinstance(param, list) and param:
+            param = param[0]
+        if param is None:
+            return False
+        return str(param).strip().lower() in {"1", "true", "yes", "on"}
 
 
     async def main():
@@ -528,8 +556,9 @@ def main_app():
         except Exception as e:
             print(f"Error: {e}")
 
-    if "mock" in st.query_params and st.query_params["mock"][0] == "true":
-        mock_ble_data()
+    if is_mock_enabled():
+        mock_step()
+        maybe_autorefresh()
     else:
         try:
             aio.run(main())
