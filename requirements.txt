@@ -1,5 +1,6 @@
 # Data Processing and Analysis
 pandas
+openpyxl
 numpy<2
 numba<0.60
 
