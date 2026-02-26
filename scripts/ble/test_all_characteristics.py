@@ -4,10 +4,14 @@ to find which one is actually sending data.
 """
 
 import asyncio
+import pytest
 from bleak import BleakScanner, BleakClient
+from bleak.exc import BleakBluetoothNotAvailableError
 from datetime import datetime
 
 
+@pytest.mark.asyncio
+@pytest.mark.skip(reason="Requires BLE hardware - run manually with actual ring device")
 async def test_all_notifications():
     """Scan, connect, and listen on all notify-capable characteristics."""
     
