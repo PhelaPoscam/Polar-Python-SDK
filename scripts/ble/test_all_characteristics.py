@@ -6,7 +6,6 @@ to find which one is actually sending data.
 import asyncio
 import pytest
 from bleak import BleakScanner, BleakClient
-from bleak.exc import BleakBluetoothNotAvailableError
 from datetime import datetime
 
 
