@@ -7,7 +7,7 @@ import importlib.util
 import pandas as pd
 import pytest
 
-from src.awe_polar.advanced_models import explainability, features, tabnet_model, tabnet_trainer
+from awe_polar.advanced_models import explainability, features, tabnet_model, tabnet_trainer
 
 
 def test_generate_feature_matrix_basic() -> None:

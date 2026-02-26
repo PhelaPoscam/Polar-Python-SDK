@@ -8,18 +8,18 @@ import time
 import warnings
 from pathlib import Path
 
-from connector.stream.polar_h10_ble import HeartRate
+from awe_polar.connector.stream.polar_h10_ble import HeartRate
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from bleak import BleakClient, BleakScanner
-from connector.exporters.queue_sink import QueueSink
-from connector.schemas import SignalPacket
+from awe_polar.connector.exporters.queue_sink import QueueSink
+from awe_polar.connector.schemas import SignalPacket
 from dotenv import load_dotenv
 from openai import OpenAI
-from reader import StressPredictor, load_model_bundle
-from reader.realtime import ReaderConfig, run_reader
+from awe_polar.reader import StressPredictor, load_model_bundle
+from awe_polar.reader.realtime import ReaderConfig, run_reader
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "models" / "improved_stress_model.pkl"

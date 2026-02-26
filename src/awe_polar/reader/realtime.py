@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from time import sleep
 from typing import Callable, Iterator
 
-from connector.schemas import SignalPacket
+from awe_polar.connector.schemas import SignalPacket
 from .predictor import Prediction, StressPredictor
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from game_bridge.stress_engine import StressEngine, StressSignal, StressState
+from awe_polar.game_bridge.stress_engine import StressEngine, StressSignal, StressState
 
 
 @dataclass

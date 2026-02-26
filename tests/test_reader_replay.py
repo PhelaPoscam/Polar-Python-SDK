@@ -7,11 +7,11 @@ import queue
 import numpy as np
 import pandas as pd
 
-from src.connector.exporters.queue_sink import QueueSink
-from src.connector.offline.dataset_loader import iter_csv
-from src.reader.model_loader import ModelBundle
-from src.reader.predictor import StressPredictor
-from src.reader.realtime import run_reader
+from awe_polar.connector.exporters.queue_sink import QueueSink
+from awe_polar.connector.offline.dataset_loader import iter_csv
+from awe_polar.reader.model_loader import ModelBundle
+from awe_polar.reader.predictor import StressPredictor
+from awe_polar.reader.realtime import run_reader
 
 
 class DummyScaler:

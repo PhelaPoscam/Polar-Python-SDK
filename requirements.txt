@@ -1,7 +1,7 @@
 # Data Processing and Analysis
 pandas
 openpyxl
-numpy>=2
+numpy<2
 numba<0.60; python_version < "3.13"
 
 # Machine Learning
@@ -21,7 +21,8 @@ plotly
 bleak
 
 # Web Application
-streamlit>=1.34.0
+streamlit>=1.28,<1.32; python_version < "3.9"
+streamlit>=1.34.0; python_version >= "3.9"
 altair>=5
 
 # OpenAI Integration

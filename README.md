@@ -22,7 +22,7 @@ Stress monitoring application using Polar H10 heart rate monitor, machine learni
 
 ## Prerequisites
 
-- Python 3.8+
+- Python 3.8-3.11 (CI covers 3.8-3.11; runtime.txt targets 3.11.9)
 - Polar H10 heart rate monitor
 - Bluetooth-enabled device
 - OpenAI API key (optional; enables LLM features)
@@ -48,7 +48,7 @@ Stress monitoring application using Polar H10 heart rate monitor, machine learni
    - Place `all_hrv_data3.csv` in `data/raw/`
    - Run the ML training script:
    ```powershell
-   python scripts/train_model.py
+  python scripts/train/train_model.py
    ```
 
 ## Dataset Acquisition (WESAD, SWELL, UBFC-Phys)
@@ -72,13 +72,13 @@ Recommended layout:
 Use the helper script to verify local availability and optionally extract archives:
 
 ```powershell
-python scripts/download_datasets.py --verify-only
+python scripts/data/download_datasets.py --verify-only
 ```
 
 If you have ZIP archives, place them under `datasets/` or `datasets/archives/` and run:
 
 ```powershell
-python scripts/download_datasets.py --extract
+python scripts/data/download_datasets.py --extract
 ```
 
 ## Usage
@@ -86,7 +86,7 @@ python scripts/download_datasets.py --extract
 ### Train the ML Model
 
 ```powershell
-python scripts/train_model.py
+python scripts/train/train_model.py
 ```
 
 This will:
@@ -97,7 +97,7 @@ This will:
 ### Run the Streamlit Application
 
 ```powershell
-streamlit run scripts/app_streamlit.py
+streamlit run scripts/app/app_streamlit.py
 ```
 
 This will:
@@ -106,6 +106,11 @@ This will:
 - Display real-time HR and HRV data
 - Predict stress levels every 15 seconds
 - Provide LLM-based insights (if configured)
+
+### Helper Scripts
+
+- PowerShell setup/start scripts live in `scripts/setup/`
+- Test Streamlit stub app is in `scripts/app/test_app.py`
 
 ## Running Tests
 
@@ -125,14 +130,23 @@ pytest tests/test_game_bridge_scaffold.py -v
 ```
 AWE_Polar_Project/
   data/
+    logs/
     raw/
   datasets/
   models/
   scripts/
+    app/
+    ble/
+    data/
+    infer/
+    setup/
+    train/
   src/
     awe_polar/
       advanced_models/
-    game_bridge/
+      connector/
+      game_bridge/
+      reader/
   tests/
 ```
 
@@ -147,9 +161,9 @@ Current scaffolds:
 ## Phase 3 Scaffolding (Bio-Adaptive Game Loop)
 
 Current scaffolds:
-- `src/game_bridge/stress_engine.py` (UATR-style smoothing skeleton)
-- `src/game_bridge/game_connector.py` (game API connector)
-- `src/game_bridge/cognitive_agent.py` (adaptive state selection)
+- `src/awe_polar/game_bridge/stress_engine.py` (UATR-style smoothing skeleton)
+- `src/awe_polar/game_bridge/game_connector.py` (game API connector)
+- `src/awe_polar/game_bridge/cognitive_agent.py` (adaptive state selection)
 
 ## Work Completed
 
@@ -177,11 +191,43 @@ Current scaffolds:
 - [ ] Decide whether to wire the TabNet training loop to real metrics
 - [ ] Implement a concrete UATR algorithm in the stress engine
 
+## Nuanic Ring Integration (In Progress)
+
+### Discovery Results (2026-02-26)
+
+Successfully discovered and connected to Nuanic smart ring:
+- **Device Name**: LHB-644B07F9 / LHB-6F0A2510
+- **Connection**: ✅ BLE connection established (6-18 seconds)
+- **GATT Services**: 6 services, 20 characteristics mapped
+- **Key Characteristic**: `00001524-1212-efde-1523-785feabcd124` (notify, read, write)
+
+### Status
+
+- ✅ Scan and device discovery working
+- ✅ GATT architecture mapping complete
+- ❌ Data streaming not yet working (no notifications received)
+
+### Next Steps
+
+- [ ] Investigate ring activation protocol (may require write command to start streaming)
+- [ ] Check Nuanic official app/documentation for BLE handshaking requirements
+- [ ] Test alternative characteristics (`00001525`, `00008421`) via write commands
+- [ ] Implement ring-specific protocol if needed
+
+### Scripts
+
+- `scripts/ble/ble_ring_streamer.py` - Full 3-phase BLE streamer (scan → discover → stream)
+- `scripts/ble/discover_nuanic.py` - Ring discovery with GATT mapping
+- `scripts/ble/test_nuanic_connection.py` - Connection test with 20s timeout
+- `scripts/ble/test_all_characteristics.py` - Listen to all notify characteristics simultaneously
+- Ring data logs are written to `data/logs/ring_data_log.csv`
+
 ## Notes
 
 - Ensure your Polar H10 is paired and turned on before running the app.
 - The application requires an active internet connection for OpenAI API calls.
 - Model files (`*.pkl`) are generated after training and required for predictions.
+- Nuanic ring integration is in progress; firmware may require activation commands for data streaming.
 
 ## Future Roadmap & Research Goals
 

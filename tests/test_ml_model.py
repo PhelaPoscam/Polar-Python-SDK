@@ -193,10 +193,10 @@ class TestFeatureImportance:
 class TestHyperparameterTuning:
     """Test hyperparameter tuning"""
 
-    @patch('src.awe_polar.train_model.GridSearchCV')
+    @patch('awe_polar.train_model.GridSearchCV')
     def test_tune_hyperparameters_returns_dict(self, mock_grid_search_cv):
         """Test that tune_hyperparameters returns a dictionary."""
-        from src.awe_polar.train_model import tune_hyperparameters
+        from awe_polar.train_model import tune_hyperparameters
         # Configure the mock
         mock_instance = mock_grid_search_cv.return_value
         mock_instance.best_params_ = {"n_estimators": 100}

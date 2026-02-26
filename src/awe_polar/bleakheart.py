@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from connector.stream.polar_h10_ble import HeartRate
+from awe_polar.connector.stream.polar_h10_ble import HeartRate
 
 __all__ = ["HeartRate"]
