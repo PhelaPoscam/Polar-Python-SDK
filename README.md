@@ -1,6 +1,5 @@
 # AWE Polar Project
 
-**Status:** ✅ Production Ready  
 **Python:** 3.8-3.11 | **OS:** Windows 10/11
 
 Multi-modal stress monitoring system combining Polar H10 heart rate data with Nuanic smart ring biometric measurements (stress, EDA). Features ML-based stress detection, real-time monitoring, and Streamlit dashboard.
