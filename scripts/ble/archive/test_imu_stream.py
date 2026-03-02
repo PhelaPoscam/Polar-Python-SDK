@@ -5,7 +5,7 @@ from bleak import BleakClient, BleakScanner
 from datetime import datetime
 from collections import deque
 
-async def test_imu():
+async def run_imu():
     print("Scanning for Nuanic ring...")
     devices = await BleakScanner.discover(timeout=3.0)
     
@@ -125,7 +125,7 @@ async def test_imu():
 
 def main():
     """Main entry point for direct execution"""
-    asyncio.run(test_imu())
+    asyncio.run(run_imu())
 
 
 if __name__ == "__main__":
