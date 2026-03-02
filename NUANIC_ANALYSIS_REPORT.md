@@ -117,7 +117,7 @@ EDA:       46.6 μS ± 8.2 (very stable)
 ## Technical Specifications
 
 ### Nuanic Ring NR05126
-- **MAC Address:** 69:9A:5D:F8:00:C0
+- **MAC Address:** -
 - **BLE Profile:** Multi-characteristic notification
 - **Power Mode:** Low-power dock charging compatible
 - **Discovery Name:** "Nuanic"
