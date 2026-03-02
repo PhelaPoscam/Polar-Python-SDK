@@ -21,14 +21,11 @@ streamlit run scripts/app/app_streamlit.py   # Run dashboard
 
 ### 3. Nuanic Ring - Stress & EDA Monitoring
 ```bash
-# Log stress + EDA data (60 seconds)
-python scripts/ble/log_nuanic_session.py --duration 60
+# Monolithic monitor (IMU + Stress + EDA) for 60 seconds
+python scripts/ble/nuanic_monitor.py --duration 60
 
 # Analyze captured data
 python scripts/ble/analyze_nuanic_data.py data/nuanic_logs/nuanic_*.csv
-
-# Verify modules
-python scripts/ble/test_nuanic_modules.py
 ```
 
 ## Features
@@ -64,8 +61,10 @@ AWE_Polar_Project/
 │   └── train_model.py         - ML training pipeline
 │
 ├── scripts/ble/               ← Nuanic tools (production ready)
-│   ├── log_nuanic_session.py
-│   └── analyze_nuanic_data.py
+│   ├── nuanic_monitor.py
+│   ├── log_nuanic_dual_stream.py   - Compatibility wrapper
+│   ├── analyze_nuanic_data.py
+│   └── archive/                    - Legacy BLE scripts
 │
 ├── scripts/train/             ← ML pipeline
 │   └── train_model.py
@@ -119,39 +118,25 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 **Data Specifications**
 - **Stress:** Byte 14 of physiology packet → 0-255 raw → 0-100% scaled
 - **EDA:** Bytes 15-91 (77 samples) → ~86 Hz PPG/EDA waveform → 0-100 μS range
-- **IMU:** Bytes 8-11 of acceleration packet → ACC_X, ACC_Y signed int16 → ±32,768 range
+- **IMU:** Bytes 8-13 of acceleration packet → ACC_X, ACC_Y, ACC_Z signed int16 → ±32,768 range
 - **Update Rate:** 16.8 Hz combined (15.87 Hz IMU + 1.12 Hz physiology)
 - **Packet Format Details:** See [NUANIC_ANALYSIS_REPORT.md](NUANIC_ANALYSIS_REPORT.md)
 
 ## Analysis & Validation Tools
 
-**Core Analysis Scripts** (`scripts/analysis/`)
-- `extract_eda_data.py` - Extract and analyze EDA waveform data
-- `verify_accelerometer.py` - Validate IMU with stationary vs movement test
-- `investigate_dne_algorithm.py` - Analyze stress/EDA algorithm behavior
-- `analyze_5min_capture.py` - Extended capture temporal analysis
-- `baseline_calibration_analysis.py` - Study baseline learning/calibration
-- `temporal_pattern_5min.py` - Time-series pattern identification
+**Current Analysis Script** (`scripts/analysis/`)
+- `analyze_nuanic_stream.py` - Stream-level analysis for captured Nuanic data
 
 **To run analysis:**
 ```bash
-# Analyze EDA extraction
-python scripts/analysis/extract_eda_data.py
-
-# Validate IMU acceleration
-python scripts/analysis/verify_accelerometer.py
-
-# Investigate DNE baseline calibration
-python scripts/analysis/baseline_calibration_analysis.py
-
-# Full 5-minute capture analysis
-python scripts/analysis/analyze_5min_capture.py
+# Analyze captured stream(s)
+python scripts/analysis/analyze_nuanic_stream.py
 ```
 
-**Legacy Scripts** (`scripts/analysis/archive/`)
-- 18 hardware reverse-engineering scripts from exploratory phase
-- Kept for reference and methodology documentation
-- Not required for production use
+**Legacy BLE Scripts** (`scripts/ble/archive/`)
+- Discovery/diagnostic scripts from exploratory phase
+- Kept for reference
+- Not required for production monitoring
 
 ## Datasets for ML Training
 
@@ -186,9 +171,6 @@ pytest tests/ -v --cov=.
 
 # Test Nuanic integration (33 unit tests)
 pytest tests/test_nuanic_integration.py -v
-
-# Verify Nuanic modules are healthy
-python scripts/ble/test_nuanic_modules.py
 ```
 
 **Test Status:**
@@ -219,8 +201,8 @@ python scripts/ble/test_nuanic_modules.py
 **Log Nuanic Ring Data:**
 ```bash
 # Record for 5 minutes
-python scripts/ble/log_nuanic_session.py --duration 300
-# Output: data/nuanic_logs/nuanic_2026-02-27_14-23-45.csv
+python scripts/ble/nuanic_monitor.py --duration 300
+# Output: data/nuanic_logs/nuanic_imu_*.csv + nuanic_stress_*.csv
 ```
 
 **Analyze Logged Data:**

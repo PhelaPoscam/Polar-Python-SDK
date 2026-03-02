@@ -38,9 +38,14 @@ Proper Python package structure for Nuanic integration:
 ### 2. Command-Line Scripts (`scripts/ble/`)
 Ready-to-run scripts:
 
-- **`log_nuanic_session.py`:** Data logging with duration control
+- **`nuanic_monitor.py`:** Monolithic real-time monitor (IMU + Stress + EDA)
   ```bash
-  python scripts/ble/log_nuanic_session.py --duration 60
+  python scripts/ble/nuanic_monitor.py --duration 60
+  ```
+
+- **`log_nuanic_dual_stream.py`:** Compatibility wrapper for the monolithic monitor
+  ```bash
+  python scripts/ble/log_nuanic_dual_stream.py --duration 60
   ```
 
 - **`analyze_nuanic_data.py`:** CSV analysis and reporting
@@ -73,9 +78,10 @@ AWE_Polar_Project/
 │   └── examples.py              [✓] Usage examples
 │
 ├── scripts/ble/
-│   ├── log_nuanic_session.py     [✓] Data logger
+│   ├── nuanic_monitor.py         [✓] Monolithic monitor
+│   ├── log_nuanic_dual_stream.py [✓] Compatibility wrapper
 │   ├── analyze_nuanic_data.py    [✓] Data analyzer
-│   └── [old scripts to clean]    [ ] TBD
+│   └── archive/                  [✓] Legacy BLE scripts
 │
 ├── data/nuanic_logs/
 │   └── [CSV files created here]  [✓] Auto-created on logging
@@ -113,10 +119,10 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 ### 1. Log Data (60 seconds)
 ```bash
 cd c:\TUNI - Projects\Python Project\AWE_Polar_Project
-python scripts/ble/log_nuanic_session.py --duration 60
+python scripts/ble/nuanic_monitor.py --duration 60
 ```
 
-Output: `data/nuanic_logs/nuanic_2024-01-15_14-23-45.csv`
+Output: `data/nuanic_logs/nuanic_imu_*.csv` and `data/nuanic_logs/nuanic_stress_*.csv`
 
 ### 2. Analyze Logged Data
 ```bash
@@ -183,18 +189,12 @@ await logger.start_logging(duration_seconds=300)
 - [✓] monitor.py
 - [✓] logger.py
 - [✓] eda_analyzer.py
-- [✓] log_nuanic_session.py
+- [✓] nuanic_monitor.py
+- [✓] log_nuanic_dual_stream.py
 - [✓] analyze_nuanic_data.py
 
-### Review for Keeping
-- `scripts/ble/aggressive_connect.py` - baseline connection test
-- `scripts/ble/listen_nuanic_notifications.py` - raw data capture
-- `scripts/ble/monitor_stress_realtime.py` - simple monitoring
-
-### Can Delete (Redundant)
-- `scripts/ble/find_nuanic_mac.py` - scanner (replaced by connector.py)
-- `scripts/ble/connect_my_nuanic.py` - basic connection (replaced by connector.py)
-- Test scripts in root (moved to tests/)
+### Archived (Legacy)
+- `scripts/ble/archive/*` - discovery/diagnostic/test scripts preserved for reference
 
 ## Integration with AWE Polar Project
 

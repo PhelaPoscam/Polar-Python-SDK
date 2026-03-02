@@ -99,7 +99,7 @@ print(analyzer.get_interpretation(stats))
 
 ### Basic Data Logging (60 seconds)
 ```bash
-python scripts/ble/log_nuanic_session.py --duration 60
+python scripts/ble/nuanic_monitor.py --duration 60
 ```
 
 Output:

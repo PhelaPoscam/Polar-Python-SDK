@@ -68,9 +68,9 @@ class NuanicDataLogger:
         if not await self.connector.connect():
             return False
         
-        battery = await self.connector.read_battery()
-        if battery:
-            print(f"Battery: {battery}%\n")
+        # Subscribe IMMEDIATELY after connection (no delays!)
+        if not await self.connector.subscribe_to_stress(self.notification_callback):
+            return False
         
         print("=" * 80)
         print("LOGGING NUANIC RING DATA")
@@ -81,8 +81,10 @@ class NuanicDataLogger:
             print("Duration: unlimited (Ctrl+C to stop)")
         print("=" * 80 + "\n")
         
-        if not await self.connector.subscribe_to_stress(self.notification_callback):
-            return False
+        # Try battery read (non-blocking)
+        battery = await self.connector.read_battery()
+        if battery:
+            print(f"Battery: {battery}%\n")
         
         try:
             if duration_seconds:

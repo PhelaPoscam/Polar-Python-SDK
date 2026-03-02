@@ -42,9 +42,9 @@ async def main():
     success = await logger.start_logging(duration_seconds=duration)
     
     if success:
-        print("\n✓ Session complete!")
-        print(f"✓ Logged {logger.row_count} readings")
-        print(f"✓ File: {logger.csv_file}")
+        print("\n[OK] Session complete!")
+        print(f"[OK] Logged {logger.row_count} readings")
+        print(f"[OK] File: {logger.csv_file}")
 
 
 if __name__ == "__main__":

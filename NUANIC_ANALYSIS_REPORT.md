@@ -20,11 +20,12 @@ Deep investigation into Nuanic NR05126 smart ring data streams, sensor character
 **Interleaving pattern:** ~14 IMU packets per 1 stress packet
 
 ### 2. IMU Acceleration (d306262b - 16 bytes)
-**Bytes 8-11 contain signed 16-bit acceleration data:**
+**Bytes 8-13 contain signed 16-bit acceleration data:**
 
 ```
 Byte 8-9:   ACC_X (int16, range ±32,768)
-Byte 10-11: ACC_Y (int16, constant ~15, gravity offset)
+Byte 10-11: ACC_Y (int16, often stable around ~15 depending on orientation)
+Byte 12-13: ACC_Z (int16, often stable around ~30 depending on orientation)
 ```
 
 **Experimental Verification (Stationary vs Movement):**
@@ -34,8 +35,8 @@ Byte 10-11: ACC_Y (int16, constant ~15, gravity offset)
 
 **Other bytes:**
 - Bytes 0-7: Timestamp counter (incrementing ~63ms per packet)
-- Byte 12: Signal Quality/RSSI (52-100)
-- Bytes 13-15: Padding
+- Byte 14: Signal quality indicator
+- Byte 15: Padding/metadata
 
 ### 3. Stress & EDA (468f2717 - 92 bytes)
 
@@ -111,13 +112,12 @@ EDA:       46.6 μS ± 8.2 (very stable)
 1. Ignore first 60-90 seconds after putting ring on
 2. Combine stress + EDA for better detection
 3. Use movement data (IMU) for contextual filtering
-
 ---
 
 ## Technical Specifications
 
 ### Nuanic Ring NR05126
-- **MAC Address:** -
+- **MAC Address:** Dynamic/private BLE address (changes over time)
 - **BLE Profile:** Multi-characteristic notification
 - **Power Mode:** Low-power dock charging compatible
 - **Discovery Name:** "Nuanic"
@@ -136,22 +136,17 @@ EDA:       46.6 μS ± 8.2 (very stable)
 
 ## Scripts & Analysis Tools
 
-### Core Analysis Scripts
-Located in `scripts/analysis/`:
+### Current Production Monitoring Flow
 
-| Script | Purpose | Findings |
-|---|---|---|
-| `extract_eda_data.py` | EDA extraction and statistics | Confirms 86 Hz EDA sampling, 0-100 μS range |
-| `verify_accelerometer.py` | IMU validation | 6× variance reduction when stationary |
-| `investigate_dne_algorithm.py` | DNE algorithm study | Stress/EDA independence, zero correlation |
-| `analyze_5min_capture.py` | Extended capture analysis | Baseline drift, temporal patterns |
-| `baseline_calibration_analysis.py` | Calibration algorithm | +10.7% baseline shift, intentional design |
-| `temporal_pattern_5min.py` | Time-series patterns | Stress spikes align with initial sensor settling |
+**Monolithic BLE monitor:**
+- `scripts/ble/nuanic_monitor.py` - Unified real-time monitor (IMU + Stress + EDA), CSV logging, live console view
+- `scripts/ble/log_nuanic_dual_stream.py` - Compatibility wrapper that launches the monolithic monitor
 
-### Legacy Scripts
-Archived in `scripts/analysis/archive/`:
-- 18 exploratory scripts from hardware reverse-engineering
-- Kept for reference, not needed for production
+**Analysis script currently present:**
+- `scripts/analysis/analyze_nuanic_stream.py`
+
+**Archived BLE experiments/diagnostics:**
+- `scripts/ble/archive/` (legacy discovery/test scripts kept for reference)
 
 ---
 
@@ -170,9 +165,10 @@ Archived in `scripts/analysis/archive/`:
 - Stability: Very consistent, reflects true emotional state
 
 ✅ **IMU Acceleration**
-- Format: Bytes 8-11, Little-endian signed int16 pairs
+- Format: Bytes 8-13, Little-endian signed int16 triples (X, Y, Z)
 - ACC_X: Full ±32K range detected
-- ACC_Y: Constant ~15 (Z-axis gravity reference)
+- ACC_Y / ACC_Z: Often near-stable at rest depending on ring orientation and movement type
+- Signal quality: Byte 14 in current parser
 - Validated via stationary vs movement testing
 
 ---

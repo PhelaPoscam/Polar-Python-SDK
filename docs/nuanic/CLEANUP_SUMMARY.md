@@ -28,10 +28,10 @@
 - ✗ nuanic_ring_simulator.py
 - ✗ diagnostics/ (empty folder)
 
-**Kept 3 production files:**
+**Current production BLE files:**
 - ✓ analyze_nuanic_data.py - CSV analysis tool
-- ✓ log_nuanic_session.py - Real-time data logger
-- ✓ test_nuanic_modules.py - Module verification script
+- ✓ nuanic_monitor.py - Monolithic real-time monitor
+- ✓ log_nuanic_dual_stream.py - Compatibility wrapper
 
 ## Current Project Structure
 
@@ -49,9 +49,10 @@ src/awe_polar/nuanic_ring/
 ### Command-Line Tools (`scripts/ble/`)
 ```
 scripts/ble/
-├── log_nuanic_session.py     - Data logging (ready to use)
+├── nuanic_monitor.py         - Data logging + live monitoring (ready to use)
+├── log_nuanic_dual_stream.py - Compatibility wrapper
 ├── analyze_nuanic_data.py    - Data analysis (ready to use)
-└── test_nuanic_modules.py    - Module tests (ready to use)
+└── archive/                  - Legacy BLE scripts
 ```
 
 ### Comprehensive Test Suite (`tests/`)
@@ -142,10 +143,10 @@ data/
 
 ### 1. Data Logging (60 seconds)
 ```bash
-python scripts/ble/log_nuanic_session.py --duration 60
+python scripts/ble/nuanic_monitor.py --duration 60
 ```
 
-**Output:** `data/nuanic_logs/nuanic_2024-01-15_14-23-45.csv`
+**Output:** `data/nuanic_logs/nuanic_imu_*.csv` + `data/nuanic_logs/nuanic_stress_*.csv`
 
 ### 2. Data Analysis
 ```bash
@@ -154,12 +155,12 @@ python scripts/ble/analyze_nuanic_data.py data/nuanic_logs/nuanic_*.csv
 
 **Output:** Console report with statistics
 
-### 3. Module Verification
+### 3. Compatibility Entry Point
 ```bash
-python scripts/ble/test_nuanic_modules.py
+python scripts/ble/log_nuanic_dual_stream.py --duration 60
 ```
 
-**Output:** Module health check with all tests passing
+**Output:** Same monolithic monitor flow through legacy command name
 
 ### 4. In Your Code
 ```python
@@ -214,7 +215,7 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 ## Next Steps
 
 ### Immediate (Ready Now)
-1. ✓ Test logging with real ring: `python scripts/ble/log_nuanic_session.py --duration 60`
+1. ✓ Test logging with real ring: `python scripts/ble/nuanic_monitor.py --duration 60`
 2. ✓ Analyze captured data: `python scripts/ble/analyze_nuanic_data.py <csv_file>`
 3. ✓ Verify EDA channels in the 77-byte payload
 
@@ -255,7 +256,7 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 | connect_my_nuanic.py | NuanicConnector.find_device() |
 | find_nuanic_mac.py | NuanicConnector auto-discovery |
 | listen_nuanic_notifications.py | NuanicMonitor.subscribe_to_stress() |
-| monitor_stress_realtime.py | scripts/ble/log_nuanic_session.py |
+| monitor_stress_realtime.py | scripts/ble/nuanic_monitor.py |
 | cleanup_delete.ps1 | (old cleanup script) |
 
 ### scripts/ble/ Directory (9 files removed)
@@ -263,7 +264,7 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 |------|-------------|
 | ble_ring_streamer.py | NuanicMonitor streaming |
 | discover_nuanic.py | NuanicConnector discovery |
-| nuanic_diagnostic.py | test_nuanic_modules.py + analyze_nuanic_data.py |
+| nuanic_diagnostic.py | scripts/ble/nuanic_monitor.py + analyze_nuanic_data.py |
 | nuanic_data_extractor.py | NuanicDataLogger |
 | nuanic_eda_parser.py | NuanicEDAAnalyzer |
 | nuanic_protocol_discovery.py | EDA_ANALYSIS_GUIDE.md documentation |
