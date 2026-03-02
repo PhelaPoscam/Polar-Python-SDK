@@ -122,4 +122,11 @@ async def test_imu():
     # Cleanup
     await client.disconnect()
 
-asyncio.run(test_imu())
+
+def main():
+    """Main entry point for direct execution"""
+    asyncio.run(test_imu())
+
+
+if __name__ == "__main__":
+    main()

@@ -99,4 +99,11 @@ async def test_imu_stationary():
             print(f"  ✗ SIGNIFICANT MOVEMENT (high variance: {overall_stddev:.0f})")
             print(f"  Range of {max(acc_x_values) - min(acc_x_values)} indicates strong motion")
 
-asyncio.run(test_imu_stationary())
+
+def main():
+    """Main entry point for direct execution"""
+    asyncio.run(test_imu_stationary())
+
+
+if __name__ == "__main__":
+    main()
