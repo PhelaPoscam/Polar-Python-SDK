@@ -22,10 +22,13 @@ streamlit run scripts/app/app_streamlit.py   # Run dashboard
 ### 3. Nuanic Ring - Stress & EDA Monitoring
 ```bash
 # Monolithic monitor (IMU + Stress + EDA) for 60 seconds
-python scripts/ble/nuanic_monitor.py --duration 60
+python -m scripts.ble.nuanic_monitor --docked --duration 60
+
+# If multiple rings are nearby, choose one explicitly
+python -m scripts.ble.nuanic_monitor --ring-addr AA:BB:CC:DD:EE:FF --duration 60 --no-clear
 
 # Analyze captured data
-python scripts/ble/analyze_nuanic_data.py data/nuanic_logs/nuanic_*.csv
+python -m scripts.ble.analyze_nuanic_data data/nuanic_logs/nuanic_stress_*.csv
 ```
 
 ## Features
@@ -54,16 +57,17 @@ AWE_Polar_Project/
 ├── src/awe_polar/
 │   ├── nuanic_ring/           ← Nuanic integration modules
 │   │   ├── connector.py        - BLE connection & discovery
-│   │   ├── monitor.py          - Stress packet parsing
+│   │   ├── monitor.py          - IMU + stress monitor, display, CSV logging
 │   │   ├── logger.py           - CSV data logging
-│   │   └── eda_analyzer.py    - EDA analysis engine
+│   │   ├── eda_analyzer.py     - EDA analysis engine
+│   │   └── data_analysis.py    - Stress/EDA CSV analysis utilities
 │   ├── app_streamlit.py       - Dashboard
 │   └── train_model.py         - ML training pipeline
 │
 ├── scripts/ble/               ← Nuanic tools (production ready)
-│   ├── nuanic_monitor.py
+│   ├── nuanic_monitor.py            - CLI entrypoint for monitor
 │   ├── log_nuanic_dual_stream.py   - Compatibility wrapper
-│   ├── analyze_nuanic_data.py
+│   ├── analyze_nuanic_data.py       - CLI wrapper for analysis
 │   └── archive/                    - Legacy BLE scripts
 │
 ├── scripts/train/             ← ML pipeline
@@ -201,14 +205,14 @@ pytest tests/test_nuanic_integration.py -v
 **Log Nuanic Ring Data:**
 ```bash
 # Record for 5 minutes
-python scripts/ble/nuanic_monitor.py --duration 300
+python -m scripts.ble.nuanic_monitor --docked --duration 300
 # Output: data/nuanic_logs/nuanic_imu_*.csv + nuanic_stress_*.csv
 ```
 
 **Analyze Logged Data:**
 ```bash
 # Generate statistics report
-python scripts/ble/analyze_nuanic_data.py data/nuanic_logs/nuanic_2026-02-27_14-23-45.csv
+python -m scripts.ble.analyze_nuanic_data data/nuanic_logs/nuanic_stress_2026-02-27_14-23-45.csv
 # Shows: stress range, peaks, EDA analysis
 ```
 
