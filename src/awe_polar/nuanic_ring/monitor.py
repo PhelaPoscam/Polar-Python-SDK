@@ -36,10 +36,13 @@ class NuanicMonitor:
 
         self.imu_file = None
         self.stress_file = None
+        self.raw_eda_file = None
 
         self.imu_buffer = deque(maxlen=10)
         self.stress_buffer = deque(maxlen=5)
+        self.raw_eda_buffer = deque(maxlen=10)
         self.current_imu_layout = "unknown"
+        self.raw_eda_count = 0
 
     def _parse_imu_packet(self, data):
         """Parse IMU packet with layout auto-detection."""
@@ -118,8 +121,14 @@ class NuanicMonitor:
                 "full_packet_hex",
             ])
 
+        self.raw_eda_file = self.log_dir / f"nuanic_raw_eda_{timestamp}.csv"
+        with open(self.raw_eda_file, "w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["timestamp", "elapsed_ms", "raw_data_hex"])
+
         print(f"[LOG] IMU file: {self.imu_file.name}")
-        print(f"[LOG] Stress file: {self.stress_file.name}\n")
+        print(f"[LOG] Stress file: {self.stress_file.name}")
+        print(f"[LOG] Raw EDA file: {self.raw_eda_file.name}\n")
 
     def _imu_callback(self, sender, data):
         if len(data) < 12:
@@ -166,6 +175,24 @@ class NuanicMonitor:
 
         if self.imu_count % self.imu_refresh_packets == 0:
             self._update_display()
+
+    def _raw_eda_callback(self, sender, data):
+        """Callback for raw EDA data stream."""
+        timestamp = datetime.now().isoformat()
+        elapsed_ms = int(self._elapsed_seconds() * 1000)
+        raw_hex = data.hex()
+
+        with open(self.raw_eda_file, "a", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow([timestamp, elapsed_ms, raw_hex])
+
+        self.raw_eda_count += 1
+        self.raw_eda_buffer.append(
+            {
+                "count": self.raw_eda_count,
+                "data": raw_hex,
+            }
+        )
 
     def notification_callback(self, sender, data):
         """Backward-compatible stress callback API."""
@@ -228,18 +255,20 @@ class NuanicMonitor:
         elapsed = self._elapsed_seconds()
         imu_hz = self.imu_count / elapsed
         stress_hz = self.stress_count / elapsed
+        raw_eda_hz = self.raw_eda_count / elapsed
 
         print("=" * 110)
         print("NUANIC MONOLITHIC MONITOR")
         print("=" * 110)
         print(
             f"Elapsed: {elapsed:.1f}s | IMU: {self.imu_count} pkts ({imu_hz:.1f} Hz) | "
-            f"Stress: {self.stress_count} pkts ({stress_hz:.1f} Hz)"
+            f"Stress: {self.stress_count} pkts ({stress_hz:.1f} Hz) | "
+            f"Raw EDA: {self.raw_eda_count} pkts ({raw_eda_hz:.1f} Hz)"
         )
         print(f"IMU Layout: {self.current_imu_layout}")
         print("=" * 110)
 
-        print("\n📊 STRESS + EDA")
+        print("\n[STRESS DATA] STRESS + EDA")
         print("-" * 110)
         if self.stress_buffer:
             print(f"{'Pkt':<6} {'Stress %':<10} {'Stress Bar':<24} {'EDA Mean (μS)':<15} {'EDA Range (μS)':<15}")
@@ -252,7 +281,7 @@ class NuanicMonitor:
                     f"{sample['eda_mean']:>9.2f}      {eda_range:>9.2f}"
                 )
 
-        print("\n🏃 IMU")
+        print("\n[IMU DATA] IMU")
         print("-" * 110)
         if self.imu_buffer:
             acc_z_header = "ACC_Z" if self.current_imu_layout == "xyz_q14" else "ACC_Z(n/a)"
@@ -306,8 +335,9 @@ class NuanicMonitor:
 
         imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
         stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
-        if not (imu_ok and stress_ok):
-            print("[FAIL] Could not subscribe to both streams")
+        raw_eda_ok = await self.connector.subscribe_to_raw_eda(self._raw_eda_callback)
+        if not (imu_ok and stress_ok and raw_eda_ok):
+            print("[FAIL] Could not subscribe to all streams")
             await self.connector.disconnect()
             return False
 
@@ -328,6 +358,7 @@ class NuanicMonitor:
         finally:
             await self.connector.unsubscribe_from_imu()
             await self.connector.unsubscribe_from_stress()
+            await self.connector.unsubscribe_from_raw_eda()
             await self.connector.disconnect()
 
         elapsed = self._elapsed_seconds()
@@ -336,8 +367,10 @@ class NuanicMonitor:
         print("=" * 80)
         print(f"IMU packets: {self.imu_count} ({self.imu_count / elapsed:.2f} Hz avg)")
         print(f"Stress packets: {self.stress_count} ({self.stress_count / elapsed:.2f} Hz avg)")
-        print(f"Combined: {(self.imu_count + self.stress_count) / elapsed:.2f} Hz avg")
+        print(f"Raw EDA packets: {self.raw_eda_count} ({self.raw_eda_count / elapsed:.2f} Hz avg)")
+        print(f"Combined: {(self.imu_count + self.stress_count + self.raw_eda_count) / elapsed:.2f} Hz avg")
         print(f"IMU CSV: {self.imu_file}")
         print(f"Stress CSV: {self.stress_file}")
+        print(f"Raw EDA CSV: {self.raw_eda_file}")
         print("=" * 80)
         return True

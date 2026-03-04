@@ -56,10 +56,10 @@ async def main():
             rings = await connector.list_available_rings()
             
             if not rings:
-                print("\n❌ No Nuanic rings found")
+                print("\n[FAIL] No Nuanic rings found")
                 return
             
-            print(f"\n✅ Found {len(rings)} Nuanic ring(s):\n")
+            print(f"\n[OK] Found {len(rings)} Nuanic ring(s):\n")
             for i, ring in enumerate(rings, 1):
                 print(f"  {i}. {ring['name']:20} | Address: {ring['address']}")
             print()
@@ -82,18 +82,18 @@ async def main():
             if len(rings) == 1:
                 ring_address = rings[0]["address"]
                 print(
-                    f"🔌 Docked mode: Using {rings[0]['name']} "
+                    f"[DOCKED] Using {rings[0]['name']} "
                     f"({rings[0]['address']})\n"
                 )
             elif len(rings) == 0:
                 print(
-                    "\n❌ No Nuanic rings found "
+                    "\n[FAIL] No Nuanic rings found "
                     "(docked mode expected to find exactly 1)"
                 )
                 return
             else:
                 print(
-                    f"\n⚠️  Docked mode found {len(rings)} rings, "
+                    f"\n[WARN] Docked mode found {len(rings)} rings, "
                     "but expected 1:"
                 )
                 for i, ring in enumerate(rings, 1):

@@ -12,6 +12,7 @@ class NuanicConnector:
     BATTERY_CHARACTERISTIC = "00002a19-0000-1000-8000-00805f9b34fb"
     STRESS_CHARACTERISTIC = "468f2717-6a7d-46f9-9eb7-f92aab208bae"  # Stress + EDA (1.12 Hz)
     IMU_CHARACTERISTIC = "d306262b-c8c9-4c4b-9050-3a41dea706e5"      # Accelerometer (15.87 Hz)
+    RAW_EDA_CHARACTERISTIC = "3c180fcc-bfec-4b7c-8e52-1a37f123e449"  # Raw EDA data candidate
     
     def __init__(self, timeout=15.0, max_scan_attempts=3, max_connect_attempts=3, target_address=None):
         self.timeout = timeout
@@ -22,16 +23,18 @@ class NuanicConnector:
         self.device = None
     
     async def find_device(self):
-        """Scan for Nuanic ring, retry up to max_scan_attempts times.
+        """Scan for Nuanic ring.
         If target_address is set, search for that specific device.
+        Retries automatically as part of discovery process.
         """
+        search_label = f"'{self.target_address}'" if self.target_address else "(any Nuanic)"
+        
         for attempt in range(1, self.max_scan_attempts + 1):
-            print(f"[SCAN] Attempt {attempt}/{self.max_scan_attempts}...")
-            
             try:
-                # Quick scan - just find the device, don't wait
+                # Quick scan - find all devices
                 devices = await BleakScanner.discover(timeout=2.0)
                 
+                # Filter Nuanic devices
                 for device in devices:
                     if not device.name or "Nuanic" not in device.name:
                         continue
@@ -40,35 +43,23 @@ class NuanicConnector:
                     if self.target_address:
                         if device.address.lower() == self.target_address.lower():
                             self.device = device
-                            print(f"[OK] Found target: {device.name} at {device.address}")
                             return device
                     else:
                         # No target specified, accept first available
                         self.device = device
-                        print(f"[OK] Found: {device.name} at {device.address}")
                         return device
                 
+                # Not found in this scan
                 if attempt < self.max_scan_attempts:
-                    if self.target_address:
-                        print(f"    Target {self.target_address} not found, retrying...")
-                    else:
-                        print("    Not found, retrying...")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.5)  # Short pause between scans
             
             except asyncio.CancelledError:
                 # Re-raise so Ctrl+C still works
                 raise
             except Exception as e:
                 if attempt < self.max_scan_attempts:
-                    print(f"    Scan error: {e}, retrying...")
-                    await asyncio.sleep(1)
-                else:
-                    print(f"    Scan error: {e}")
+                    await asyncio.sleep(0.5)
         
-        if self.target_address:
-            print(f"[FAIL] Nuanic ring {self.target_address} not found")
-        else:
-            print("[FAIL] Nuanic ring not found")
         return None
     
     async def list_available_rings(self):
@@ -111,43 +102,67 @@ class NuanicConnector:
             self.client = None
 
     async def connect(self):
-        """Connect to the ring and perform pairing with retry recovery."""
+        """Connect to Nuanic ring with automatic retry and recovery.
+        
+        Connection Flow:
+        1. Scan for device (with retries)
+        2. Establish BLE connection
+        3. Perform pairing (if needed)
+        4. Return success
+        """
         await self._cleanup_client()
-
+        
+        search_label = f"'{self.target_address}'" if self.target_address else "(any available)"
+        print(f"[INIT] Connecting to Nuanic ring {search_label}...")
+        
         for attempt in range(1, self.max_connect_attempts + 1):
-            # Always refresh discovery on each connection attempt (privacy address may rotate)
-            self.device = None
+            # Step 1: Find device
+            print(f"\n[SCAN {attempt}/{self.max_connect_attempts}] Searching for device...", end=" ", flush=True)
             if not await self.find_device():
+                print("[NOT FOUND]")
+                if attempt < self.max_connect_attempts:
+                    print(f"[WAIT] Pausing before retry...")
+                    await asyncio.sleep(1)
                 continue
-
-            print(f"[CONNECT] Attempt {attempt}/{self.max_connect_attempts} to {self.device.name}...")
-
+            
+            print(f"[OK] Found: {self.device.name}")
+            
+            # Step 2: Connect
+            print(f"[CONN {attempt}/{self.max_connect_attempts}] Connecting to BLE device...", end=" ", flush=True)
             try:
                 self.client = BleakClient(self.device, timeout=self.timeout)
                 await self.client.connect()
-                print("[OK] Connected!")
-
-                # Pair to establish encryption (required for authenticated characteristics)
-                try:
-                    await self.client.pair()
-                    print("[OK] Paired!")
-                except Exception as e:
-                    print(f"[INFO] Pairing: {e}")
-
-                return True
-
+                print("[OK] Connected")
             except asyncio.TimeoutError:
-                print(f"[WARN] Connection timeout ({self.timeout}s)")
+                print(f"[TIMEOUT] ({self.timeout}s)")
+                await self._cleanup_client()
+                if attempt < self.max_connect_attempts:
+                    print(f"[WAIT] Resetting BLE and retrying...")
+                    await asyncio.sleep(1.5)
+                continue
             except Exception as e:
-                print(f"[WARN] Connection error: {e}")
-
-            await self._cleanup_client()
-
-            if attempt < self.max_connect_attempts:
-                print("[RETRY] Resetting BLE session and trying again...")
-                await asyncio.sleep(1.5)
-
-        print("[FAIL] Could not connect after retries")
+                print(f"[ERROR] {e}")
+                await self._cleanup_client()
+                if attempt < self.max_connect_attempts:
+                    print(f"[WAIT] Resetting BLE and retrying...")
+                    await asyncio.sleep(1.5)
+                continue
+            
+            # Step 3: Pair (optional)
+            print(f"[PAIR {attempt}/{self.max_connect_attempts}] Establishing encryption...", end=" ", flush=True)
+            try:
+                await self.client.pair()
+                print("[OK] Paired")
+            except Exception as e:
+                # Pairing may fail if already paired - this is OK
+                print(f"[INFO] Pairing not available")
+            
+            # Success!
+            print(f"\n[OK] Connection established!\n")
+            return True
+        
+        # All attempts failed
+        print(f"\n[FAIL] Could not connect after {self.max_connect_attempts} attempts\n")
         return False
     
     async def disconnect(self):
@@ -260,3 +275,42 @@ class NuanicConnector:
                 await self.client.stop_notify(self.IMU_CHARACTERISTIC)
             except:
                 pass
+
+    async def subscribe_to_raw_eda(self, callback):
+        """Subscribe to raw EDA data notifications"""
+        if not self.client:
+            print("[FAIL] Subscription error: No client")
+            return False
+        
+        if not self.client.is_connected:
+            print("[FAIL] Subscription error: Not connected")
+            return False
+        
+        try:
+            await self.client.start_notify(self.RAW_EDA_CHARACTERISTIC, callback)
+            print("[OK] Subscribed to raw EDA data")
+            return True
+        except Exception as e:
+            print(f"[FAIL] Subscription error: {e}")
+            return False
+
+    async def unsubscribe_from_raw_eda(self):
+        """Unsubscribe from raw EDA notifications"""
+        if self.client:
+            try:
+                await self.client.stop_notify(self.RAW_EDA_CHARACTERISTIC)
+            except:
+                pass
+
+    async def discover_services(self):
+        """Discover and print all services and characteristics."""
+        if not self.client or not self.client.is_connected:
+            print("[FAIL] Not connected to any device.")
+            return
+
+        print(f"\n[INFO] Discovering services for {self.device.name}...")
+        for service in self.client.services:
+            print(f"  [SERVICE] {service.uuid}: {service.description}")
+            for char in service.characteristics:
+                print(f"    [CHAR] {char.uuid}: {char.description}, Properties: {char.properties}")
+        print("[INFO] Service discovery complete.\n")
