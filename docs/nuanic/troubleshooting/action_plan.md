@@ -104,4 +104,4 @@ Once GATT is discovered:
 **Do not proceed with implementation** until connection issue is resolved.
 All Phase 1 findings are invalid because they're based on wrong device.
 
-See: [STATUS_HONEST.md](STATUS_HONEST.md)
+See: [README.md](README.md)

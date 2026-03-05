@@ -42,10 +42,10 @@ Legacy discovery/test scripts were moved to:
 - Byte 14: signal quality indicator
 
 ## Related Docs
-- `NUANIC_QUICK_START.md` - quick operational steps
-- `NUANIC_ANALYSIS_REPORT.md` - technical findings and validation history
-- `MODULE_GUIDE.md` - module-level API and usage details
-- `PROJECT_ORGANIZATION.md` - structure and file ownership
+- `01_quick_start.md` - quick operational steps
+- `05_analysis_report.md` - technical findings and validation history
+- `02_module_guide.md` - module-level API and usage details
+- `../project_organization.md` - structure and file ownership
 
 ## Notes
 - BLE address can rotate (private addressing), so discovery is name-based (`Nuanic`) with retry logic.

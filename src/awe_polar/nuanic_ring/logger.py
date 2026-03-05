@@ -13,7 +13,7 @@ class NuanicDataLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.csv_file = None
         self.csv_writer = None
-        self.connector = NuanicConnector()
+        self.connector = NuanicConnector()  # Ring selection happens at connection time
         self.row_count = 0
     
     def _create_log_file(self):
@@ -60,6 +60,14 @@ class NuanicDataLogger:
         # Print progress every 10 readings
         if self.row_count % 10 == 0:
             print(f"[LOG] Logged {self.row_count} readings... Latest stress: {stress_percent:.1f}%")
+    
+    async def check_ring_mac_address(self, num_scans: int = 5):
+        """Check if ring(s) have dynamic or static MAC addresses.
+        
+        Useful for diagnosing connection issues.
+        """
+        result = await self.connector.check_mac_address_dynamic(num_scans=num_scans)
+        return result
     
     async def start_logging(self, duration_seconds=None):
         """Start logging Nuanic data"""

@@ -5,13 +5,20 @@ from src.awe_polar.nuanic_ring.eda_analyzer import NuanicEDAAnalyzer
 
 
 async def example_data_logging(duration=60):
-    """Log Nuanic ring data for specified duration"""
+    """Log Nuanic ring data for specified duration.
+    
+    The ring selection menu will appear when connecting.
+    """
     logger = NuanicDataLogger()
+    # Ring selection happens automatically during start_logging()
     await logger.start_logging(duration_seconds=duration)
 
 
 async def example_real_time_monitoring():
-    """Monitor Nuanic ring stress in real-time"""
+    """Monitor Nuanic ring stress in real-time.
+    
+    The ring selection menu will appear when connecting.
+    """
     monitor = NuanicMonitor()
     
     if not await monitor.start_monitoring():
@@ -27,6 +34,16 @@ async def example_real_time_monitoring():
         print("\nStopped")
     finally:
         await monitor.stop_monitoring()
+
+
+async def example_full_monitoring():
+    """Full multi-stream monitoring (IMU + Stress + EDA).
+    
+    The ring selection menu will appear when connecting.
+    """
+    monitor = NuanicMonitor()
+    # Ring selection happens automatically during run()
+    await monitor.run()
 
 
 def example_eda_analysis():

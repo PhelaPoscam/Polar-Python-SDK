@@ -21,15 +21,20 @@ streamlit run scripts/app/app_streamlit.py   # Run dashboard
 
 ### 3. Nuanic Ring - Stress & EDA Monitoring
 ```bash
-# Monolithic monitor (IMU + Stress + EDA) for 60 seconds
-python -m scripts.ble.nuanic_monitor --docked --duration 60
+# Real-time monitoring (live display + CSV logs)
+python scripts/nuanic_monitor_cli.py --duration 60
 
-# If multiple rings are nearby, choose one explicitly
-python -m scripts.ble.nuanic_monitor --ring-addr AA:BB:CC:DD:EE:FF --duration 60 --no-clear
+# Data logging (lightweight, no display)
+python scripts/nuanic_logger_cli.py --duration 300
 
 # Analyze captured data
-python -m scripts.ble.analyze_nuanic_data data/nuanic_logs/nuanic_stress_*.csv
+python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_*.csv
+
+# List available rings
+python scripts/nuanic_monitor_cli.py --list-rings
 ```
+
+See [Nuanic CLI Guide](docs/nuanic/CLI.md) for all options and examples.
 
 ## Features
 
@@ -80,9 +85,23 @@ AWE_Polar_Project/
 │   ├── test_nuanic_integration.py     ← 33 tests, 100% passing
 │   └── [other tests]
 │
-├── docs/nuanic/               ← Detailed reference guides
-│   ├── MODULE_GUIDE.md        - Complete API reference
-│   └── EDA_ANALYSIS_GUIDE.md  - EDA data interpretation
+├── docs/
+│   ├── README.md
+│   ├── contributing.md
+│   ├── nuanic/
+│   │   ├── README.md
+│   │   ├── 01_quick_start.md
+│   │   ├── 02_module_guide.md
+│   │   ├── 03_eda_analysis_guide.md
+│   │   ├── 04_hex_decoding_guide.md
+│   │   ├── 05_analysis_report.md
+│   │   └── troubleshooting/
+│   │       ├── README.md
+│   │       ├── action_plan.md
+│   │       ├── cleanup_summary.md
+│   │       ├── eda_quick_fix.md
+│   │       └── eda_analysis.md
+│   └── project_organization.md
 │
 └── data/
     ├── raw/                   - Training datasets
@@ -92,12 +111,12 @@ AWE_Polar_Project/
 ## Documentation
 
 **Nuanic Ring Integration:**
-- [Module API Guide](docs/nuanic/MODULE_GUIDE.md) - Complete API reference with examples
-- [EDA Analysis Guide](docs/nuanic/EDA_ANALYSIS_GUIDE.md) - Data interpretation and analysis methods
-- [Project Organization](docs/nuanic/PROJECT_ORGANIZATION.md) - Architecture and design
+- [Module API Guide](docs/nuanic/02_module_guide.md) - Complete API reference with examples
+- [EDA Analysis Guide](docs/nuanic/03_eda_analysis_guide.md) - Data interpretation and analysis methods
+- [Project Organization](docs/project_organization.md) - Architecture and design
 
 **Development:**
-- [Contributing Guidelines](CONTRIBUTING.md) - Development standards
+- [Contributing Guidelines](docs/contributing.md) - Development standards
 
 ## Configuration
 
@@ -191,7 +210,7 @@ pytest tests/test_nuanic_integration.py -v
 - ✅ Analyzed stress algorithm behavior (DNE baseline calibration, +10.7% initial drift)
 - ✅ Validated sensor independence (stress ↔ EDA correlation = -0.12)
 - ✅ Tested with 5-minute extended capture (4,799 IMU + 325 physiology packets)
-- 📄 **See [NUANIC_ANALYSIS_REPORT.md](NUANIC_ANALYSIS_REPORT.md) for full technical findings**
+- 📄 **See [NUANIC_ANALYSIS_REPORT.md](docs/nuanic/05_analysis_report.md) for full technical findings**
 
 **Code & Documentation:**
 - ✅ 6 core analysis scripts for sensor validation

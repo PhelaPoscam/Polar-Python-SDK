@@ -18,12 +18,11 @@ class NuanicMonitor:
         log_dir: str = "data/nuanic_logs",
         imu_refresh_packets: int = 5,
         clear_console: bool = True,
-        ring_address: str = None,
     ):
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        self.connector = NuanicConnector(target_address=ring_address)
+        self.connector = NuanicConnector()  # Ring selection happens at connection time
         self.imu_refresh_packets = max(1, imu_refresh_packets)
         self.clear_console = clear_console
 
@@ -34,9 +33,7 @@ class NuanicMonitor:
         self.current_stress = None
         self.current_eda_raw = None
 
-        self.imu_file = None
-        self.stress_file = None
-        self.raw_eda_file = None
+        self.log_file = None
 
         self.imu_buffer = deque(maxlen=10)
         self.stress_buffer = deque(maxlen=5)
@@ -87,6 +84,14 @@ class NuanicMonitor:
             "eda_raw": eda_raw.hex(),
             "full_data": data.hex(),
         }
+    
+    async def check_ring_mac_address(self, num_scans: int = 5):
+        """Check if ring(s) have dynamic or static MAC addresses.
+        
+        Useful for diagnosing connection issues.
+        """
+        result = await self.connector.check_mac_address_dynamic(num_scans=num_scans)
+        return result
 
     def _elapsed_seconds(self) -> float:
         if not self.start_time:
@@ -96,39 +101,24 @@ class NuanicMonitor:
     def _create_log_files(self):
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        self.imu_file = self.log_dir / f"nuanic_imu_{timestamp}.csv"
-        with open(self.imu_file, "w", newline="", encoding="utf-8") as file:
+        self.log_file = self.log_dir / f"nuanic_{timestamp}.csv"
+        with open(self.log_file, "w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow([
                 "timestamp",
                 "elapsed_ms",
+                "data_type",
                 "acc_x",
                 "acc_y",
                 "acc_z",
-                "signal_quality",
-                "full_packet_hex",
-            ])
-
-        self.stress_file = self.log_dir / f"nuanic_stress_{timestamp}.csv"
-        with open(self.stress_file, "w", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                "timestamp",
-                "elapsed_ms",
+                "imu_quality",
                 "stress_raw",
                 "stress_percent",
                 "eda_hex",
                 "full_packet_hex",
             ])
 
-        self.raw_eda_file = self.log_dir / f"nuanic_raw_eda_{timestamp}.csv"
-        with open(self.raw_eda_file, "w", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-            writer.writerow(["timestamp", "elapsed_ms", "raw_data_hex"])
-
-        print(f"[LOG] IMU file: {self.imu_file.name}")
-        print(f"[LOG] Stress file: {self.stress_file.name}")
-        print(f"[LOG] Raw EDA file: {self.raw_eda_file.name}\n")
+        print(f"[LOG] Created: {self.log_file.name}\n")
 
     def _imu_callback(self, sender, data):
         if len(data) < 12:
@@ -148,15 +138,19 @@ class NuanicMonitor:
         layout = parsed["layout"]
         full_hex = data.hex()
 
-        with open(self.imu_file, "a", newline="", encoding="utf-8") as file:
+        with open(self.log_file, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow([
                 timestamp,
                 elapsed_ms,
+                "IMU",
                 acc_x,
                 acc_y,
                 acc_z if acc_z is not None else "",
                 signal_quality,
+                "",
+                "",
+                "",
                 full_hex,
             ])
 
@@ -182,9 +176,21 @@ class NuanicMonitor:
         elapsed_ms = int(self._elapsed_seconds() * 1000)
         raw_hex = data.hex()
 
-        with open(self.raw_eda_file, "a", newline="", encoding="utf-8") as file:
+        with open(self.log_file, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            writer.writerow([timestamp, elapsed_ms, raw_hex])
+            writer.writerow([
+                timestamp,
+                elapsed_ms,
+                "RAW_EDA",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                raw_hex,
+                raw_hex,
+            ])
 
         self.raw_eda_count += 1
         self.raw_eda_buffer.append(
@@ -213,11 +219,16 @@ class NuanicMonitor:
         eda_hex = data[15:].hex() if len(data) > 15 else ""
         full_hex = data.hex()
 
-        with open(self.stress_file, "a", newline="", encoding="utf-8") as file:
+        with open(self.log_file, "a", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
             writer.writerow([
                 timestamp,
                 elapsed_ms,
+                "STRESS",
+                "",
+                "",
+                "",
+                "",
                 stress_raw,
                 f"{stress_percent:.1f}",
                 eda_hex,
@@ -369,8 +380,6 @@ class NuanicMonitor:
         print(f"Stress packets: {self.stress_count} ({self.stress_count / elapsed:.2f} Hz avg)")
         print(f"Raw EDA packets: {self.raw_eda_count} ({self.raw_eda_count / elapsed:.2f} Hz avg)")
         print(f"Combined: {(self.imu_count + self.stress_count + self.raw_eda_count) / elapsed:.2f} Hz avg")
-        print(f"IMU CSV: {self.imu_file}")
-        print(f"Stress CSV: {self.stress_file}")
-        print(f"Raw EDA CSV: {self.raw_eda_file}")
+        print(f"Log CSV: {self.log_file}")
         print("=" * 80)
         return True

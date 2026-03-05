@@ -62,9 +62,10 @@ class NuanicConnector:
         
         return None
     
-    async def list_available_rings(self):
+    async def list_available_rings(self, include_device: bool = False):
         """Scan and return list of all available Nuanic rings.
-        Returns: List of dicts with 'address', 'name' keys
+        Returns: List of dicts with 'address', 'name' keys.
+        If include_device=True, each dict also includes 'device' with the Bleak device object.
         """
         print("[SCAN] Discovering Nuanic rings...")
         
@@ -74,10 +75,13 @@ class NuanicConnector:
             nuanic_devices = []
             for device in devices:
                 if device.name and "Nuanic" in device.name:
-                    nuanic_devices.append({
+                    entry = {
                         "address": device.address,
                         "name": device.name,
-                    })
+                    }
+                    if include_device:
+                        entry["device"] = device
+                    nuanic_devices.append(entry)
             
             return nuanic_devices
         
@@ -87,6 +91,160 @@ class NuanicConnector:
         except Exception as e:
             print(f"[WARN] Scan error: {e}")
             return []
+    
+    async def select_ring_interactive(self):
+        """Interactive ring selection menu.
+        
+        NOTE: This is called automatically by connect() if no target_address is set.
+        No need to call this manually unless you want to select before connecting.
+        
+        Scans for available rings and lets user choose which one to connect to.
+        Updates self.target_address with the selected ring's MAC.
+        
+        Returns:
+            str: Selected MAC address, or None if cancelled
+        """
+        print("\n" + "="*60)
+        print("RING SELECTION")
+        print("="*60)
+        
+        rings = await self.list_available_rings(include_device=True)
+        
+        if not rings:
+            print("[!] No Nuanic rings found. Make sure rings are turned on.")
+            return None
+        
+        print(f"\nFound {len(rings)} ring(s):\n")
+        
+        for idx, ring in enumerate(rings, 1):
+            print(f"  [{idx}] {ring['name']:15} | MAC: {ring['address']}")
+        
+        if len(rings) == 1:
+            print(f"\nAuto-selecting: {rings[0]['name']} ({rings[0]['address']})")
+            self.target_address = rings[0]['address']
+            self.device = rings[0].get("device")
+            print("="*60 + "\n")
+            return rings[0]['address']
+        
+        # Multiple rings - let user choose
+        while True:
+            try:
+                choice = input(f"\nSelect ring (1-{len(rings)}) or 'q' to cancel: ").strip()
+                
+                if choice.lower() == 'q':
+                    print("Cancelled.\n")
+                    return None
+                
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(rings):
+                    selected = rings[choice_idx]
+                    self.target_address = selected['address']
+                    self.device = selected.get("device")
+                    print(f"\nSelected: {selected['name']} ({selected['address']})")
+                    print("="*60 + "\n")
+                    return selected['address']
+                else:
+                    print(f"Invalid choice. Enter 1-{len(rings)}")
+            except ValueError:
+                print(f"Invalid input. Enter 1-{len(rings)} or 'q'")
+    
+    async def check_mac_address_dynamic(self, num_scans: int = 5, delay_between_scans: float = 1.0) -> dict:
+        """Check if the ring has a dynamic or static MAC address.
+        
+        Performs multiple scans and compares MAC addresses to determine if the device
+        uses a dynamic (changing) or static (constant) MAC address.
+        
+        Args:
+            num_scans: Number of scans to perform (default: 5)
+            delay_between_scans: Delay in seconds between scans (default: 1.0)
+        
+        Returns:
+            dict with keys:
+                - 'is_dynamic': bool, True if MAC address is dynamic, False if static
+                - 'addresses': list of discovered MAC addresses
+                - 'unique_addresses': set of unique MAC addresses
+                - 'scans_performed': number of scans performed
+                - 'num_unique': number of unique addresses found
+                - 'confidence': str, 'high' if clear pattern, 'low' if inconclusive
+        """
+        print(f"\n[CHECK] Scanning for MAC address changes ({num_scans} scans, {delay_between_scans}s delay)...\n")
+        
+        discovered_addresses = []
+        
+        try:
+            for scan_num in range(1, num_scans + 1):
+                print(f"[SCAN {scan_num}/{num_scans}]", end=" ", flush=True)
+                
+                try:
+                    devices = await BleakScanner.discover(timeout=3.0)
+                    
+                    # Find Nuanic devices
+                    nuanic_found = False
+                    for device in devices:
+                        if device.name and "Nuanic" in device.name:
+                            # If target address specified, only record that one
+                            if self.target_address:
+                                if device.address.lower() == self.target_address.lower():
+                                    discovered_addresses.append(device.address)
+                                    print(f"Found: {device.address} ({device.name})")
+                                    nuanic_found = True
+                                    break
+                            else:
+                                # Record first available Nuanic device
+                                discovered_addresses.append(device.address)
+                                print(f"Found: {device.address} ({device.name})")
+                                nuanic_found = True
+                                break
+                    
+                    if not nuanic_found:
+                        print("Not found in this scan")
+                
+                except Exception as e:
+                    print(f"Scan error: {e}")
+                
+                # Wait before next scan
+                if scan_num < num_scans:
+                    await asyncio.sleep(delay_between_scans)
+            
+            # Analyze results
+            unique_addresses = list(set(discovered_addresses))
+            is_dynamic = len(unique_addresses) > 1
+            
+            # Confidence assessment
+            if not discovered_addresses:
+                confidence = "low"  # No device found
+            elif len(unique_addresses) == 1:
+                confidence = "high"  # All scans found same address
+            else:
+                confidence = "high" if is_dynamic else "high"  # Clear pattern either way
+            
+            print(f"\n[RESULT]")
+            print(f"  Unique addresses found: {len(unique_addresses)}")
+            print(f"  Addresses: {unique_addresses}")
+            print(f"  MAC is {'DYNAMIC' if is_dynamic else 'STATIC'}")
+            print(f"  Confidence: {confidence}\n")
+            
+            return {
+                'is_dynamic': is_dynamic,
+                'addresses': discovered_addresses,
+                'unique_addresses': unique_addresses,
+                'scans_performed': num_scans,
+                'num_unique': len(unique_addresses),
+                'confidence': confidence,
+            }
+        
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"\n[ERROR] Check failed: {e}")
+            return {
+                'is_dynamic': None,
+                'addresses': discovered_addresses,
+                'unique_addresses': list(set(discovered_addresses)),
+                'scans_performed': len(discovered_addresses),
+                'num_unique': len(set(discovered_addresses)),
+                'confidence': 'low',
+            }
     
     async def _cleanup_client(self):
         """Best-effort cleanup of existing BLE client state."""
@@ -104,22 +262,56 @@ class NuanicConnector:
     async def connect(self):
         """Connect to Nuanic ring with automatic retry and recovery.
         
+        If no target_address is set, shows interactive menu to select ring.
+        
         Connection Flow:
-        1. Scan for device (with retries)
-        2. Establish BLE connection
-        3. Perform pairing (if needed)
-        4. Return success
+        1. If needed, let user select which ring to connect to
+        2. Scan for device (with retries)
+        3. Establish BLE connection
+        4. Perform pairing (if needed)
+        5. Return success
         """
         await self._cleanup_client()
         
+        # If no target address specified, prompt user to select
+        if not self.target_address:
+            selected = await self.select_ring_interactive()
+            if not selected:
+                print("[FAIL] No ring selected\n")
+                return False
+        
         search_label = f"'{self.target_address}'" if self.target_address else "(any available)"
         print(f"[INIT] Connecting to Nuanic ring {search_label}...")
+
+        # If a concrete device object was selected from the latest scan, try it first.
+        # This avoids a second scan/match cycle that can fail when BLE private MAC rotates.
+        if self.device and (not self.target_address or self.device.address.lower() == self.target_address.lower()):
+            print("[CONN] Trying selected device directly...", end=" ", flush=True)
+            try:
+                self.client = BleakClient(self.device, timeout=self.timeout)
+                await self.client.connect()
+                print("[OK] Connected")
+
+                print("[PAIR] Establishing encryption...", end=" ", flush=True)
+                try:
+                    await self.client.pair()
+                    print("[OK] Paired")
+                except Exception:
+                    print("[INFO] Pairing not available")
+
+                print("\n[OK] Connection established!\n")
+                return True
+            except Exception as e:
+                print(f"[RETRY] {e}")
+                await self._cleanup_client()
         
         for attempt in range(1, self.max_connect_attempts + 1):
             # Step 1: Find device
             print(f"\n[SCAN {attempt}/{self.max_connect_attempts}] Searching for device...", end=" ", flush=True)
             if not await self.find_device():
                 print("[NOT FOUND]")
+                if self.target_address and attempt == 1:
+                    print("[HINT] Target BLE address not seen. Ring may be using rotating/private MAC.")
                 if attempt < self.max_connect_attempts:
                     print(f"[WAIT] Pausing before retry...")
                     await asyncio.sleep(1)
