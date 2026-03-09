@@ -36,12 +36,16 @@ else:
 warnings.filterwarnings("ignore")
 stress_trend = ""
 
+
 def check_password():
     """Returns `True` if the user had a correct password."""
 
     def password_entered():
         """Checks whether a password entered by the user is correct."""
-        if hashlib.sha256(st.session_state["password"].encode()).hexdigest() == st.secrets["PASSWORD"]:
+        if (
+            hashlib.sha256(st.session_state["password"].encode()).hexdigest()
+            == st.secrets["PASSWORD"]
+        ):
             st.session_state["password_correct"] = True
             del st.session_state["password"]  # don't store password
         else:
@@ -64,6 +68,7 @@ def check_password():
     else:
         # Password correct.
         return True
+
 
 def main_app():
     """Defines the main user interface of the Streamlit application."""
@@ -116,22 +121,40 @@ def main_app():
         col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             ph1 = st.empty()
-            ph1.markdown("<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True)
-            ph1.markdown("<span style='font-size:40px;'>HR: -- bpm</span>", unsafe_allow_html=True)
+            ph1.markdown(
+                "<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True
+            )
+            ph1.markdown(
+                "<span style='font-size:40px;'>HR: -- bpm</span>",
+                unsafe_allow_html=True,
+            )
         with col2:
             ph2 = st.empty()
-            ph2.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
-            ph2.markdown("<span style='font-size:40px;'>HRV: -- ms</span>", unsafe_allow_html=True)
+            ph2.markdown(
+                "<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True
+            )
+            ph2.markdown(
+                "<span style='font-size:40px;'>HRV: -- ms</span>",
+                unsafe_allow_html=True,
+            )
         with col3:
             ph3 = st.empty()
         with col4:
             ph4 = st.empty()
-            ph4.markdown("<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True)
-            ph4.markdown("<span style='font-size:40px;'>Baseline</span>", unsafe_allow_html=True)
+            ph4.markdown(
+                "<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True
+            )
+            ph4.markdown(
+                "<span style='font-size:40px;'>Baseline</span>", unsafe_allow_html=True
+            )
         with col5:
             ph5 = st.empty()
-            ph5.markdown("<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True)
-            ph5.markdown("<span style='font-size:20px;'>--</span>", unsafe_allow_html=True)
+            ph5.markdown(
+                "<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True
+            )
+            ph5.markdown(
+                "<span style='font-size:20px;'>--</span>", unsafe_allow_html=True
+            )
 
         st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
@@ -163,12 +186,14 @@ def main_app():
 
                 prompt = st.chat_input("Ask about your performance and strategy...")
                 if prompt:
-                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.session_state.messages.append(
+                        {"role": "user", "content": prompt}
+                    )
                     with placeholder.container():
                         with st.chat_message("user"):
                             st.markdown(prompt)
 
-                    modified_prompt = f'''Please analyse trends in stress.
+                    modified_prompt = f"""Please analyse trends in stress.
                     Right now I am presenting in big meeting. Here is data
                     {st.session_state.stress_trend}.
                     Current HR: {st.session_state.hr_avg:.1f},
@@ -176,7 +201,7 @@ def main_app():
                     Stress Status: {st.session_state.stress_result}
                     from ML model with confidence
                     {st.session_state.confidence:.1%}).
-                    {prompt} Give response in 10 words'''
+                    {prompt} Give response in 10 words"""
                     api_messages = [
                         {"role": m["role"], "content": m["content"]}
                         for m in st.session_state.messages[:-1]
@@ -190,7 +215,9 @@ def main_app():
                                 stream=True,
                             )
                             response = st.write_stream(stream)
-                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": response}
+                    )
             else:
                 st.info(
                     "LLM features are disabled. Add your OpenAI API key "
@@ -198,7 +225,6 @@ def main_app():
                 )
 
     st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
-
 
     # Load your trained model and scaler
     try:
@@ -221,7 +247,6 @@ def main_app():
     confidence = 0.0
     hr_avg = 0.0
 
-
     def on_prediction(prediction):
         nonlocal stress_result, confidence, stress_auto
         confidence = prediction.confidence
@@ -239,7 +264,6 @@ def main_app():
         st.session_state.stress_result = stress_result
         st.session_state.confidence = confidence
 
-
     def calculate_rmssd(rr_intervals):
         """Calculate RMSSD from RR intervals"""
         global rmssd
@@ -247,20 +271,21 @@ def main_app():
             return None
 
         try:
-            rr_array = np.array([float(rr) for rr in rr_intervals if rr is not None and rr > 0])
+            rr_array = np.array(
+                [float(rr) for rr in rr_intervals if rr is not None and rr > 0]
+            )
 
             if len(rr_array) < 2:
                 return None
 
             diff_rr = np.diff(rr_array)
-            sq_diff_rr = diff_rr ** 2
+            sq_diff_rr = diff_rr**2
             mean_sq_diff = np.mean(sq_diff_rr)
             rmssd = np.sqrt(mean_sq_diff)
 
             return rmssd
         except Exception:
             return None
-
 
     def print_hr_data(data):
         """Callback to print HR/HRV and stress prediction"""
@@ -290,22 +315,47 @@ def main_app():
                     print(f"HR: {hr} bpm, HRV in RR:{hrv} ms")
 
                     new_data = pd.DataFrame([[hr, hrv]], columns=["hr", "hrv"])
-                    st.session_state.df = pd.concat([st.session_state.df, new_data], ignore_index=True)
+                    st.session_state.df = pd.concat(
+                        [st.session_state.df, new_data], ignore_index=True
+                    )
 
                     if len(st.session_state.df) > 0:
                         fig1 = go.Figure()
-                        fig1.add_trace(go.Scatter(x=st.session_state.df.index, y=st.session_state.df['hr'], mode='lines', name='HR'))
-                        fig1.update_layout(title='Heart Rate', xaxis_title='Time', yaxis_title='BPM')
+                        fig1.add_trace(
+                            go.Scatter(
+                                x=st.session_state.df.index,
+                                y=st.session_state.df["hr"],
+                                mode="lines",
+                                name="HR",
+                            )
+                        )
+                        fig1.update_layout(
+                            title="Heart Rate", xaxis_title="Time", yaxis_title="BPM"
+                        )
                         chart1.plotly_chart(fig1, use_container_width=True)
 
                         fig2 = go.Figure()
-                        fig2.add_trace(go.Scatter(x=st.session_state.df.index, y=st.session_state.df['hrv'], mode='lines', name='HRV'))
-                        fig2.update_layout(title='Heart Rate Variability (RMSSD)', xaxis_title='Time', yaxis_title='ms')
+                        fig2.add_trace(
+                            go.Scatter(
+                                x=st.session_state.df.index,
+                                y=st.session_state.df["hrv"],
+                                mode="lines",
+                                name="HRV",
+                            )
+                        )
+                        fig2.update_layout(
+                            title="Heart Rate Variability (RMSSD)",
+                            xaxis_title="Time",
+                            yaxis_title="ms",
+                        )
                         chart2.plotly_chart(fig2, use_container_width=True)
 
                 time_since_last = current_time - last_stress_prediction_time
                 if time_since_last >= prediction_interval:
-                    if len(st.session_state.hr_list) >= 5 and len(st.session_state.hrv_list) >= 3:
+                    if (
+                        len(st.session_state.hr_list) >= 5
+                        and len(st.session_state.hrv_list) >= 3
+                    ):
                         hr_avg = np.mean(st.session_state.hr_list[-10:])
                         recent_rr = (
                             st.session_state.hrv_list[-20:]
@@ -365,13 +415,18 @@ def main_app():
                         st.session_state.hrv_list = st.session_state.hrv_list[-50:]
 
                 with ph1.container():
-                    st.markdown("<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True
+                    )
                     st.markdown(
                         f"<span style='font-size:40px;'>HR:{hr} bpm</span>",
                         unsafe_allow_html=True,
                     )
                 with ph2.container():
-                    st.markdown("<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True)
+                    st.markdown(
+                        "<span style='font-size:60px;'>📈</span>",
+                        unsafe_allow_html=True,
+                    )
                     st.markdown(
                         f"<span style='font-size:40px;'>HRV:{hrv} ms</span>",
                         unsafe_allow_html=True,
@@ -384,17 +439,27 @@ def main_app():
                         gauge_value = 1 - confidence
                         gauge_color = "Green"
 
-                    fig = go.Figure(go.Indicator(
-                        mode = "gauge+number",
-                        value = gauge_value,
-                        domain = {'x': [0, 1], 'y': [0, 1]},
-                        title = {'text': "Stress Level"},
-                        gauge = {'axis': {'range': [None, 1]},
-                                 'bar': {'color': gauge_color},
-                                 'steps' : [
-                                     {'range': [0, 0.5], 'color': "lightgray"},
-                                     {'range': [0.5, 1], 'color': "gray"}],
-                                 'threshold' : {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 0.8}}))
+                    fig = go.Figure(
+                        go.Indicator(
+                            mode="gauge+number",
+                            value=gauge_value,
+                            domain={"x": [0, 1], "y": [0, 1]},
+                            title={"text": "Stress Level"},
+                            gauge={
+                                "axis": {"range": [None, 1]},
+                                "bar": {"color": gauge_color},
+                                "steps": [
+                                    {"range": [0, 0.5], "color": "lightgray"},
+                                    {"range": [0.5, 1], "color": "gray"},
+                                ],
+                                "threshold": {
+                                    "line": {"color": "red", "width": 4},
+                                    "thickness": 0.75,
+                                    "value": 0.8,
+                                },
+                            },
+                        )
+                    )
                     ph3.plotly_chart(fig, use_container_width=True)
 
                 with ph4.container():
@@ -457,13 +522,13 @@ def main_app():
                             )
 
                 if a == 10:  # this is should be 1
-                    hardcoded_prompt = f'''Analyze and suggest actionable
+                    hardcoded_prompt = f"""Analyze and suggest actionable
                     insight based on average heart rate {hr_avg},
                     average RMSSD {rmssd},
                     and stress predicted from ML model which is
                     {stress_auto} with confidence {confidence}.
                     Right now I am giving a presentation on big meeting.
-                    Please suggest actionable insight in 10 words'''
+                    Please suggest actionable insight in 10 words"""
 
                     stream = client.chat.completions.create(
                         model="gpt-4o-mini",
@@ -477,13 +542,14 @@ def main_app():
                     a = 0
 
                 with ph5.container():
-                    st.markdown("<span style='font-size:60px;'>LLM 📄</span>", unsafe_allow_html=True)
                     st.markdown(
-                        f"<span style='font-size:20px;'>"
-                        f"{column4_response}</span>",
+                        "<span style='font-size:60px;'>LLM 📄</span>",
                         unsafe_allow_html=True,
                     )
-
+                    st.markdown(
+                        f"<span style='font-size:20px;'>" f"{column4_response}</span>",
+                        unsafe_allow_html=True,
+                    )
 
     def mock_step() -> None:
         """Generate one mock heart rate sample per rerun."""
@@ -500,7 +566,6 @@ def main_app():
         st.session_state.mock_hrv = hrv
         print_hr_data((None, None, (hr, [hrv])))
 
-
     def maybe_autorefresh(interval_ms: int = 1000) -> None:
         refresher = getattr(st, "autorefresh", None)
         if callable(refresher):
@@ -509,7 +574,6 @@ def main_app():
             except TypeError:
                 refresher(interval_ms, key="mock_autorefresh")
 
-
     def is_mock_enabled() -> bool:
         param = st.query_params.get("mock")
         if isinstance(param, list) and param:
@@ -517,7 +581,6 @@ def main_app():
         if param is None:
             return False
         return str(param).strip().lower() in {"1", "true", "yes", "on"}
-
 
     async def main():
         global last_stress_prediction_time
@@ -566,6 +629,7 @@ def main_app():
             print("Goodbye!")
         except Exception as e:
             print(f"An error occurred: {e}")
+
 
 if __name__ == "__main__":
     if check_password():

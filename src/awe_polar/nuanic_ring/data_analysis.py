@@ -1,4 +1,5 @@
 """Analysis helpers for Nuanic CSV logs."""
+
 import csv
 from datetime import datetime
 from pathlib import Path
@@ -55,7 +56,7 @@ def analyze_eda_hex(eda_hex_list: list[str]) -> list[dict[str, Any]] | None:
             for i in range(4):
                 offset = i * 4
                 if offset + 4 <= len(eda_hex):
-                    hex_val = eda_hex[offset:offset + 4]
+                    hex_val = eda_hex[offset : offset + 4]
                     int_val = int(hex_val[2:4] + hex_val[0:2], 16)
                     channels[i].append(int_val)
         except Exception:
@@ -87,7 +88,7 @@ def detect_peaks(
 
     mean = sum(values) / len(values)
     variance = sum((v - mean) ** 2 for v in values) / len(values)
-    std_dev = variance ** 0.5
+    std_dev = variance**0.5
 
     threshold = mean + (threshold_std * std_dev)
 
@@ -99,9 +100,7 @@ def detect_peaks(
                     "index": i,
                     "value": value,
                     "deviation": value - mean,
-                    "std_count": (
-                        (value - mean) / std_dev if std_dev > 0 else 0
-                    ),
+                    "std_count": ((value - mean) / std_dev if std_dev > 0 else 0),
                 }
             )
 
@@ -159,9 +158,7 @@ def print_report(filepath: str) -> None:
         start = datetime.fromisoformat(data["timestamps"][0])
         end = datetime.fromisoformat(data["timestamps"][-1])
         duration = (end - start).total_seconds()
-        print(
-            f"Duration: {duration:.1f} seconds ({duration / 60:.1f} minutes)"
-        )
+        print(f"Duration: {duration:.1f} seconds ({duration / 60:.1f} minutes)")
     except Exception:
         duration = None
 
@@ -225,10 +222,7 @@ def print_report(filepath: str) -> None:
         print("• High stress variation - detected multiple stressors")
 
     if eda_channels and len(eda_channels) > 0:
-        print(
-            f"• Found {len(eda_channels)} EDA channels "
-            "- further analysis needed"
-        )
+        print(f"• Found {len(eda_channels)} EDA channels " "- further analysis needed")
         print("• Study correlations between channels")
         print("• Compare EDA peaks with stress transitions")
 
@@ -243,6 +237,7 @@ def main(args: list[str] | None = None) -> int:
     """CLI entrypoint for analysis."""
     if args is None:
         import sys
+
         args = sys.argv[1:]
 
     if len(args) < 1:
@@ -250,8 +245,7 @@ def main(args: list[str] | None = None) -> int:
         print()
         print("Examples:")
         print(
-            "  python analyze_nuanic_data.py "
-            "data/nuanic_logs/nuanic_2024-01-15.csv"
+            "  python analyze_nuanic_data.py " "data/nuanic_logs/nuanic_2024-01-15.csv"
         )
         print("  python analyze_nuanic_data.py data/nuanic_logs/nuanic_*")
         return 1

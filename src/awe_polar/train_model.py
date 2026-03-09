@@ -55,7 +55,9 @@ def load_dataset(data_path: Path) -> pd.DataFrame:
     return df
 
 
-def tune_hyperparameters(model_name: str, X_train: np.ndarray, y_train: np.ndarray) -> dict:
+def tune_hyperparameters(
+    model_name: str, X_train: np.ndarray, y_train: np.ndarray
+) -> dict:
     """
     Tune hyperparameters for the specified model using GridSearchCV.
     """
@@ -242,9 +244,7 @@ def main() -> None:
         X_train_scaled = scaler.fit_transform(X_train)
         best_params = tune_hyperparameters(args.model_name, X_train_scaled, y_train)
 
-    model, scaler = train_model(
-        df, model_name=args.model_name, best_params=best_params
-    )
+    model, scaler = train_model(df, model_name=args.model_name, best_params=best_params)
     save_artifacts(model, scaler)
 
 

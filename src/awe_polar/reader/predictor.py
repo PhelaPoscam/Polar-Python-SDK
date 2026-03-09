@@ -21,7 +21,9 @@ class Prediction:
 class StressPredictor:
     """Predict stress state from connector packets."""
 
-    def __init__(self, bundle: ModelBundle, feature_order: list[str] | None = None) -> None:
+    def __init__(
+        self, bundle: ModelBundle, feature_order: list[str] | None = None
+    ) -> None:
         self._bundle = bundle
         self._feature_order = feature_order or ["rmssd", "hr_bpm"]
 

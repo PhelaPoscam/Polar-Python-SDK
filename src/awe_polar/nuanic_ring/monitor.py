@@ -1,4 +1,5 @@
 """Real-time monitor for Nuanic ring streams (IMU + Stress + EDA)."""
+
 import asyncio
 import csv
 import os
@@ -18,9 +19,12 @@ class NuanicMonitor:
         log_dir: str = "data/nuanic_logs",
         imu_refresh_packets: int = 5,
         clear_console: bool = True,
+        enable_logging: bool = True,
     ):
         self.log_dir = Path(log_dir)
-        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_logging = enable_logging
+        if self.enable_logging:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
 
         self.connector = NuanicConnector()  # Ring selection happens at connection time
         self.imu_refresh_packets = max(1, imu_refresh_packets)
@@ -49,7 +53,9 @@ class NuanicMonitor:
         acc_x = struct.unpack("<h", data[8:10])[0]
         acc_y = struct.unpack("<h", data[10:12])[0]
 
-        use_quality_12 = len(data) > 12 and (len(data) <= 14 or (data[14] == 0 and data[12] > 0))
+        use_quality_12 = len(data) > 12 and (
+            len(data) <= 14 or (data[14] == 0 and data[12] > 0)
+        )
 
         if use_quality_12:
             quality = data[12]
@@ -84,10 +90,10 @@ class NuanicMonitor:
             "eda_raw": eda_raw.hex(),
             "full_data": data.hex(),
         }
-    
+
     async def check_ring_mac_address(self, num_scans: int = 5):
         """Check if ring(s) have dynamic or static MAC addresses.
-        
+
         Useful for diagnosing connection issues.
         """
         result = await self.connector.check_mac_address_dynamic(num_scans=num_scans)
@@ -99,24 +105,30 @@ class NuanicMonitor:
         return max(0.001, (datetime.now() - self.start_time).total_seconds())
 
     def _create_log_files(self):
+        if not self.enable_logging:
+            self.log_file = None
+            return
+
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
         self.log_file = self.log_dir / f"nuanic_{timestamp}.csv"
         with open(self.log_file, "w", newline="", encoding="utf-8") as file:
             writer = csv.writer(file)
-            writer.writerow([
-                "timestamp",
-                "elapsed_ms",
-                "data_type",
-                "acc_x",
-                "acc_y",
-                "acc_z",
-                "imu_quality",
-                "stress_raw",
-                "stress_percent",
-                "eda_hex",
-                "full_packet_hex",
-            ])
+            writer.writerow(
+                [
+                    "timestamp",
+                    "elapsed_ms",
+                    "data_type",
+                    "acc_x",
+                    "acc_y",
+                    "acc_z",
+                    "imu_quality",
+                    "stress_raw",
+                    "stress_percent",
+                    "eda_hex",
+                    "full_packet_hex",
+                ]
+            )
 
         print(f"[LOG] Created: {self.log_file.name}\n")
 
@@ -138,21 +150,24 @@ class NuanicMonitor:
         layout = parsed["layout"]
         full_hex = data.hex()
 
-        with open(self.log_file, "a", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                timestamp,
-                elapsed_ms,
-                "IMU",
-                acc_x,
-                acc_y,
-                acc_z if acc_z is not None else "",
-                signal_quality,
-                "",
-                "",
-                "",
-                full_hex,
-            ])
+        if self.enable_logging and self.log_file:
+            with open(self.log_file, "a", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    [
+                        timestamp,
+                        elapsed_ms,
+                        "IMU",
+                        acc_x,
+                        acc_y,
+                        acc_z if acc_z is not None else "",
+                        signal_quality,
+                        "",
+                        "",
+                        "",
+                        full_hex,
+                    ]
+                )
 
         self.imu_count += 1
         self.current_imu_layout = layout
@@ -176,21 +191,24 @@ class NuanicMonitor:
         elapsed_ms = int(self._elapsed_seconds() * 1000)
         raw_hex = data.hex()
 
-        with open(self.log_file, "a", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                timestamp,
-                elapsed_ms,
-                "RAW_EDA",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                raw_hex,
-                raw_hex,
-            ])
+        if self.enable_logging and self.log_file:
+            with open(self.log_file, "a", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    [
+                        timestamp,
+                        elapsed_ms,
+                        "RAW_EDA",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        raw_hex,
+                        raw_hex,
+                    ]
+                )
 
         self.raw_eda_count += 1
         self.raw_eda_buffer.append(
@@ -219,21 +237,24 @@ class NuanicMonitor:
         eda_hex = data[15:].hex() if len(data) > 15 else ""
         full_hex = data.hex()
 
-        with open(self.log_file, "a", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file)
-            writer.writerow([
-                timestamp,
-                elapsed_ms,
-                "STRESS",
-                "",
-                "",
-                "",
-                "",
-                stress_raw,
-                f"{stress_percent:.1f}",
-                eda_hex,
-                full_hex,
-            ])
+        if self.enable_logging and self.log_file:
+            with open(self.log_file, "a", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    [
+                        timestamp,
+                        elapsed_ms,
+                        "STRESS",
+                        "",
+                        "",
+                        "",
+                        "",
+                        stress_raw,
+                        f"{stress_percent:.1f}",
+                        eda_hex,
+                        full_hex,
+                    ]
+                )
 
         eda_samples = []
         if len(data) >= 92:
@@ -282,7 +303,9 @@ class NuanicMonitor:
         print("\n[STRESS DATA] STRESS + EDA")
         print("-" * 110)
         if self.stress_buffer:
-            print(f"{'Pkt':<6} {'Stress %':<10} {'Stress Bar':<24} {'EDA Mean (μS)':<15} {'EDA Range (μS)':<15}")
+            print(
+                f"{'Pkt':<6} {'Stress %':<10} {'Stress Bar':<24} {'EDA Mean (μS)':<15} {'EDA Range (μS)':<15}"
+            )
             print("-" * 110)
             for sample in list(self.stress_buffer):
                 bar = "█" * min(20, int(sample["stress"] / 5))
@@ -295,8 +318,12 @@ class NuanicMonitor:
         print("\n[IMU DATA] IMU")
         print("-" * 110)
         if self.imu_buffer:
-            acc_z_header = "ACC_Z" if self.current_imu_layout == "xyz_q14" else "ACC_Z(n/a)"
-            print(f"{'Pkt':<6} {'ACC_X':<9} {'ACC_Y':<9} {acc_z_header:<9} {'X Position':<27} {'Quality':<8}")
+            acc_z_header = (
+                "ACC_Z" if self.current_imu_layout == "xyz_q14" else "ACC_Z(n/a)"
+            )
+            print(
+                f"{'Pkt':<6} {'ACC_X':<9} {'ACC_Y':<9} {acc_z_header:<9} {'X Position':<27} {'Quality':<8}"
+            )
             print("-" * 110)
             for sample in list(self.imu_buffer):
                 normalized = int(((sample["acc_x"] + 32768) / 65536) * 20)
@@ -337,12 +364,14 @@ class NuanicMonitor:
         return self.current_eda_raw
 
     async def run(self, duration_seconds=None):
-        self._create_log_files()
         self.start_time = datetime.now()
 
         if not await self.connector.connect():
             print("[FAIL] Could not connect to ring")
             return False
+
+        # Create a log file only after successful connection.
+        self._create_log_files()
 
         imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
         stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
@@ -377,9 +406,18 @@ class NuanicMonitor:
         print("SESSION COMPLETE")
         print("=" * 80)
         print(f"IMU packets: {self.imu_count} ({self.imu_count / elapsed:.2f} Hz avg)")
-        print(f"Stress packets: {self.stress_count} ({self.stress_count / elapsed:.2f} Hz avg)")
-        print(f"Raw EDA packets: {self.raw_eda_count} ({self.raw_eda_count / elapsed:.2f} Hz avg)")
-        print(f"Combined: {(self.imu_count + self.stress_count + self.raw_eda_count) / elapsed:.2f} Hz avg")
-        print(f"Log CSV: {self.log_file}")
+        print(
+            f"Stress packets: {self.stress_count} ({self.stress_count / elapsed:.2f} Hz avg)"
+        )
+        print(
+            f"Raw EDA packets: {self.raw_eda_count} ({self.raw_eda_count / elapsed:.2f} Hz avg)"
+        )
+        print(
+            f"Combined: {(self.imu_count + self.stress_count + self.raw_eda_count) / elapsed:.2f} Hz avg"
+        )
+        if self.enable_logging and self.log_file:
+            print(f"Log CSV: {self.log_file}")
+        else:
+            print("Log CSV: disabled")
         print("=" * 80)
         return True

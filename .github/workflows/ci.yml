@@ -24,6 +24,11 @@ jobs:
         pip install -r requirements.txt
         pip install pytest
 
+    - name: Check formatting (Black)
+      run: |
+        source venv/bin/activate
+        black --check src/awe_polar/nuanic_ring scripts/nuanic_*.py scripts/discover_nuanic_services.py
+
     - name: Run tests
       run: |
         source venv/bin/activate

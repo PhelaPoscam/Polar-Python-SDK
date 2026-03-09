@@ -1,5 +1,10 @@
 # AWE Polar Project
 
+[![CI](https://github.com/PhelaPoscam/AWE_Polar_Project/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/PhelaPoscam/AWE_Polar_Project/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.8%20to%203.11-blue.svg)](https://www.python.org/)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
 **Python:** 3.8-3.11 | **OS:** Windows 10/11
 
 Multi-modal stress monitoring system combining Polar H10 heart rate data with Nuanic smart ring biometric measurements (stress, EDA). Features ML-based stress detection, real-time monitoring, and Streamlit dashboard.
@@ -24,17 +29,23 @@ streamlit run scripts/app/app_streamlit.py   # Run dashboard
 # Real-time monitoring (live display + CSV logs)
 python scripts/nuanic_monitor_cli.py --duration 60
 
+# Real-time monitoring without creating CSV logs
+python scripts/nuanic_monitor_cli.py --duration 60 --no-log
+
 # Data logging (lightweight, no display)
 python scripts/nuanic_logger_cli.py --duration 300
 
 # Analyze captured data
 python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_*.csv
 
+# Live waveform visualization
+python scripts/nuanic_monitor_cli.py --waveform --window-seconds 10
+
 # List available rings
 python scripts/nuanic_monitor_cli.py --list-rings
 ```
 
-See [Nuanic CLI Guide](docs/nuanic/CLI.md) for all options and examples.
+See [Nuanic Master Guide](docs/nuanic/00_master_guide.md) for all options and examples.
 
 ## Features
 
@@ -69,11 +80,11 @@ AWE_Polar_Project/
 │   ├── app_streamlit.py       - Dashboard
 │   └── train_model.py         - ML training pipeline
 │
-├── scripts/ble/               ← Nuanic tools (production ready)
-│   ├── nuanic_monitor.py            - CLI entrypoint for monitor
-│   ├── log_nuanic_dual_stream.py   - Compatibility wrapper
-│   ├── analyze_nuanic_data.py       - CLI wrapper for analysis
-│   └── archive/                    - Legacy BLE scripts
+├── scripts/                   ← Nuanic tools (production ready)
+│   ├── nuanic_monitor_cli.py        - Real-time monitoring CLI
+│   ├── nuanic_logger_cli.py         - Lightweight logging CLI
+│   ├── nuanic_analyzer_cli.py       - CSV analysis CLI
+│   └── discover_nuanic_services.py  - BLE service discovery
 │
 ├── scripts/train/             ← ML pipeline
 │   └── train_model.py
@@ -87,21 +98,11 @@ AWE_Polar_Project/
 │
 ├── docs/
 │   ├── README.md
+│   ├── 00_master_docs_guide.md
 │   ├── contributing.md
 │   ├── nuanic/
 │   │   ├── README.md
-│   │   ├── 01_quick_start.md
-│   │   ├── 02_module_guide.md
-│   │   ├── 03_eda_analysis_guide.md
-│   │   ├── 04_hex_decoding_guide.md
-│   │   ├── 05_analysis_report.md
-│   │   └── troubleshooting/
-│   │       ├── README.md
-│   │       ├── action_plan.md
-│   │       ├── cleanup_summary.md
-│   │       ├── eda_quick_fix.md
-│   │       └── eda_analysis.md
-│   └── project_organization.md
+│   │   └── 00_master_guide.md
 │
 └── data/
     ├── raw/                   - Training datasets
@@ -111,9 +112,8 @@ AWE_Polar_Project/
 ## Documentation
 
 **Nuanic Ring Integration:**
-- [Module API Guide](docs/nuanic/02_module_guide.md) - Complete API reference with examples
-- [EDA Analysis Guide](docs/nuanic/03_eda_analysis_guide.md) - Data interpretation and analysis methods
-- [Project Organization](docs/project_organization.md) - Architecture and design
+- [Nuanic Master Guide](docs/nuanic/00_master_guide.md) - Setup, CLI/API usage, packet decoding, EDA analysis, troubleshooting
+- [Docs Master Guide](docs/00_master_docs_guide.md) - Documentation architecture and reorganization notes
 
 **Development:**
 - [Contributing Guidelines](docs/contributing.md) - Development standards
@@ -210,7 +210,7 @@ pytest tests/test_nuanic_integration.py -v
 - ✅ Analyzed stress algorithm behavior (DNE baseline calibration, +10.7% initial drift)
 - ✅ Validated sensor independence (stress ↔ EDA correlation = -0.12)
 - ✅ Tested with 5-minute extended capture (4,799 IMU + 325 physiology packets)
-- 📄 **See [NUANIC_ANALYSIS_REPORT.md](docs/nuanic/05_analysis_report.md) for full technical findings**
+- 📄 **See [Nuanic Master Guide](docs/nuanic/00_master_guide.md) for full technical findings and context**
 
 **Code & Documentation:**
 - ✅ 6 core analysis scripts for sensor validation
@@ -224,14 +224,14 @@ pytest tests/test_nuanic_integration.py -v
 **Log Nuanic Ring Data:**
 ```bash
 # Record for 5 minutes
-python -m scripts.ble.nuanic_monitor --docked --duration 300
+python scripts/nuanic_monitor_cli.py --duration 300
 # Output: data/nuanic_logs/nuanic_imu_*.csv + nuanic_stress_*.csv
 ```
 
 **Analyze Logged Data:**
 ```bash
 # Generate statistics report
-python -m scripts.ble.analyze_nuanic_data data/nuanic_logs/nuanic_stress_2026-02-27_14-23-45.csv
+python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_2026-02-27_14-23-45.csv
 # Shows: stress range, peaks, EDA analysis
 ```
 

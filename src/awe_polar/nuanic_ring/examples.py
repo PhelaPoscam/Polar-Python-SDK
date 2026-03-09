@@ -1,4 +1,5 @@
 """Example scripts for using Nuanic ring integration"""
+
 import asyncio
 from src.awe_polar.nuanic_ring import NuanicDataLogger, NuanicMonitor
 from src.awe_polar.nuanic_ring.eda_analyzer import NuanicEDAAnalyzer
@@ -6,7 +7,7 @@ from src.awe_polar.nuanic_ring.eda_analyzer import NuanicEDAAnalyzer
 
 async def example_data_logging(duration=60):
     """Log Nuanic ring data for specified duration.
-    
+
     The ring selection menu will appear when connecting.
     """
     logger = NuanicDataLogger()
@@ -16,14 +17,14 @@ async def example_data_logging(duration=60):
 
 async def example_real_time_monitoring():
     """Monitor Nuanic ring stress in real-time.
-    
+
     The ring selection menu will appear when connecting.
     """
     monitor = NuanicMonitor()
-    
+
     if not await monitor.start_monitoring():
         return
-    
+
     try:
         for _ in range(60):  # Monitor for 60 seconds
             stress = monitor.get_current_stress()
@@ -38,7 +39,7 @@ async def example_real_time_monitoring():
 
 async def example_full_monitoring():
     """Full multi-stream monitoring (IMU + Stress + EDA).
-    
+
     The ring selection menu will appear when connecting.
     """
     monitor = NuanicMonitor()
@@ -49,16 +50,17 @@ async def example_full_monitoring():
 def example_eda_analysis():
     """Demonstrate EDA analysis"""
     analyzer = NuanicEDAAnalyzer()
-    
+
     # Simulate EDA readings
     import random
+
     readings = []
     for i in range(100):
         value = 100 + random.gauss(0, 20)  # Mean 100, std dev 20
         value = max(0, min(4095, value))  # Clamp to valid range
         stats = analyzer.add_reading(value)
         readings.append(stats)
-    
+
     # Print some results
     print("\nEDA Analysis Example:")
     print(f"Current reading: {readings[-1]['current_value']:.1f}")
@@ -74,9 +76,9 @@ if __name__ == "__main__":
     print("2. Real-time Monitoring (60 seconds)")
     print("3. EDA Analysis Demo")
     print("=" * 50)
-    
+
     choice = input("Choose example (1-3): ").strip()
-    
+
     if choice == "1":
         asyncio.run(example_data_logging(60))
     elif choice == "2":

@@ -1,52 +1,24 @@
-# Nuanic Integration Docs
+# Nuanic Documentation Index
 
-## Current Status
-Nuanic integration is active with a monolithic BLE monitor that captures and displays:
-- IMU stream (ACC_X, ACC_Y, ACC_Z)
-- Stress metric
-- EDA-derived waveform statistics
+## Primary Reference
+- **[Nuanic Master Guide](00_master_guide.md)**
 
-## Production CLI Flow
-Use these scripts in `scripts/ble/`:
+This is the canonical Nuanic document and includes:
+- Environment setup and quick start
+- CLI usage and options
+- Python API reference
+- Packet/hex decoding details
+- EDA analysis methods
+- Troubleshooting and historical investigation notes
 
-1. `nuanic_monitor.py` (primary)
+## Common Commands
 ```bash
-python scripts/ble/nuanic_monitor.py --duration 60
+python scripts/nuanic_monitor_cli.py --duration 60
+python scripts/nuanic_logger_cli.py --duration 300
+python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
+python scripts/discover_nuanic_services.py
 ```
-
-2. `log_nuanic_dual_stream.py` (compatibility wrapper)
-```bash
-python scripts/ble/log_nuanic_dual_stream.py --duration 60
-```
-
-3. `analyze_nuanic_data.py` (post-capture CSV analysis)
-```bash
-python scripts/ble/analyze_nuanic_data.py data/nuanic_logs/nuanic_stress_*.csv
-```
-
-Legacy discovery/test scripts were moved to:
-- `scripts/ble/archive/`
-
-## Data Mapping (Current Implementation)
-- Stress characteristic UUID: `468f2717-6a7d-46f9-9eb7-f92aab208bae`
-- IMU characteristic UUID: `d306262b-c8c9-4c4b-9050-3a41dea706e5`
-
-### Physiology packet (92 bytes)
-- Byte 14: stress raw (0-255), scaled to 0-100%
-- Bytes 15-91: EDA/PPG waveform payload (77 bytes)
-
-### IMU packet (16 bytes)
-- Bytes 8-9: ACC_X (int16)
-- Bytes 10-11: ACC_Y (int16)
-- Bytes 12-13: ACC_Z (int16)
-- Byte 14: signal quality indicator
-
-## Related Docs
-- `01_quick_start.md` - quick operational steps
-- `05_analysis_report.md` - technical findings and validation history
-- `02_module_guide.md` - module-level API and usage details
-- `../project_organization.md` - structure and file ownership
 
 ## Notes
-- BLE address can rotate (private addressing), so discovery is name-based (`Nuanic`) with retry logic.
-- If connection is unstable, use the updated connector retry flow in `src/awe_polar/nuanic_ring/connector.py`.
+- Ring discovery is name-based (`Nuanic`) because BLE addresses can rotate.
+- For packet byte mapping and UUID details, use `00_master_guide.md`.

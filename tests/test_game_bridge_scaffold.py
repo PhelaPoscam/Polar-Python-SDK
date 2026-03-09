@@ -6,7 +6,12 @@ from dataclasses import dataclass
 
 from awe_polar.game_bridge.cognitive_agent import AdaptiveState, CognitiveAgent
 from awe_polar.game_bridge.game_connector import DifficultyProfile, GameConnector
-from awe_polar.game_bridge.stress_engine import StressEngine, StressSignal, StressState, UATRConfig
+from awe_polar.game_bridge.stress_engine import (
+    StressEngine,
+    StressSignal,
+    StressState,
+    UATRConfig,
+)
 
 
 @dataclass

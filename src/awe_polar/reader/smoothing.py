@@ -22,4 +22,6 @@ def apply_smoothing(
     label: str,
 ) -> SmoothedPrediction:
     state = engine.update(StressSignal(score=score, confidence=confidence))
-    return SmoothedPrediction(label=label, score=score, confidence=confidence, state=state)
+    return SmoothedPrediction(
+        label=label, score=score, confidence=confidence, state=state
+    )

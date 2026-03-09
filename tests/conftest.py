@@ -1,6 +1,7 @@
 """
 Configuration for pytest
 """
+
 import pytest
 import sys
 import os
@@ -37,5 +38,6 @@ def sample_csv_data():
 def reset_matplotlib():
     """Reset matplotlib after each test to prevent memory leaks"""
     import matplotlib.pyplot as plt
+
     yield
-    plt.close('all')
+    plt.close("all")

@@ -36,15 +36,27 @@ def extract_features(eda_signal: np.ndarray, hr_signal: np.ndarray) -> np.ndarra
     skin_resistance = np.mean(1.0 / (eda_signal + 1e-6))
     hrv = np.std(hr_signal)
 
-    features = np.array(eda_feats + hr_feats + [cov, skin_resistance, hrv], dtype=np.float32)
+    features = np.array(
+        eda_feats + hr_feats + [cov, skin_resistance, hrv], dtype=np.float32
+    )
     return np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Predict stress from a single EDA/HR window.")
+    parser = argparse.ArgumentParser(
+        description="Predict stress from a single EDA/HR window."
+    )
     parser.add_argument("--window-csv", required=True, help="CSV with columns: eda, hr")
-    parser.add_argument("--model-path", default=os.path.join("models", "tabnet_stress_model"), help="Model path (without .zip)")
-    parser.add_argument("--scaler-path", default=os.path.join("models", "tabnet_stress_scaler.joblib"), help="Scaler joblib path")
+    parser.add_argument(
+        "--model-path",
+        default=os.path.join("models", "tabnet_stress_model"),
+        help="Model path (without .zip)",
+    )
+    parser.add_argument(
+        "--scaler-path",
+        default=os.path.join("models", "tabnet_stress_scaler.joblib"),
+        help="Scaler joblib path",
+    )
     return parser.parse_args()
 
 

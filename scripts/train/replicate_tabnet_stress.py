@@ -25,7 +25,6 @@ from pytorch_tabnet.tab_model import TabNetClassifier
 import shap
 from lime.lime_tabular import LimeTabularExplainer
 
-
 VALID_LABELS = {1, 2, 3, 4}
 STRESS_LABEL = 2
 SWELL_STRESS_CONDITIONS = {"T", "I"}
@@ -78,7 +77,9 @@ def ecg_to_hr(ecg: np.ndarray, fs: int) -> np.ndarray:
     hr_times = (peaks[:-1] + peaks[1:]) / 2.0 / float(fs)
 
     times = np.arange(ecg.shape[0], dtype=np.float64) / float(fs)
-    hr_signal = np.interp(times, hr_times, hr_values, left=hr_values[0], right=hr_values[-1])
+    hr_signal = np.interp(
+        times, hr_times, hr_values, left=hr_values[0], right=hr_values[-1]
+    )
     return hr_signal.astype(np.float32)
 
 
@@ -201,11 +202,15 @@ def load_wesad_dataset(
             continue
 
         hr = ecg_to_hr(ecg, fs)
-        X_sub, y_sub = window_features_with_labels(eda, hr, labels, fs, window_s, overlap)
+        X_sub, y_sub = window_features_with_labels(
+            eda, hr, labels, fs, window_s, overlap
+        )
         if X_sub.size == 0:
             continue
 
-        subject_id = int(subject_dir[1:]) if subject_dir[1:].isdigit() else len(group_list)
+        subject_id = (
+            int(subject_dir[1:]) if subject_dir[1:].isdigit() else len(group_list)
+        )
         X_list.append(X_sub)
         y_list.append(y_sub)
         group_list.append(np.full(y_sub.shape, subject_id, dtype=np.int64))
@@ -280,7 +285,9 @@ def load_swell_dataset(
         return None
 
     if "timestamp" in df.columns:
-        df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y%m%dT%H%M%S%f", errors="coerce")
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"], format="%Y%m%dT%H%M%S%f", errors="coerce"
+        )
 
     X_list = []
     y_list = []
@@ -311,7 +318,11 @@ def load_swell_dataset(
         if X_sub.size == 0:
             continue
 
-        subject_num = int(str(subject_id).replace("PP", "")) if str(subject_id).startswith("PP") else len(group_list)
+        subject_num = (
+            int(str(subject_id).replace("PP", ""))
+            if str(subject_id).startswith("PP")
+            else len(group_list)
+        )
         X_list.append(X_sub)
         y_list.append(y_sub)
         group_list.append(np.full(y_sub.shape, subject_num, dtype=np.int64))
@@ -361,7 +372,9 @@ def extract_features(eda_signal: np.ndarray, hr_signal: np.ndarray) -> np.ndarra
     # HRV approximation (std of HR)
     hrv = np.std(hr_signal)
 
-    features = np.array(eda_feats + hr_feats + [cov, skin_resistance, hrv], dtype=np.float32)
+    features = np.array(
+        eda_feats + hr_feats + [cov, skin_resistance, hrv], dtype=np.float32
+    )
     return np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
 
@@ -389,7 +402,11 @@ def window_signals(
         hr_win = hr[start : start + window_len]
         features_list.append(extract_features(eda_win, hr_win))
 
-    return np.vstack(features_list) if features_list else np.empty((0, 21), dtype=np.float32)
+    return (
+        np.vstack(features_list)
+        if features_list
+        else np.empty((0, 21), dtype=np.float32)
+    )
 
 
 def build_tabnet() -> TabNetClassifier:
@@ -447,18 +464,49 @@ def generate_explanations(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="TabNet stress detection (WESAD/Mock).")
-    parser.add_argument("--datasets-dir", default="datasets", help="Datasets folder (default: datasets).")
-    parser.add_argument("--use-mock", action="store_true", help="Force mock data instead of WESAD.")
+    parser = argparse.ArgumentParser(
+        description="TabNet stress detection (WESAD/Mock)."
+    )
+    parser.add_argument(
+        "--datasets-dir",
+        default="datasets",
+        help="Datasets folder (default: datasets).",
+    )
+    parser.add_argument(
+        "--use-mock", action="store_true", help="Force mock data instead of WESAD."
+    )
     parser.add_argument("--no-wesad", action="store_true", help="Skip WESAD loading.")
     parser.add_argument("--no-swell", action="store_true", help="Skip SWELL loading.")
-    parser.add_argument("--skip-xai", action="store_true", help="Skip SHAP/LIME explanations.")
-    parser.add_argument("--fs", type=int, default=700, help="WESAD chest sampling rate (default: 700 Hz).")
-    parser.add_argument("--window-s", type=int, default=25, help="Window size in seconds (default: 25).")
-    parser.add_argument("--swell-window-min", type=int, default=25, help="SWELL window size in minutes (default: 25).")
-    parser.add_argument("--overlap", type=float, default=0.5, help="Window overlap fraction (default: 0.5).")
-    parser.add_argument("--no-train-final", action="store_true", help="Skip training a final model.")
-    parser.add_argument("--model-dir", default="models", help="Directory to save final model/scaler.")
+    parser.add_argument(
+        "--skip-xai", action="store_true", help="Skip SHAP/LIME explanations."
+    )
+    parser.add_argument(
+        "--fs",
+        type=int,
+        default=700,
+        help="WESAD chest sampling rate (default: 700 Hz).",
+    )
+    parser.add_argument(
+        "--window-s", type=int, default=25, help="Window size in seconds (default: 25)."
+    )
+    parser.add_argument(
+        "--swell-window-min",
+        type=int,
+        default=25,
+        help="SWELL window size in minutes (default: 25).",
+    )
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=0.5,
+        help="Window overlap fraction (default: 0.5).",
+    )
+    parser.add_argument(
+        "--no-train-final", action="store_true", help="Skip training a final model."
+    )
+    parser.add_argument(
+        "--model-dir", default="models", help="Directory to save final model/scaler."
+    )
     return parser.parse_args()
 
 
@@ -538,12 +586,16 @@ def main() -> None:
     logo = LeaveOneGroupOut()
 
     print("Starting LOSO cross-validation...")
-    for fold, (train_idx, test_idx) in enumerate(logo.split(X, y, groups=groups), start=1):
+    for fold, (train_idx, test_idx) in enumerate(
+        logo.split(X, y, groups=groups), start=1
+    ):
         X_train, X_test = X[train_idx], X[test_idx]
         y_train, y_test = y[train_idx], y[test_idx]
 
         if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
-            print(f"Subject {groups[test_idx][0]} | Fold {fold} skipped (single-class fold).")
+            print(
+                f"Subject {groups[test_idx][0]} | Fold {fold} skipped (single-class fold)."
+            )
             continue
 
         X_train_full, X_val, y_train_full, y_val = train_test_split(
@@ -579,7 +631,9 @@ def main() -> None:
         f1 = f1_score(y_test, y_pred, zero_division=0)
 
         subject_id = groups[test_idx][0]
-        print(f"Subject {subject_id} | Fold {fold} | Accuracy: {acc:.4f} | F1: {f1:.4f}")
+        print(
+            f"Subject {subject_id} | Fold {fold} | Accuracy: {acc:.4f} | F1: {f1:.4f}"
+        )
 
         # Generate explanations only for the first fold to keep runtime reasonable
         if fold == 1 and not args.skip_xai:
