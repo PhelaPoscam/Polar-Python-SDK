@@ -91,8 +91,38 @@ Examples:
         default=120,
         help="Waveform mode: plot refresh interval in milliseconds (default: 120)",
     )
+    parser.add_argument(
+        "--smooth",
+        type=int,
+        default=1,
+        metavar="WINDOW",
+        help="Waveform mode: smoothing window size (1=none, 5-10=light, 15-30=heavy, default: 1)",
+    )
+    parser.add_argument(
+        "--discover",
+        action="store_true",
+        help="Discover all Nuanic ring services and characteristics, then exit",
+    )
 
     args = parser.parse_args()
+
+    # Handle --discover
+    if args.discover:
+        try:
+            connector = NuanicConnector(target_address=args.ring_addr)
+            if not await connector.connect():
+                print("[FAIL] Could not connect to ring")
+                return
+            print("\n" + "=" * 70)
+            print("NUANIC RING GATT DISCOVERY")
+            print("=" * 70)
+            await connector.discover_services()
+            await connector.disconnect()
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("\n[STOP] Discovery cancelled")
+        except Exception as e:
+            print(f"[FAIL] Discovery error: {e}")
+        return
 
     # Handle --list-rings
     if args.list_rings:
@@ -118,13 +148,15 @@ Examples:
             print(
                 f"\n[WAVEFORM] Starting with ring: {args.ring_addr if args.ring_addr else 'interactive selection'}"
             )
+            smooth_desc = "none" if args.smooth <= 1 else f"{args.smooth}-point"
             print(
-                f"[WAVEFORM] Window: {args.window_seconds}s | Refresh: {args.refresh_ms}ms"
+                f"[WAVEFORM] Window: {args.window_seconds}s | Refresh: {args.refresh_ms}ms | Smooth: {smooth_desc}"
             )
             await run_waveform_viewer(
                 ring_addr=args.ring_addr,
                 window_seconds=args.window_seconds,
                 refresh_ms=args.refresh_ms,
+                smooth_window=args.smooth,
             )
         except (KeyboardInterrupt, asyncio.CancelledError):
             print("\n[STOP] Waveform viewer stopped")

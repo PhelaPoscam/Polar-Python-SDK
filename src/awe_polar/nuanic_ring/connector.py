@@ -89,16 +89,20 @@ class NuanicConnector:
         try:
             devices = await BleakScanner.discover(timeout=3.0)
 
+            # Deduplicate by MAC address to avoid duplicate entries
+            seen_addresses = set()
             nuanic_devices = []
             for device in devices:
                 if device.name and "Nuanic" in device.name:
-                    entry = {
-                        "address": device.address,
-                        "name": device.name,
-                    }
-                    if include_device:
-                        entry["device"] = device
-                    nuanic_devices.append(entry)
+                    if device.address not in seen_addresses:
+                        seen_addresses.add(device.address)
+                        entry = {
+                            "address": device.address,
+                            "name": device.name,
+                        }
+                        if include_device:
+                            entry["device"] = device
+                        nuanic_devices.append(entry)
 
             return nuanic_devices
 

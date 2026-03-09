@@ -84,7 +84,7 @@ AWE_Polar_Project/
 │   ├── nuanic_monitor_cli.py        - Real-time monitoring CLI
 │   ├── nuanic_logger_cli.py         - Lightweight logging CLI
 │   ├── nuanic_analyzer_cli.py       - CSV analysis CLI
-│   └── discover_nuanic_services.py  - BLE service discovery
+│   └── discover_nuanic_services.py  - Unified BLE diagnostics (discovery/profile/write-probe/buffer)
 │
 ├── scripts/train/             ← ML pipeline
 │   └── train_model.py
@@ -97,11 +97,8 @@ AWE_Polar_Project/
 │   └── [other tests]
 │
 ├── docs/
-│   ├── README.md
-│   ├── 00_master_docs_guide.md
 │   ├── contributing.md
 │   ├── nuanic/
-│   │   ├── README.md
 │   │   └── 00_master_guide.md
 │
 └── data/
@@ -113,7 +110,6 @@ AWE_Polar_Project/
 
 **Nuanic Ring Integration:**
 - [Nuanic Master Guide](docs/nuanic/00_master_guide.md) - Setup, CLI/API usage, packet decoding, EDA analysis, troubleshooting
-- [Docs Master Guide](docs/00_master_docs_guide.md) - Documentation architecture and reorganization notes
 
 **Development:**
 - [Contributing Guidelines](docs/contributing.md) - Development standards

@@ -69,9 +69,9 @@ python scripts/nuanic_logger_cli.py --duration 300
 python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
 ```
 
-## 2.5 Service discovery (BLE debugging)
+## 2.5 BLE diagnostics (discovery + profiling)
 ```bash
-python scripts/discover_nuanic_services.py
+python scripts/discover_nuanic_services.py --ring-addr <MAC>
 ```
 
 ## 2.6 Legacy compatibility command path (historical)
@@ -142,7 +142,6 @@ Without `--ring-addr`:
 - `logger.py`: data logging
 - `data_analysis.py`: analysis utilities (project-dependent)
 - `eda_analyzer.py`: EDA-specific analysis
-- `examples.py`: usage examples
 
 ## 4.2 Connector example
 ```python
@@ -183,7 +182,7 @@ print(analyzer.get_interpretation(stats))
 ## 4.6 MAC dynamics check
 ```python
 import asyncio
-from src.awe_polar.nuanic_ring.connector import NuanicConnector
+from awe_polar.nuanic_ring import NuanicConnector
 
 async def check_macs():
     c = NuanicConnector()
@@ -410,7 +409,7 @@ Current known script set (from present tree):
 - `scripts/nuanic_monitor_cli.py`
 - `scripts/nuanic_logger_cli.py`
 - `scripts/nuanic_analyzer_cli.py`
-- `scripts/discover_nuanic_services.py`
+- `scripts/discover_nuanic_services.py` (unified diagnostics)
 - `scripts/analysis/analyze_nuanic_stream.py`
 
 ## 10. Testing and Quality Notes (Historical Claims)
@@ -470,6 +469,6 @@ python scripts/nuanic_logger_cli.py --duration 300
 # Analyze a captured session
 python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
 
-# BLE service inspection
-python scripts/discover_nuanic_services.py
+# BLE diagnostics and service inspection
+python scripts/discover_nuanic_services.py --ring-addr <MAC>
 ```
