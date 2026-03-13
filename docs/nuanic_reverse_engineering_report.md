@@ -1,6 +1,6 @@
 # Nuanic Ring Reverse-Engineering Report
 
-## Executive Summary
+## Summary
 After reverse-engineering of the Nuanic ring BLE communication protocol, we have identified the actual data being transmitted and discovered that the ring has **limited EDA capabilities**.
 
 ## Findings
