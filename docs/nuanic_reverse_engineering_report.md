@@ -14,30 +14,22 @@ After reverse-engineering of the Nuanic ring BLE communication protocol, we have
   - Byte 14: Stress percentage (0-255 mapped to %)
   - Bytes 15-92: Waveform payload (77 uint8 values representing physiological signal)
   - Rest: Metadata/timestamp data
-- **Status:** ✅ Working perfectly
-- **Interpretation:** This IS the actual stress/EDA-like data the ring measures
+- **Interpretation:** This is maybe the EDA
 
 #### 2. **IMU Characteristic** (`d306262b-c8c9-4c4b-9050-3a41dea706e5`)
 - **Frequency:** 15.94 Hz
 - **Packet Size:** 16 bytes
 - **Data:** Accelerometer (3-axis) + timestamp
-- **Status:** ✅ Working
 - **Use Case:** Motion/activity detection
 
 ### ❌ Broken/Non-Functional Streams
 
-#### 3. **Raw EDA Characteristic** (`3c180fcc-bfec-4b7c-8e52-1a37f123e449`)
-- **Status:** ❌ BROKEN
-- **Issue:** Only sends 1-byte junk packets (`0x01`) with 0 int16 samples
-- **Conclusion:** Likely not implemented in ring firmware or requires enable sequence we haven't found
-- **Recommendation:** DO NOT USE - the UUID in code comments is incorrect
-
-#### 4. **Mystery Notify Characteristic** (`42dcb71b-1817-43bd-8ea3-7272780a1c9f`)
+#### 3. **Mystery Notify Characteristic** (`42dcb71b-1817-43bd-8ea3-7272780a1c9f`)
 - **Status:** ❌ Not sending data
 - **Packets Observed:** 0 in 10+ second listening windows
 - **Conclusion:** Unknown purpose, not actively used
 
-#### 5. **EDA Buffer Characteristic** (`7c3b82e7-22b7-4cb6-8458-ba325edf6ede`)
+#### 4. **EDA Buffer Characteristic** (`7c3b82e7-22b7-4cb6-8458-ba325edf6ede`)
 - **Status:** ⚠️ One-time snapshot, now empty
 - **Initial State:** 484 bytes containing structured records with float32 values
 - **Current State:** 0 bytes (pre-recorded data cleared after access)
@@ -59,12 +51,6 @@ The following characteristics accept writes and appear to be configuration regis
 
 ## Recommendations
 
-### ✅ DO USE
-- **Stress Waveform** (bytes 15-92 from stress characteristic)
-  - This is real physiological data from the ring
-  - Shows variations in stress level
-  - Can be smoothed/filtered for better visualization
-
 - **Stress Percentage** (byte 14 from stress characteristic)
   - Aggregated stress level (0-100%)
   - Updates at 1 Hz
@@ -74,25 +60,7 @@ The following characteristics accept writes and appear to be configuration regis
   - Useful for motion/activity context
   - 16 Hz sample rate is good for motion capture
 
-### ❌ DO NOT USE
-- **Raw EDA Characteristic** - It's broken
-- **Mystery Notify** - Not sending data
-- **Buffer** - One-time pre-recorded data, now empty
-
 ## Current Waveform Viewer Status
-
-The current implementation correctly:
-- ✅ Displays stress waveform (actually works!)
-- ✅ Displays IMU acceleration as "Raw EDA" (mislabeled - should show IMU)
-- ✅ Shows stress percentage
-- ✅ Supports smoothing filter with adjustable Hz
-- ✅ Handles graceful shutdown
-
-**Improvements Needed:**
-- [ ] Relabel "Raw EDA" as "IMU X-Axis" or "Motion Data"
-- [ ] Update UI title to clarify stress waveform is the physiological signal
-- [ ] Document that ring has no separate high-frequency EDA stream
-- [ ] Consider capturing waveform statistics (mean, variance, peaks)
 
 ## Conclusion
 
@@ -102,6 +70,6 @@ The ring **does not have** a functioning separate raw EDA stream. All physiologi
 
 ---
 
-**Last Updated:** March 9, 2026  
+**Last Updated:** March 13, 2026  
 **Reverse-Engineering Method:** BLE characteristic scanning, packet structure analysis, write command testing  
 **Certainty Level:** High (validated with packet inspection and multiple connection tests)
