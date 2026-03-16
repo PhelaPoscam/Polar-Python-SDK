@@ -1,7 +1,9 @@
 """BLE connection and device management for Nuanic ring"""
 
 import asyncio
+import inspect
 import os
+import platform
 import subprocess
 from bleak import BleakScanner, BleakClient
 
@@ -20,18 +22,48 @@ class NuanicConnector:
         timeout=15.0,
         max_scan_attempts=3,
         max_connect_attempts=3,
+        connect_backoff_seconds=2.0,
         target_address=None,
         unpair_on_disconnect=False,
+        pair_on_connect=True,
     ):
         self.timeout = timeout
         self.max_scan_attempts = max_scan_attempts
         self.max_connect_attempts = max_connect_attempts
+        self.connect_backoff_seconds = connect_backoff_seconds
         self.target_address = (
             target_address  # BLE address to connect to (e.g., "AA:BB:CC:DD:EE:FF")
         )
         self.unpair_on_disconnect = unpair_on_disconnect
+        self.pair_on_connect = pair_on_connect
         self.client = None
         self.device = None
+        self._disconnect_event = asyncio.Event()
+
+    def _on_disconnect(self, _client):
+        """Bleak disconnect callback to confirm OS-level link release."""
+        self._disconnect_event.set()
+        print("[DISC] BLE disconnect callback fired")
+
+    def _create_bleak_client(self, target):
+        """Create BleakClient with robust Windows-friendly arguments.
+
+        Uses pair=... when available and gracefully falls back for older
+        Bleak versions that do not support that constructor argument.
+        """
+        kwargs = {
+            "timeout": self.timeout,
+            "disconnected_callback": self._on_disconnect,
+        }
+        try:
+            params = inspect.signature(BleakClient).parameters
+            if "pair" in params:
+                kwargs["pair"] = self.pair_on_connect
+        except Exception:
+            # Signature probing can fail on some backends; keep safe defaults.
+            pass
+
+        return BleakClient(target, **kwargs)
 
     async def find_device(self):
         """Scan for Nuanic ring.
@@ -47,9 +79,11 @@ class NuanicConnector:
                 # Quick scan - find all devices
                 devices = await BleakScanner.discover(timeout=2.0)
 
-                # Filter Nuanic devices
+                # Filter Nuanic / Moodmetric devices
                 for device in devices:
-                    if not device.name or "Nuanic" not in device.name:
+                    if not device.name or (
+                        "Nuanic" not in device.name and "Moodmetric" not in device.name
+                    ):
                         continue
 
                     # If target address specified, only match that one
@@ -101,7 +135,9 @@ class NuanicConnector:
                 seen_addresses = set()
                 nuanic_devices = []
                 for device in devices:
-                    if device.name and "Nuanic" in device.name:
+                    if device.name and (
+                        "Nuanic" in device.name or "Moodmetric" in device.name
+                    ):
                         if device.address not in seen_addresses:
                             seen_addresses.add(device.address)
                             entry = {
@@ -127,6 +163,90 @@ class NuanicConnector:
             print(f"[WARN] Scan error: {e}")
             return []
 
+    def _get_windows_paired_rings(self):
+        """Return paired Nuanic/Moodmetric rings from Windows PnP records.
+
+        This helps when rings are connected in Windows but not currently visible
+        in active BLE advertisements.
+        """
+        if platform.system() != "Windows":
+            return []
+
+        ps_cmd = (
+            "$rows = Get-PnpDevice -Class Bluetooth "
+            "| Where-Object { $_.FriendlyName -match 'Nuanic|Moodmetric' -or $_.InstanceId -match 'BTHLE\\\\DEV_' }; "
+            "foreach ($r in $rows) { "
+            "  $addr = ''; "
+            "  try { $addr = (Get-PnpDeviceProperty -InstanceId $r.InstanceId -KeyName 'DEVPKEY_Bluetooth_DeviceAddress').Data } catch {} ; "
+            "  Write-Output ($r.FriendlyName + '|' + $addr + '|' + $r.InstanceId + '|' + $r.Status) "
+            "}"
+        )
+
+        try:
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if completed.returncode != 0 or not completed.stdout.strip():
+                return []
+            rings = []
+            for line in completed.stdout.splitlines():
+                if not line or "|" not in line:
+                    continue
+                parts = line.split("|", 3)
+                if len(parts) != 4:
+                    continue
+
+                name = (parts[0] or "").strip()
+                addr_raw = (parts[1] or "").strip().upper()
+                if not name:
+                    continue
+                if "NUANIC" not in name.upper() and "MOODMETRIC" not in name.upper():
+                    continue
+                if len(addr_raw) == 12 and ":" not in addr_raw:
+                    addr = ":".join(addr_raw[i : i + 2] for i in range(0, 12, 2))
+                else:
+                    addr = addr_raw
+                if addr:
+                    rings.append({"address": addr, "name": name, "source": "windows-paired"})
+
+            # Deduplicate by address
+            dedup = {}
+            for ring in rings:
+                dedup[ring["address"]] = ring
+            return list(dedup.values())
+        except Exception:
+            return []
+
+    async def list_available_rings_with_paired(self):
+        """Return discoverable rings plus Windows paired rings (if any)."""
+        scanned = await self.list_available_rings(include_device=True, scan_timeout=6.0, attempts=3, retry_delay=1.0)
+        paired = self._get_windows_paired_rings()
+
+        merged = {}
+        for ring in scanned:
+            merged[ring["address"].upper()] = {
+                "address": ring["address"],
+                "name": ring["name"],
+                "device": ring.get("device"),
+                "source": "scan",
+            }
+
+        for ring in paired:
+            key = ring["address"].upper()
+            if key not in merged:
+                merged[key] = {
+                    "address": ring["address"],
+                    "name": ring["name"],
+                    "device": None,
+                    "source": "windows-paired",
+                }
+
+        return list(merged.values())
+
     async def select_ring_interactive(self):
         """Interactive ring selection menu.
 
@@ -143,14 +263,9 @@ class NuanicConnector:
         print("RING SELECTION")
         print("=" * 60)
 
-        # Pairing-mode rings can advertise intermittently, so use a longer scan window
-        # with retries during interactive selection.
-        rings = await self.list_available_rings(
-            include_device=True,
-            scan_timeout=6.0,
-            attempts=3,
-            retry_delay=1.0,
-        )
+        # Pairing-mode rings can advertise intermittently. Include Windows paired
+        # records so users can still select already-connected rings.
+        rings = await self.list_available_rings_with_paired()
 
         if not rings:
             print("[!] No Nuanic rings found. Make sure rings are turned on.")
@@ -159,7 +274,11 @@ class NuanicConnector:
         print(f"\nFound {len(rings)} ring(s):\n")
 
         for idx, ring in enumerate(rings, 1):
-            print(f"  [{idx}] {ring['name']:15} | MAC: {ring['address']}")
+            src = ring.get("source", "scan")
+            src_tag = "SCAN" if src == "scan" else "PAIRED"
+            print(
+                f"  [{idx}] {ring['name']:15} | MAC: {ring['address']} | {src_tag}"
+            )
 
         if len(rings) == 1:
             print(f"\nAuto-selecting: {rings[0]['name']} ({rings[0]['address']})")
@@ -226,10 +345,12 @@ class NuanicConnector:
                 try:
                     devices = await BleakScanner.discover(timeout=3.0)
 
-                    # Find Nuanic devices
+                    # Find Nuanic / Moodmetric devices
                     nuanic_found = False
                     for device in devices:
-                        if device.name and "Nuanic" in device.name:
+                        if device.name and (
+                            "Nuanic" in device.name or "Moodmetric" in device.name
+                        ):
                             # If target address specified, only record that one
                             if self.target_address:
                                 if (
@@ -306,7 +427,13 @@ class NuanicConnector:
 
         try:
             if self.client.is_connected:
+                self._disconnect_event.clear()
                 await self.client.disconnect()
+                try:
+                    await asyncio.wait_for(self._disconnect_event.wait(), timeout=3.0)
+                except Exception:
+                    # Some backends may not always fire callback reliably.
+                    pass
         except Exception:
             pass
         finally:
@@ -346,51 +473,68 @@ class NuanicConnector:
         ):
             print("[CONN] Trying selected device directly...", end=" ", flush=True)
             try:
-                self.client = BleakClient(self.device, timeout=self.timeout)
+                self._disconnect_event.clear()
+                self.client = self._create_bleak_client(self.device)
                 await self.client.connect()
                 print("[OK] Connected")
 
-                print("[PAIR] Establishing encryption...", end=" ", flush=True)
-                try:
-                    await self.client.pair()
-                    print("[OK] Paired")
-                except Exception:
-                    print("[INFO] Pairing not available")
+                if self.pair_on_connect:
+                    print("[PAIR] Requested via BleakClient(pair=True)")
+                else:
+                    print("[PAIR] Establishing encryption...", end=" ", flush=True)
+                    try:
+                        await self.client.pair()
+                        print("[OK] Paired")
+                    except Exception:
+                        print("[INFO] Pairing not available")
 
-                print("\n[OK] Connection established!\n")
-                return True
+                if not getattr(self.client, "is_connected", False):
+                    print("[RETRY] Link dropped right after connect")
+                    await self._cleanup_client()
+                else:
+                    print("\n[OK] Connection established!\n")
+                    return True
             except Exception as e:
                 print(f"[RETRY] {e}")
                 await self._cleanup_client()
 
         for attempt in range(1, self.max_connect_attempts + 1):
-            # Step 1: Find device
+            # Step 1: Find device via scan
             print(
                 f"\n[SCAN {attempt}/{self.max_connect_attempts}] Searching for device...",
                 end=" ",
                 flush=True,
             )
-            if not await self.find_device():
+            scan_ok = await self.find_device()
+            if not scan_ok:
                 print("[NOT FOUND]")
                 if self.target_address and attempt == 1:
                     print(
-                        "[HINT] Target BLE address not seen. Ring may be using rotating/private MAC."
+                        "[HINT] Device not in scan results — may already be bonded to Windows "
+                        "or using a rotating MAC. Trying direct address connection..."
                     )
+
+            # Step 2: Connect — use scanned device object when available, otherwise
+            # connect by address string directly (works for Windows-bonded devices
+            # that are invisible to BLE scan).
+            connect_target = self.device if scan_ok else self.target_address
+            if connect_target is None:
                 if attempt < self.max_connect_attempts:
                     print(f"[WAIT] Pausing before retry...")
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(self.connect_backoff_seconds)
                 continue
 
-            print(f"[OK] Found: {self.device.name}")
+            if scan_ok:
+                print(f"[OK] Found: {self.device.name}")
 
-            # Step 2: Connect
             print(
                 f"[CONN {attempt}/{self.max_connect_attempts}] Connecting to BLE device...",
                 end=" ",
                 flush=True,
             )
             try:
-                self.client = BleakClient(self.device, timeout=self.timeout)
+                self._disconnect_event.clear()
+                self.client = self._create_bleak_client(connect_target)
                 await self.client.connect()
                 print("[OK] Connected")
             except asyncio.TimeoutError:
@@ -398,28 +542,41 @@ class NuanicConnector:
                 await self._cleanup_client()
                 if attempt < self.max_connect_attempts:
                     print(f"[WAIT] Resetting BLE and retrying...")
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(self.connect_backoff_seconds)
                 continue
             except Exception as e:
                 print(f"[ERROR] {e}")
                 await self._cleanup_client()
                 if attempt < self.max_connect_attempts:
                     print(f"[WAIT] Resetting BLE and retrying...")
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(self.connect_backoff_seconds)
                 continue
 
             # Step 3: Pair (optional)
-            print(
-                f"[PAIR {attempt}/{self.max_connect_attempts}] Establishing encryption...",
-                end=" ",
-                flush=True,
-            )
-            try:
-                await self.client.pair()
-                print("[OK] Paired")
-            except Exception as e:
-                # Pairing may fail if already paired - this is OK
-                print(f"[INFO] Pairing not available")
+            if self.pair_on_connect:
+                print(
+                    f"[PAIR {attempt}/{self.max_connect_attempts}] Requested via BleakClient(pair=True)"
+                )
+            else:
+                print(
+                    f"[PAIR {attempt}/{self.max_connect_attempts}] Establishing encryption...",
+                    end=" ",
+                    flush=True,
+                )
+                try:
+                    await self.client.pair()
+                    print("[OK] Paired")
+                except Exception as e:
+                    # Pairing may fail if already paired - this is OK
+                    print(f"[INFO] Pairing not available")
+
+            if not getattr(self.client, "is_connected", False):
+                print("[RETRY] Link dropped right after connect")
+                await self._cleanup_client()
+                if attempt < self.max_connect_attempts:
+                    print(f"[WAIT] Retrying after disconnect...")
+                    await asyncio.sleep(self.connect_backoff_seconds)
+                continue
 
             # Success!
             print(f"\n[OK] Connection established!\n")
@@ -439,8 +596,12 @@ class NuanicConnector:
         forced unpair for troubleshooting.
         """
         if self.client:
+            was_connected = bool(getattr(self.client, "is_connected", False))
             await self._cleanup_client()
-            print("[OK] Disconnected")
+            if was_connected:
+                print("[OK] Disconnected")
+            else:
+                print("[INFO] No active BLE connection to close")
 
         # Optional unpair from Windows Bluetooth
         if self.unpair_on_disconnect and self.device:

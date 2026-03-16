@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Nuanic Ring Monitor CLI - Real-time monitoring of IMU, Stress, and EDA data."""
+"""Ring monitor CLI.
+
+Behavior by detected profile:
+- Nuanic: full decoded monitor (IMU + stress/state)
+- Moodmetric: generic notify capture (UUID, payload len, raw hex)
+"""
 
 import argparse
 import asyncio

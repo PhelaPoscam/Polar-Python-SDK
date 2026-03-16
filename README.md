@@ -204,6 +204,69 @@ Note: these are reverse-engineered interpretations from live payload behavior an
 - Forced unpair-on-disconnect caused unreliable reconnect behavior with rotating MAC addresses.
 - Connector behavior now defaults to plain disconnect (no forced OS unpair), improving reconnect reliability.
 
+## Ring Profile Matrix (Nuanic vs Moodmetric)
+
+The diagnostics CLI can discover both Nuanic and Moodmetric devices, but they do not expose the same proprietary GATT profile.
+
+### Nuanic profile (project target)
+- Proprietary service: `5491faaf-b0c2-4167-8f3d-bc6b31db69e7`
+- Includes project-specific characteristics such as:
+    - `7c3b82e7-22b7-4cb6-8458-ba325edf6ede` (buffer read)
+    - `d306262b-c8c9-4c4b-9050-3a41dea706e5` (real-time frame)
+    - `468f2717-6a7d-46f9-9eb7-f92aab208bae` (bulk waveform)
+
+### Moodmetric profile (compatible for discovery, different schema)
+- Does not expose the Nuanic proprietary service `5491faaf...`
+- Typical observed custom services include:
+    - `dd499b70-e4cd-4988-a923-a7aab7283f8e`
+    - `aed4978e-9c7a-11e3-8d05-425861b86ab6`
+    - `0000e001-0000-1000-8000-00805f9b34fb`
+
+Operational implication:
+- `--buffer-only` is meaningful for Nuanic profile devices.
+- On Moodmetric profile devices, diagnostics will now skip Nuanic-only buffer steps with a compatibility message instead of failing.
+
+Recommended commands:
+```bash
+# Full GATT service/characteristic table (works for either profile)
+python scripts/discover_nuanic_services.py --no-profile --buffer-poll 0
+
+# Nuanic-only buffer check (will skip on non-Nuanic profile)
+python scripts/discover_nuanic_services.py --buffer-only
+
+# Profile-specific notify subscription (auto|nuanic|moodmetric)
+python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile auto
+```
+
+Ring-agnostic roadmap in current code:
+- Diagnostics now supports profile-aware notify subscription sets.
+- `--ring-profile auto` detects profile from discovered services.
+- Monitor includes a Moodmetric adapter with first-pass payload decoding and JSON `decoded_fields` logging.
+
+## Moodmetric Capture Summary (2026-03-16)
+
+Live capture from `Moodmetric-ED62` confirmed active notify traffic and profile-specific stream behavior.
+
+Observed notify UUID activity:
+- Active in run: `a0956420-9bd2-11e4-bd06-0800200c9a66`, `90bd4fd0-4309-11e4-916c-0800200c9a66`, `f1b41cde-dbf5-4acf-8679-ecb8b4dca6ff`, occasional `5d7a90a0-ab7e-11e4-bcd8-0800200c9a66`
+- Silent in this run: `c48650d0-a2d8-11e4-bcd8-0800200c9a66`
+
+Working interpretation (hypothesis, needs multi-session validation):
+- `90bd...` (12 bytes) and `a095...` (7 bytes) appear redundant/related frames carrying overlapping values.
+- `a095...` candidate layout:
+    - bytes 0-1: rolling counter/clock (uint16)
+    - bytes 2-3: state/quality-like field
+    - byte 4: stress-like index candidate
+    - bytes 5-6: raw signal/EDA-like value candidate
+- `f1b4...` (2 bytes) is likely a high-rate raw ADC-like channel.
+
+Example overlap seen in capture:
+- `90bd`: `400000850092920074004400`
+- `a095`: `032d4000927444`
+
+Interpretation note:
+- This mapping is reverse-engineering guidance and not yet firmware-confirmed.
+
 ## Analysis & Validation Tools
 
 **Current Analysis Script** (`scripts/analysis/`)

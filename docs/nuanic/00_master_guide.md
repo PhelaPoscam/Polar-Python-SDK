@@ -39,6 +39,66 @@ Nuanic integration captures and displays:
 - Pairwise/docked workflows can have short advertising windows.
 - Connection stability depends on retry logic in connector flow.
 
+## 1.1 Dual Ring Profiles (Important)
+
+The current diagnostics workflow may detect two ring families:
+- Nuanic
+- Moodmetric
+
+Both can connect via Bleak, but their proprietary GATT schemas are different.
+
+### Nuanic profile (primary target for this project)
+- Proprietary service UUID: `5491faaf-b0c2-4167-8f3d-bc6b31db69e7`
+- Project-specific data flow and parsing in this repository assumes this profile.
+- Nuanic buffer characteristic: `7c3b82e7-22b7-4cb6-8458-ba325edf6ede`
+
+### Moodmetric profile (different schema)
+- Does not expose the Nuanic proprietary service `5491faaf...`
+- Common observed custom services:
+  - `dd499b70-e4cd-4988-a923-a7aab7283f8e`
+  - `aed4978e-9c7a-11e3-8d05-425861b86ab6`
+  - `0000e001-0000-1000-8000-00805f9b34fb`
+
+### Operational rule
+- Use `--no-profile --buffer-poll 0` for pure GATT discovery regardless of ring type.
+- Use `--buffer-only` only when targeting Nuanic profile; on Moodmetric profile it will be skipped as non-compatible.
+- Use `--subscribe-core-streams --ring-profile auto` for profile-aware notify subscription.
+
+## 1.2 Moodmetric Stream Interpretation (Latest Capture)
+
+Latest successful Moodmetric capture confirmed real notify traffic from multiple UUIDs.
+
+Observed channels in one session:
+- High activity: `a0956420-9bd2-11e4-bd06-0800200c9a66` (7 bytes)
+- High activity: `90bd4fd0-4309-11e4-916c-0800200c9a66` (12 bytes)
+- High activity: `f1b41cde-dbf5-4acf-8679-ecb8b4dca6ff` (2 bytes)
+- Occasional: `5d7a90a0-ab7e-11e4-bcd8-0800200c9a66` (11 bytes in this run)
+- Silent in this run: `c48650d0-a2d8-11e4-bcd8-0800200c9a66`
+
+Current best-fit hypothesis:
+- `90bd...` and `a095...` carry overlapping data (condensed vs expanded frame forms).
+- `a095...` candidate unpacking:
+  - bytes 0-1: rolling clock/counter
+  - bytes 2-3: state/quality-like field
+  - byte 4: stress-like index candidate
+  - bytes 5-6: EDA/raw signal-like value candidate
+- `f1b4...` likely exposes a compact raw ADC-like sensor stream.
+
+Validated mapping in latest capture:
+- For aligned packets, all checked pairs matched (`61/61`):
+  - `a095[2:4] == 90bd[0:2]`
+  - `a095[4] == 90bd[6]`
+  - `a095[5] == 90bd[8]`
+  - `a095[6] == 90bd[10]`
+- Interpretation: `a095` behaves like a compact projection of key fields from `90bd`.
+
+Current parser support in monitor:
+- Moodmetric monitor mode now decodes known payloads (`a095`, `90bd`, `f1b4`, `5d7a`) in real time.
+- Console output includes a compact decoded summary per packet.
+- CSV logs include a `decoded_fields` column containing JSON-decoded fields per packet.
+
+Important: these labels are hypotheses from packet behavior, not firmware documentation.
+
 ## 2. Quick Start
 
 ## 2.1 Environment setup
@@ -74,6 +134,11 @@ python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_
 python scripts/discover_nuanic_services.py --ring-addr <MAC>
 ```
 
+GATT-only discovery (recommended when validating ring type):
+```bash
+python scripts/discover_nuanic_services.py --no-profile --buffer-poll 0
+```
+
 ## 2.6 Legacy compatibility command path (historical)
 Earlier docs also reference:
 ```bash
@@ -84,6 +149,22 @@ python scripts/ble/analyze_nuanic_data.py data/nuanic_logs/nuanic_stress_*.csv
 Use these only if your local tree still contains `scripts/ble/` equivalents.
 
 ## 3. CLI Reference
+
+## 3.0 `discover_nuanic_services.py` profile-aware diagnostics
+```bash
+# Auto-detect profile from services (recommended)
+python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile auto
+
+# Force known profile
+python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile nuanic
+python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile moodmetric
+```
+
+Key options:
+- `--ring-profile {auto,nuanic,moodmetric}`
+  - `auto`: detect by service UUIDs
+  - `nuanic`: use Nuanic notify UUID set
+  - `moodmetric`: use Moodmetric notify UUID set
 
 ## 3.1 `nuanic_monitor_cli.py` (real-time monitoring)
 ```bash
@@ -389,6 +470,9 @@ When these conflicts appear in legacy logs/docs:
   - Ensure ring is active and nearby.
   - Ensure Bluetooth is enabled.
   - Close competing Bluetooth apps.
+- Wrong ring profile selected:
+  - Run `python scripts/discover_nuanic_services.py --no-profile --buffer-poll 0`
+  - If service `5491faaf-b0c2-4167-8f3d-bc6b31db69e7` is missing, device is not Nuanic profile.
 - Connection timeout:
   - Retry once.
   - Toggle Bluetooth adapter and retry.
@@ -427,6 +511,11 @@ Because the test inventory in that summary does not fully match current filename
 3. Re-verify one fresh capture and one fresh analysis run.
 4. Record validated script paths and packet assumptions in this guide only.
 5. Keep contradictory historical claims in an explicit "Historical Notes" section instead of separate troubleshooting files.
+6. Add a Moodmetric parser function for `a095...` and persist decoded fields in a dedicated CSV.
+7. Validate field semantics with controlled scenarios:
+  - off-finger vs on-finger
+  - low-motion vs motion
+  - calm baseline vs stress stimulus
 
 ## Appendix A: CSV Output Patterns
 

@@ -21,16 +21,17 @@ from typing import Dict, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from awe_polar.nuanic_ring.connector import NuanicConnector
+from awe_polar.nuanic_ring.ring_profiles import (
+    MOODMETRIC_PROFILE,
+    NUANIC_PROFILE,
+    UNKNOWN_PROFILE,
+    detect_ring_profile_from_service_uuids,
+    notify_uuids_for_profile,
+)
 
 SERVICE_UUID = "5491faaf-b0c2-4167-8f3d-bc6b31db69e7"
 BUFFER_CHAR = "7c3b82e7-22b7-4cb6-8458-ba325edf6ede"
 MYSTERY_NOTIFY = "42dcb71b-1817-43bd-8ea3-7272780a1c9f"
-CORE_NOTIFY_CHARS = [
-    "42dcb71b-1817-43bd-8ea3-7272780a1c9f",
-    "d306262b-c8c9-4c4b-9050-3a41dea706e5",
-    "3c180fcc-bfec-4b7c-8e52-1a37f123e449",
-    "468f2717-6a7d-46f9-9eb7-f92aab208bae",
-]
 
 WRITE_ONLY_CHARS = {
     "2175c13f-60e4-4de5-80af-0d06f1b54880": "WRITE_1",
@@ -160,6 +161,15 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--ring-profile",
+        choices=["auto", NUANIC_PROFILE, MOODMETRIC_PROFILE],
+        default="auto",
+        help=(
+            "Profile selection for profile-specific operations. "
+            "Default: auto-detect from discovered services."
+        ),
+    )
+    parser.add_argument(
         "--unpair-on-exit",
         action="store_true",
         help=(
@@ -168,6 +178,17 @@ Examples:
         ),
     )
     return parser.parse_args()
+
+
+def detect_profile_from_client(client) -> str:
+    service_uuids = [service.uuid for service in client.services]
+    return detect_ring_profile_from_service_uuids(service_uuids)
+
+
+def resolve_profile(client, requested_profile: str) -> str:
+    if requested_profile != "auto":
+        return requested_profile
+    return detect_profile_from_client(client)
 
 
 def pick_ring_addr(args: argparse.Namespace) -> Optional[str]:
@@ -390,13 +411,30 @@ def parse_eda_data(sender, data: bytearray):
     )
 
 
-async def subscribe_core_streams(client, listen_seconds: int | None = None):
-    """Subscribe to 4 core proprietary notify characteristics.
+async def subscribe_core_streams(
+    client,
+    listen_seconds: int | None = None,
+    ring_profile: str = "auto",
+):
+    """Subscribe to profile-specific notify characteristics.
 
     Prints one line per notification with timestamp, UUID, payload length,
     and clean uppercase hex bytes.
     """
     print_header("LIVE CORE STREAMS")
+
+    resolved_profile = resolve_profile(client, ring_profile)
+    active_profile_label = resolved_profile.upper()
+
+    if resolved_profile == UNKNOWN_PROFILE:
+        print(
+            "[WARN] Could not auto-detect ring profile from services; "
+            "defaulting to NUANIC notify set."
+        )
+        resolved_profile = NUANIC_PROFILE
+
+    notify_uuids = notify_uuids_for_profile(resolved_profile)
+    print(f"[PROFILE] Using {active_profile_label} notify set ({len(notify_uuids)} UUIDs)")
 
     disconnected = asyncio.Event()
 
@@ -412,12 +450,16 @@ async def subscribe_core_streams(client, listen_seconds: int | None = None):
 
     active_uuids: list[str] = []
 
-    for uuid in CORE_NOTIFY_CHARS:
+    for uuid in notify_uuids:
         try:
 
             def make_cb(char_uuid: str):
                 def cb(_sender, data):
-                    if char_uuid.lower() == "d306262b-c8c9-4c4b-9050-3a41dea706e5":
+                    if (
+                        resolved_profile == NUANIC_PROFILE
+                        and char_uuid.lower()
+                        == "d306262b-c8c9-4c4b-9050-3a41dea706e5"
+                    ):
                         parse_eda_data(_sender, bytearray(data))
                         return
 
@@ -469,71 +511,80 @@ async def main() -> int:
     connector = NuanicConnector(
         target_address=ring_addr,
         unpair_on_disconnect=args.unpair_on_exit,
+        max_connect_attempts=3,
+        connect_backoff_seconds=2.0,
+        pair_on_connect=True,
     )
     try:
-        if not await connector.connect():
-            print("[FAIL] Could not connect to ring")
-            return 1
+        try:
+            if not await connector.connect():
+                print("[FAIL] Could not connect to ring")
+                return 1
 
-        print(f"\n[INIT] Connected to: {connector.target_address or 'selected ring'}")
-
-        client = connector.client
-        if args.subscribe_core_streams:
-            await subscribe_core_streams(client, listen_seconds=args.listen_seconds)
-            return 0
-
-        if args.buffer_only:
-            await inspect_buffer(
-                client, polls=args.buffer_poll, interval=args.buffer_interval
+            print(
+                f"\n[INIT] Connected to: {connector.target_address or 'selected ring'}"
             )
-            return 0
 
-        discovered = await discover_chars(
-            client, only_stream_chars=args.only_stream_chars
-        )
-        all_chars = discovered["all_chars"]
-        target_chars = discovered["target_chars"]
-
-        await read_non_notify(client, all_chars)
-
-        if not args.no_profile:
-            await profile_notify(client, all_chars, seconds=args.profile_seconds)
-
-        if args.write_probe:
-            if target_chars:
-                await run_write_probe(client)
-            else:
-                print(
-                    f"[SKIP] Write probe skipped because target service {SERVICE_UUID} is missing"
+            client = connector.client
+            if args.subscribe_core_streams:
+                await subscribe_core_streams(
+                    client,
+                    listen_seconds=args.listen_seconds,
+                    ring_profile=args.ring_profile,
                 )
+                return 0
 
-        if args.buffer_poll > 0:
-            if target_chars:
+            if args.buffer_only:
+                available_uuids = {
+                    char.uuid.lower() for _service, char in iter_all_chars(client)
+                }
+                if BUFFER_CHAR.lower() not in available_uuids:
+                    print(
+                        "[SKIP] Buffer inspection skipped: target buffer characteristic "
+                        f"{BUFFER_CHAR} is not exposed by this device profile."
+                    )
+                    return 0
                 await inspect_buffer(
                     client, polls=args.buffer_poll, interval=args.buffer_interval
                 )
-            else:
-                print(
-                    f"[SKIP] Buffer inspection skipped because target service {SERVICE_UUID} is missing"
-                )
+                return 0
 
-        return 0
+            discovered = await discover_chars(
+                client, only_stream_chars=args.only_stream_chars
+            )
+            all_chars = discovered["all_chars"]
+            target_chars = discovered["target_chars"]
+
+            await read_non_notify(client, all_chars)
+
+            if not args.no_profile:
+                await profile_notify(client, all_chars, seconds=args.profile_seconds)
+
+            if args.write_probe:
+                if target_chars:
+                    await run_write_probe(client)
+                else:
+                    print(
+                        f"[SKIP] Write probe skipped because target service {SERVICE_UUID} is missing"
+                    )
+
+            if args.buffer_poll > 0:
+                if target_chars:
+                    await inspect_buffer(
+                        client, polls=args.buffer_poll, interval=args.buffer_interval
+                    )
+                else:
+                    print(
+                        f"[SKIP] Buffer inspection skipped because target service {SERVICE_UUID} is missing"
+                    )
+
+            return 0
+        except KeyboardInterrupt:
+            print("\n[STOP] Interrupted by user")
+            return 1
     finally:
-        pre_cleanup_connected = bool(
-            connector.client and getattr(connector.client, "is_connected", False)
-        )
-        print(
-            f"[EXIT-CHECK] Bleak client connected before cleanup: {pre_cleanup_connected}"
-        )
-
+        # Keep disconnect as the final awaited cleanup action before exit.
         await connector.disconnect()
-
-        post_cleanup_connected = bool(
-            connector.client and getattr(connector.client, "is_connected", False)
-        )
-        print(
-            f"[EXIT-CHECK] Bleak client connected after cleanup:  {post_cleanup_connected}"
-        )
 
 
 if __name__ == "__main__":

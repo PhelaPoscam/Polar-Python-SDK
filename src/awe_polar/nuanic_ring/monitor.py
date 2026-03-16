@@ -2,6 +2,7 @@
 
 import asyncio
 import csv
+import json
 import math
 import os
 import struct
@@ -10,6 +11,14 @@ from datetime import datetime
 from pathlib import Path
 
 from .connector import NuanicConnector
+from .ring_profiles import (
+    MOODMETRIC_PROFILE,
+    NUANIC_PROFILE,
+    UNKNOWN_PROFILE,
+    detect_ring_profile_from_service_uuids,
+    notify_uuids_for_profile,
+)
+from .moodmetric_parser import decode_moodmetric_payload, summarize_decoded_payload
 
 
 def convert_eda(raw_value: int):
@@ -60,6 +69,7 @@ class NuanicMonitor:
         self.current_3c18_state_code = None
         self.current_3c18_state_name = "unknown"
         self.state_count = 0
+        self._detected_profile = UNKNOWN_PROFILE
 
     def _parse_d306_packet(self, data):
         """Parse d306 16-byte frame (little-endian uint32 chunks)."""
@@ -168,10 +178,117 @@ class NuanicMonitor:
                     "State_Code",
                     "payload_hex",
                     "full_packet_hex",
+                    "decoded_fields",
                 ]
             )
 
         print(f"[LOG] Created: {self.log_file.name}\n")
+
+    def _moodmetric_notify_callback_factory(self, uuid: str, packet_counts: dict):
+        def _cb(_sender, data):
+            ts = datetime.now().isoformat(timespec="milliseconds")
+            elapsed_ms = int(self._elapsed_seconds() * 1000)
+            payload_hex = bytes(data).hex()
+            packet_counts[uuid] = packet_counts.get(uuid, 0) + 1
+            decoded = decode_moodmetric_payload(uuid, bytes(data))
+            decoded_summary = summarize_decoded_payload(decoded)
+            print(
+                f"[{ts}] [MM] uuid={uuid} len={len(data)} hex={payload_hex} | {decoded_summary}"
+            )
+
+            if self.enable_logging and self.log_file:
+                with open(self.log_file, "a", newline="", encoding="utf-8") as file:
+                    writer = csv.writer(file)
+                    writer.writerow(
+                        [
+                            ts,
+                            elapsed_ms,
+                            f"MM_NOTIFY_{uuid[:8]}",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            "",
+                            payload_hex,
+                            payload_hex,
+                            json.dumps(decoded, sort_keys=True),
+                        ]
+                    )
+
+        return _cb
+
+    async def _run_moodmetric_monitor(self, duration_seconds=None):
+        uuids = notify_uuids_for_profile(MOODMETRIC_PROFILE)
+        if not uuids:
+            print("[FAIL] Moodmetric notify UUID set is empty")
+            return False
+
+        subscribed = []
+        packet_counts = {uuid: 0 for uuid in uuids}
+        for uuid in uuids:
+            try:
+                await self.connector.client.start_notify(
+                    uuid, self._moodmetric_notify_callback_factory(uuid, packet_counts)
+                )
+                subscribed.append(uuid)
+                print(f"[SUB-MM] {uuid}")
+            except Exception as e:
+                print(f"[SUB-MM-FAIL] {uuid}: {e}")
+
+        if not subscribed:
+            print("[FAIL] Could not subscribe to any Moodmetric notify streams")
+            return False
+
+        print("[OK] Moodmetric monitor started")
+        print("[INFO] Generic payload capture mode (UUID, length, raw hex)")
+
+        try:
+            if duration_seconds is None:
+                last_total = 0
+                while True:
+                    await asyncio.sleep(1)
+                    elapsed = int(self._elapsed_seconds())
+                    if elapsed > 0 and elapsed % 5 == 0:
+                        total = sum(packet_counts.values())
+                        if total != last_total:
+                            print(
+                                f"[MM-STATS] total packets={total} | per UUID: {packet_counts}"
+                            )
+                            last_total = total
+                        elif total == 0 and elapsed >= 10:
+                            print(
+                                "[MM-WARN] Connected and subscribed, but no notify packets yet. "
+                                "Ensure ring is worn/active and keep capture running longer."
+                            )
+            else:
+                await asyncio.sleep(duration_seconds)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("\n[STOP] Stopping Moodmetric capture...")
+        finally:
+            for uuid in subscribed:
+                try:
+                    await self.connector.client.stop_notify(uuid)
+                except Exception:
+                    pass
+
+        total = sum(packet_counts.values())
+        print(f"[MM-SUMMARY] total packets={total}")
+        print(f"[MM-SUMMARY] per UUID={packet_counts}")
+        if total == 0:
+            print(
+                "[MM-SUMMARY] No notify packets captured during this session; "
+                "subscriptions are active but stream appears idle/gated."
+            )
+
+        return True
 
     def _imu_callback(self, sender, data):
         if len(data) != 16:
@@ -214,6 +331,7 @@ class NuanicMonitor:
                         "",
                         "",
                         full_hex,
+                        "",
                     ]
                 )
 
@@ -278,6 +396,7 @@ class NuanicMonitor:
                         state_code if state_code is not None else "",
                         raw_hex,
                         raw_hex,
+                        "",
                     ]
                 )
 
@@ -332,6 +451,7 @@ class NuanicMonitor:
                         "",
                         waveform_hex,
                         full_hex,
+                        "",
                     ]
                 )
 
@@ -444,8 +564,22 @@ class NuanicMonitor:
             print("[FAIL] Could not connect to ring")
             return False
 
-        # Create a log file only after successful connection.
+        service_uuids = [service.uuid for service in self.connector.client.services]
+        self._detected_profile = detect_ring_profile_from_service_uuids(service_uuids)
+        print(f"[PROFILE] Detected ring profile: {self._detected_profile}")
+
+        # Initialize log only when we are ready to start an active stream path.
         self._create_log_files()
+
+        if self._detected_profile == MOODMETRIC_PROFILE:
+            try:
+                ok = await self._run_moodmetric_monitor(duration_seconds=duration_seconds)
+            finally:
+                await self.connector.disconnect()
+            return ok
+
+        if self._detected_profile == UNKNOWN_PROFILE:
+            print("[WARN] Unknown ring profile; trying Nuanic subscriptions")
 
         imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
         stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
