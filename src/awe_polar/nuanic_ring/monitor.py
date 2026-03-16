@@ -1,7 +1,8 @@
-"""Real-time monitor for Nuanic ring streams (IMU + Stress + EDA)."""
+"""Real-time monitor for Nuanic ring streams (d306 EDA+DNE + 468f IMU batch)."""
 
 import asyncio
 import csv
+import math
 import os
 import struct
 from collections import deque
@@ -9,6 +10,14 @@ from datetime import datetime
 from pathlib import Path
 
 from .connector import NuanicConnector
+
+
+def convert_eda(raw_value: int):
+    """Convert raw EDA integer into resistance (kOhm) and conductance (uS)."""
+    ADC_MULTIPLIER = 1.0
+    resistance_kohm = (raw_value * ADC_MULTIPLIER) / 1000.0
+    conductance_us = (1000.0 / resistance_kohm) if resistance_kohm > 0 else 0.0
+    return round(resistance_kohm, 4), round(conductance_us, 4)
 
 
 class NuanicMonitor:
@@ -20,6 +29,7 @@ class NuanicMonitor:
         imu_refresh_packets: int = 5,
         clear_console: bool = True,
         enable_logging: bool = True,
+        calibration_seconds: int = 120,
     ):
         self.log_dir = Path(log_dir)
         self.enable_logging = enable_logging
@@ -31,47 +41,71 @@ class NuanicMonitor:
         self.clear_console = clear_console
 
         self.start_time = None
-        self.imu_count = 0
-        self.stress_count = 0
+        self.d306_count = 0
+        self.imu_batch_count = 0
 
         self.current_stress = None
         self.current_eda_raw = None
+        self.current_resistance_kohm = None
+        self.current_conductance_us = None
+        self.current_d306_clock = None
+        self.current_dne_stress_index = None
 
         self.log_file = None
 
-        self.imu_buffer = deque(maxlen=10)
-        self.stress_buffer = deque(maxlen=5)
+        self.d306_buffer = deque(maxlen=10)
+        self.imu_batch_buffer = deque(maxlen=5)
         self.raw_eda_buffer = deque(maxlen=10)
-        self.current_imu_layout = "unknown"
-        self.raw_eda_count = 0
+        self.current_d306_context = None
+        self.current_3c18_state_code = None
+        self.current_3c18_state_name = "unknown"
+        self.state_count = 0
 
-    def _parse_imu_packet(self, data):
-        """Parse IMU packet with layout auto-detection."""
-        if len(data) < 12:
+    def _parse_d306_packet(self, data):
+        """Parse d306 16-byte frame (little-endian uint32 chunks)."""
+        if len(data) != 16:
             return None
 
-        acc_x = struct.unpack("<h", data[8:10])[0]
-        acc_y = struct.unpack("<h", data[10:12])[0]
+        return {
+            "clock": struct.unpack("<I", data[0:4])[0],
+            "context": struct.unpack("<I", data[4:8])[0],
+            "eda_value": struct.unpack("<I", data[8:12])[0],
+            # Current hypothesis: trailing field is DNE/MM-like stress index 0..100.
+            "dne_stress_index": struct.unpack("<I", data[12:16])[0],
+        }
 
-        use_quality_12 = len(data) > 12 and (
-            len(data) <= 14 or (data[14] == 0 and data[12] > 0)
-        )
+    def _parse_468f_imu_batch(self, data):
+        """Parse 468f 92-byte payload as 14 batched XYZ IMU frames.
 
-        if use_quality_12:
-            quality = data[12]
-            acc_z = None
-            layout = "xy_q12"
-        else:
-            acc_z = struct.unpack("<h", data[12:14])[0] if len(data) >= 14 else None
-            quality = data[14] if len(data) > 14 else 0
-            layout = "xyz_q14"
+        Layout (little-endian):
+        - bytes 0-3: hardware timestamp
+        - bytes 4-7: context/session id
+        - bytes 8-91: 14 samples x (x:int16, y:int16, z:int16)
+        """
+        if len(data) != 92:
+            return None
+
+        clock = struct.unpack("<I", data[0:4])[0]
+        context = struct.unpack("<I", data[4:8])[0]
+
+        samples = []
+        offset = 8
+        for _ in range(14):
+            x, y, z = struct.unpack_from("<hhh", data, offset)
+            samples.append((x, y, z))
+            offset += 6
+
+        magnitudes = [math.sqrt((x * x) + (y * y) + (z * z)) for x, y, z in samples]
+        motion_intensity = sum(magnitudes) / len(magnitudes)
 
         return {
-            "acc_x": acc_x,
-            "acc_y": acc_y,
-            "acc_z": acc_z,
-            "quality": quality,
-            "layout": layout,
+            "clock": clock,
+            "context": context,
+            "samples": samples,
+            "first_x": samples[0][0],
+            "first_y": samples[0][1],
+            "first_z": samples[0][2],
+            "motion_intensity": motion_intensity,
         }
 
     def parse_stress_packet(self, data):
@@ -119,13 +153,20 @@ class NuanicMonitor:
                     "timestamp",
                     "elapsed_ms",
                     "data_type",
-                    "acc_x",
-                    "acc_y",
-                    "acc_z",
-                    "imu_quality",
-                    "stress_raw",
-                    "stress_percent",
-                    "eda_hex",
+                    "EDA_Raw_Value",
+                    "Stress_Index",
+                    "Skin_Resistance_kOhm",
+                    "Skin_Conductance_uS",
+                    "D306_Clock",
+                    "D306_Context",
+                    "IMU_Batch_Clock",
+                    "IMU_Batch_Context",
+                    "IMU_X0",
+                    "IMU_Y0",
+                    "IMU_Z0",
+                    "IMU_Motion_Intensity",
+                    "State_Code",
+                    "payload_hex",
                     "full_packet_hex",
                 ]
             )
@@ -133,21 +174,21 @@ class NuanicMonitor:
         print(f"[LOG] Created: {self.log_file.name}\n")
 
     def _imu_callback(self, sender, data):
-        if len(data) < 12:
+        if len(data) != 16:
             return
 
         timestamp = datetime.now().isoformat()
         elapsed_ms = int(self._elapsed_seconds() * 1000)
 
-        parsed = self._parse_imu_packet(data)
+        parsed = self._parse_d306_packet(data)
         if not parsed:
             return
 
-        acc_x = parsed["acc_x"]
-        acc_y = parsed["acc_y"]
-        acc_z = parsed["acc_z"]
-        signal_quality = parsed["quality"]
-        layout = parsed["layout"]
+        clock = parsed["clock"]
+        context = parsed["context"]
+        eda_value = parsed["eda_value"]
+        dne_stress_index = parsed["dne_stress_index"]
+        resistance_kohm, conductance_us = convert_eda(eda_value)
         full_hex = data.hex()
 
         if self.enable_logging and self.log_file:
@@ -157,11 +198,18 @@ class NuanicMonitor:
                     [
                         timestamp,
                         elapsed_ms,
-                        "IMU",
-                        acc_x,
-                        acc_y,
-                        acc_z if acc_z is not None else "",
-                        signal_quality,
+                        "D306_EDA",
+                        eda_value,
+                        dne_stress_index,
+                        f"{resistance_kohm:.4f}",
+                        f"{conductance_us:.4f}",
+                        clock,
+                        context,
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
                         "",
                         "",
                         "",
@@ -169,27 +217,43 @@ class NuanicMonitor:
                     ]
                 )
 
-        self.imu_count += 1
-        self.current_imu_layout = layout
-        self.imu_buffer.append(
+        self.d306_count += 1
+        self.current_d306_context = context
+        self.current_d306_clock = clock
+        self.current_dne_stress_index = dne_stress_index
+        self.current_stress = float(dne_stress_index)
+        self.current_eda_raw = str(eda_value)
+        self.current_resistance_kohm = resistance_kohm
+        self.current_conductance_us = conductance_us
+
+        self.d306_buffer.append(
             {
-                "count": self.imu_count,
-                "acc_x": acc_x,
-                "acc_y": acc_y,
-                "acc_z": acc_z,
-                "quality": signal_quality,
-                "layout": layout,
+                "count": self.d306_count,
+                "clock": clock,
+                "context": context,
+                "eda_value": eda_value,
+                "dne_stress_index": dne_stress_index,
             }
         )
 
-        if self.imu_count % self.imu_refresh_packets == 0:
+        if self.d306_count % self.imu_refresh_packets == 0:
             self._update_display()
 
     def _raw_eda_callback(self, sender, data):
-        """Callback for raw EDA data stream."""
+        """Callback for 3c180fcc state/on-finger stream."""
         timestamp = datetime.now().isoformat()
         elapsed_ms = int(self._elapsed_seconds() * 1000)
         raw_hex = data.hex()
+        state_code = data[0] if len(data) >= 1 else None
+        state_name_map = {
+            0x01: "idle/off-finger",
+            0x02: "active/on-finger",
+            0x03: "transient/poll",
+        }
+        state_name = state_name_map.get(state_code, "unknown")
+
+        self.current_3c18_state_code = state_code
+        self.current_3c18_state_name = state_name
 
         if self.enable_logging and self.log_file:
             with open(self.log_file, "a", newline="", encoding="utf-8") as file:
@@ -198,23 +262,32 @@ class NuanicMonitor:
                     [
                         timestamp,
                         elapsed_ms,
-                        "RAW_EDA",
+                        "STATE_3C18",
                         "",
                         "",
                         "",
                         "",
                         "",
                         "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        state_code if state_code is not None else "",
                         raw_hex,
                         raw_hex,
                     ]
                 )
 
-        self.raw_eda_count += 1
+        self.state_count += 1
         self.raw_eda_buffer.append(
             {
-                "count": self.raw_eda_count,
+                "count": self.state_count,
                 "data": raw_hex,
+                "state_code": state_code,
+                "state_name": state_name,
             }
         )
 
@@ -226,15 +299,14 @@ class NuanicMonitor:
             self.current_eda_raw = parsed["eda_raw"]
 
     def _stress_callback(self, sender, data):
-        if len(data) < 15:
+        parsed_batch = self._parse_468f_imu_batch(data)
+        if not parsed_batch:
             return
 
         timestamp = datetime.now().isoformat()
         elapsed_ms = int(self._elapsed_seconds() * 1000)
 
-        stress_raw = data[14]
-        stress_percent = (stress_raw / 255) * 100
-        eda_hex = data[15:].hex() if len(data) > 15 else ""
+        waveform_hex = data[8:].hex()
         full_hex = data.hex()
 
         if self.enable_logging and self.log_file:
@@ -244,37 +316,37 @@ class NuanicMonitor:
                     [
                         timestamp,
                         elapsed_ms,
-                        "STRESS",
+                        "IMU_BATCH_468F",
                         "",
                         "",
                         "",
                         "",
-                        stress_raw,
-                        f"{stress_percent:.1f}",
-                        eda_hex,
+                        "",
+                        "",
+                        parsed_batch["clock"],
+                        parsed_batch["context"],
+                        parsed_batch["first_x"],
+                        parsed_batch["first_y"],
+                        parsed_batch["first_z"],
+                        f"{parsed_batch['motion_intensity']:.2f}",
+                        "",
+                        waveform_hex,
                         full_hex,
                     ]
                 )
 
-        eda_samples = []
-        if len(data) >= 92:
-            eda_bytes = data[15:92]
-            eda_samples = [sample * (100 / 255) for sample in eda_bytes]
-
-        eda_mean = sum(eda_samples) / len(eda_samples) if eda_samples else 0.0
-        eda_min = min(eda_samples) if eda_samples else 0.0
-        eda_max = max(eda_samples) if eda_samples else 0.0
-
-        self.stress_count += 1
-        self.current_stress = stress_percent
-        self.current_eda_raw = eda_hex
-        self.stress_buffer.append(
+        self.imu_batch_count += 1
+        self.current_eda_raw = waveform_hex
+        self.imu_batch_buffer.append(
             {
-                "count": self.stress_count,
-                "stress": stress_percent,
-                "eda_mean": eda_mean,
-                "eda_min": eda_min,
-                "eda_max": eda_max,
+                "count": self.imu_batch_count,
+                "clock": parsed_batch["clock"],
+                "context": parsed_batch["context"],
+                "first_x": parsed_batch["first_x"],
+                "first_y": parsed_batch["first_y"],
+                "first_z": parsed_batch["first_z"],
+                "motion_intensity": parsed_batch["motion_intensity"],
+                "sample_count": len(parsed_batch["samples"]),
             }
         )
 
@@ -285,54 +357,56 @@ class NuanicMonitor:
             os.system("cls" if os.name == "nt" else "clear")
 
         elapsed = self._elapsed_seconds()
-        imu_hz = self.imu_count / elapsed
-        stress_hz = self.stress_count / elapsed
-        raw_eda_hz = self.raw_eda_count / elapsed
+        d306_hz = self.d306_count / elapsed
+        imu_batch_hz = self.imu_batch_count / elapsed
+        state_hz = self.state_count / elapsed
 
         print("=" * 110)
         print("NUANIC MONOLITHIC MONITOR")
         print("=" * 110)
         print(
-            f"Elapsed: {elapsed:.1f}s | IMU: {self.imu_count} pkts ({imu_hz:.1f} Hz) | "
-            f"Stress: {self.stress_count} pkts ({stress_hz:.1f} Hz) | "
-            f"Raw EDA: {self.raw_eda_count} pkts ({raw_eda_hz:.1f} Hz)"
+            f"Elapsed: {elapsed:.1f}s | D306: {self.d306_count} pkts ({d306_hz:.1f} Hz) | "
+            f"468F IMU: {self.imu_batch_count} pkts ({imu_batch_hz:.1f} Hz) | "
+            f"State (3c18): {self.state_count} pkts ({state_hz:.1f} Hz)"
         )
-        print(f"IMU Layout: {self.current_imu_layout}")
+        print(f"D306 Context (latest): {self.current_d306_context}")
+        if isinstance(self.current_dne_stress_index, int):
+            print(f"DNE Stress Index (latest): {self.current_dne_stress_index}/100")
+        else:
+            print("DNE Stress Index (latest): unknown")
+        if self.current_3c18_state_code is not None:
+            print(
+                f"3C18 State (latest): {self.current_3c18_state_name} "
+                f"(0x{self.current_3c18_state_code:02X})"
+            )
+        else:
+            print("3C18 State (latest): unknown")
         print("=" * 110)
 
-        print("\n[STRESS DATA] STRESS + EDA")
+        print("\n[468F DATA] BATCHED IMU (14 x XYZ @ 14Hz)")
         print("-" * 110)
-        if self.stress_buffer:
+        if self.imu_batch_buffer:
             print(
-                f"{'Pkt':<6} {'Stress %':<10} {'Stress Bar':<24} {'EDA Mean (μS)':<15} {'EDA Range (μS)':<15}"
+                f"{'Pkt':<6} {'Clock':<12} {'X0':<8} {'Y0':<8} {'Z0':<8} {'Intensity':<10} {'Frames':<7}"
             )
             print("-" * 110)
-            for sample in list(self.stress_buffer):
-                bar = "█" * min(20, int(sample["stress"] / 5))
-                eda_range = sample["eda_max"] - sample["eda_min"]
+            for sample in list(self.imu_batch_buffer):
                 print(
-                    f"#{sample['count']:<5} {sample['stress']:>6.1f}% {bar:<24} "
-                    f"{sample['eda_mean']:>9.2f}      {eda_range:>9.2f}"
+                    f"#{sample['count']:<5} {sample['clock']:>11} {sample['first_x']:>7} {sample['first_y']:>7} "
+                    f"{sample['first_z']:>7} {sample['motion_intensity']:>9.2f} {sample['sample_count']:>7}"
                 )
 
-        print("\n[IMU DATA] IMU")
+        print("\n[D306 DATA] CLOCK + EDA + QUALITY")
         print("-" * 110)
-        if self.imu_buffer:
-            acc_z_header = (
-                "ACC_Z" if self.current_imu_layout == "xyz_q14" else "ACC_Z(n/a)"
-            )
+        if self.d306_buffer:
             print(
-                f"{'Pkt':<6} {'ACC_X':<9} {'ACC_Y':<9} {acc_z_header:<9} {'X Position':<27} {'Quality':<8}"
+                f"{'Pkt':<6} {'Clock':<12} {'EDA Value':<11} {'Context':<11} {'DNE(0-100)':<10}"
             )
             print("-" * 110)
-            for sample in list(self.imu_buffer):
-                normalized = int(((sample["acc_x"] + 32768) / 65536) * 20)
-                normalized = max(0, min(20, normalized))
-                movement_bar = "─" * normalized + "●" + "─" * (20 - normalized)
-                acc_z_display = sample["acc_z"] if sample["acc_z"] is not None else "-"
+            for sample in list(self.d306_buffer):
                 print(
-                    f"#{sample['count']:<5} {sample['acc_x']:>8} {sample['acc_y']:>8} "
-                    f"{acc_z_display:>8} {movement_bar:<27} {sample['quality']:>7}"
+                    f"#{sample['count']:<5} {sample['clock']:>11} {sample['eda_value']:>10} "
+                    f"{sample['context']:>10} {sample['dne_stress_index']:>10}"
                 )
 
         print("\n" + "=" * 110)
@@ -405,15 +479,15 @@ class NuanicMonitor:
         print("\n" + "=" * 80)
         print("SESSION COMPLETE")
         print("=" * 80)
-        print(f"IMU packets: {self.imu_count} ({self.imu_count / elapsed:.2f} Hz avg)")
+        print(f"D306 packets: {self.d306_count} ({self.d306_count / elapsed:.2f} Hz avg)")
         print(
-            f"Stress packets: {self.stress_count} ({self.stress_count / elapsed:.2f} Hz avg)"
+            f"468F IMU packets: {self.imu_batch_count} ({self.imu_batch_count / elapsed:.2f} Hz avg)"
         )
         print(
-            f"Raw EDA packets: {self.raw_eda_count} ({self.raw_eda_count / elapsed:.2f} Hz avg)"
+            f"3C18 state packets: {self.state_count} ({self.state_count / elapsed:.2f} Hz avg)"
         )
         print(
-            f"Combined: {(self.imu_count + self.stress_count + self.raw_eda_count) / elapsed:.2f} Hz avg"
+            f"Combined: {(self.d306_count + self.imu_batch_count + self.state_count) / elapsed:.2f} Hz avg"
         )
         if self.enable_logging and self.log_file:
             print(f"Log CSV: {self.log_file}")

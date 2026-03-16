@@ -5,6 +5,58 @@ After reverse-engineering of the Nuanic ring BLE communication protocol, we have
 
 ## Findings
 
+## Update (2026-03-16): Revised Live Stream Interpretation
+
+This update reflects a direct multi-notify capture using the diagnostics mode that subscribes to all four proprietary notify characteristics simultaneously.
+
+### 1. State / On-Finger Indicator
+
+- **UUID:** `3c180fcc-bfec-4b7c-8e52-1a37f123e449`
+- **Payload:** 1 byte
+- **Observed values:** `01`, `02`, `03`
+
+Current interpretation:
+- `01` = idle/off-finger (or low-power polling state)
+- `02` = active/on-finger state
+- `03` = transient/poll state seen around idle transitions
+
+In the captured session, transition to `02` coincided with immediate start of high-rate streams, and transition back to `01` coincided with stream stop.
+
+### 2. Real-Time Sensor + Quality Stream
+
+- **UUID:** `d306262b-c8c9-4c4b-9050-3a41dea706e5`
+- **Payload:** 16 bytes
+- **Frequency:** approximately 22-25 Hz in the latest run
+
+4x uint32 (little-endian) working layout hypothesis:
+- **Bytes 0-3:** monotonic packet clock/counter
+- **Bytes 4-7:** static context/session field (commonly `9C 01 00 00` in this run)
+- **Bytes 8-11:** dynamic physiological signal (EDA/stress candidate)
+- **Bytes 12-15:** contact/quality-like metric (observed at `0x64` then drifting downward)
+
+### 3. Bulk Motion/IMU Stream
+
+- **UUID:** `468f2717-6a7d-46f9-9eb7-f92aab208bae`
+- **Payload:** 92 bytes
+- **Frequency:** approximately 1 Hz
+
+Current interpretation:
+- First 8 bytes carry timestamp/counter context.
+- Remaining 84 bytes are batched samples (likely one-second motion/IMU waveform payload).
+
+### 4. Silent/Event Stream
+
+- **UUID:** `42dcb71b-1817-43bd-8ea3-7272780a1c9f`
+- **Observed behavior in this run:** no notifications
+
+Current interpretation:
+- Likely asynchronous/event-oriented channel (for sync, errors, battery, or deferred transfers).
+
+### Confidence and Scope
+
+- These findings are based on live payload behavior from the latest capture and align with stream timing relationships.
+- This should be treated as the current best-fit model pending additional controlled sessions (off-finger/on-finger transitions, motion-only segments, and stress provocation segments).
+
 ### ✅ Active Data Streams
 
 #### 1. **Stress Characteristic** (`468f2717-6a7d-46f9-9eb7-f92aab208bae`)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from awe_polar.nuanic_ring.data_analysis import print_report
+from awe_polar.nuanic_ring.data_analysis import print_export_fit_report, print_report
 
 
 def main():
@@ -26,6 +26,14 @@ Examples:
         "filepath",
         help="Path to CSV log file to analyze",
     )
+    parser.add_argument(
+        "--fit-mm",
+        action="store_true",
+        help=(
+            "Attempt MM-like equation fit when CSV has exported fields "
+            "(dne,srl,srrn,eda)"
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -36,6 +44,10 @@ Examples:
         return 1
 
     try:
+        if args.fit_mm:
+            fit_handled = print_export_fit_report(str(filepath))
+            if fit_handled:
+                return 0
         print_report(str(filepath))
         return 0
     except Exception as e:

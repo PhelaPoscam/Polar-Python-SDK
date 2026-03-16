@@ -14,6 +14,7 @@ import struct
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -24,6 +25,12 @@ from awe_polar.nuanic_ring.connector import NuanicConnector
 SERVICE_UUID = "5491faaf-b0c2-4167-8f3d-bc6b31db69e7"
 BUFFER_CHAR = "7c3b82e7-22b7-4cb6-8458-ba325edf6ede"
 MYSTERY_NOTIFY = "42dcb71b-1817-43bd-8ea3-7272780a1c9f"
+CORE_NOTIFY_CHARS = [
+    "42dcb71b-1817-43bd-8ea3-7272780a1c9f",
+    "d306262b-c8c9-4c4b-9050-3a41dea706e5",
+    "3c180fcc-bfec-4b7c-8e52-1a37f123e449",
+    "468f2717-6a7d-46f9-9eb7-f92aab208bae",
+]
 
 WRITE_ONLY_CHARS = {
     "2175c13f-60e4-4de5-80af-0d06f1b54880": "WRITE_1",
@@ -127,6 +134,39 @@ Examples:
         action="store_true",
         help="Only inspect buffer (skip discovery and profile).",
     )
+    parser.add_argument(
+        "--only-stream-chars",
+        action="store_true",
+        help=(
+            "In discovery output, show only characteristics with "
+            "Notify/Indicate properties"
+        ),
+    )
+    parser.add_argument(
+        "--subscribe-core-streams",
+        action="store_true",
+        help=(
+            "Subscribe to the 4 proprietary notify streams and print "
+            "timestamp/uuid/len/hex continuously"
+        ),
+    )
+    parser.add_argument(
+        "--listen-seconds",
+        type=int,
+        default=None,
+        help=(
+            "Optional duration for --subscribe-core-streams. "
+            "Default: run until Ctrl+C/disconnect"
+        ),
+    )
+    parser.add_argument(
+        "--unpair-on-exit",
+        action="store_true",
+        help=(
+            "Force OS unpair on exit. Use only when Windows keeps a sticky "
+            "BLE session after Ctrl+C."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -147,6 +187,12 @@ def iter_service_chars(client):
                 yield char
 
 
+def iter_all_chars(client):
+    for service in client.services:
+        for char in service.characteristics:
+            yield service, char
+
+
 def summarize_i16(packet: bytes) -> str:
     if len(packet) < 2:
         return "n/a"
@@ -158,16 +204,56 @@ def summarize_i16(packet: bytes) -> str:
     return f"min={min(vals)}, max={max(vals)}, avg={sum(vals)/len(vals):.1f}, count={len(vals)}"
 
 
-async def discover_chars(client):
+def is_stream_characteristic(char) -> bool:
+    props = {p.lower() for p in (char.properties or [])}
+    return "notify" in props or "indicate" in props
+
+
+async def discover_chars(client, only_stream_chars: bool = False):
     print_header("STEP 1: DISCOVERY")
-    chars = list(iter_service_chars(client))
-    print(f"Service: {SERVICE_UUID}")
-    print(f"Characteristics: {len(chars)}\n")
-    for idx, char in enumerate(chars, 1):
-        props = ", ".join(char.properties)
-        print(f"[{idx:2d}] {char.uuid}")
-        print(f"     Properties: {props}")
-    return chars
+    services = list(client.services)
+    all_chars = list(iter_all_chars(client))
+    target_chars = list(iter_service_chars(client))
+
+    print(f"Discovered services: {len(services)}")
+    print(f"Discovered characteristics: {len(all_chars)}")
+    print(f"Target service UUID: {SERVICE_UUID}\n")
+
+    mode_label = "Notify/Indicate only" if only_stream_chars else "All"
+    print(f"Discovery mode: {mode_label}\n")
+
+    for s_idx, service in enumerate(services, 1):
+        svc_desc = service.description or "n/a"
+        if only_stream_chars:
+            visible_chars = [
+                c for c in service.characteristics if is_stream_characteristic(c)
+            ]
+        else:
+            visible_chars = list(service.characteristics)
+
+        if not visible_chars:
+            continue
+
+        print(f"[SVC {s_idx:02d}] {service.uuid}")
+        print(f"          Description: {svc_desc}")
+        print(f"          Characteristics: {len(visible_chars)}")
+
+        for c_idx, char in enumerate(visible_chars, 1):
+            props = ", ".join(sorted(char.properties)) if char.properties else "n/a"
+            char_desc = char.description or "n/a"
+            print(f"            [{c_idx:02d}] {char.uuid}")
+            print(f"                 Properties: {props}")
+            print(f"                 Description: {char_desc}")
+
+        print()
+
+    if not target_chars:
+        print(f"[WARN] Target service {SERVICE_UUID} not found in this session")
+
+    return {
+        "all_chars": [char for _service, char in all_chars],
+        "target_chars": target_chars,
+    }
 
 
 async def read_non_notify(client, chars):
@@ -227,7 +313,7 @@ async def profile_notify(client, chars, seconds: int):
 
 
 async def run_write_probe(client):
-    print_header("STEP 5: WRITE PROBE")
+    print_header("STEP 4: WRITE PROBE")
     for name, payload in WRITE_PATTERNS.items():
         print(f"\n[CMD] {name}: {payload.hex()}")
         for uuid, label in WRITE_READ_CHARS.items():
@@ -235,9 +321,7 @@ async def run_write_probe(client):
                 await client.write_gatt_char(uuid, payload)
                 try:
                     echoed = await client.read_gatt_char(uuid)
-                    print(
-                        f"  [OK] {label} ({uuid[:8]}...) echo={bytes(echoed).hex()[:32]}"
-                    )
+                    print(f"  [OK] {label} ({uuid[:8]}...) echo={bytes(echoed).hex()[:32]}")
                 except Exception:
                     print(f"  [OK] {label} ({uuid[:8]}...) write only in this session")
             except Exception as exc:
@@ -252,7 +336,7 @@ async def run_write_probe(client):
 
 
 async def inspect_buffer(client, polls: int, interval: float):
-    print_header("STEP 6: BUFFER INSPECTION")
+    print_header("STEP 5: BUFFER INSPECTION")
     previous = None
     for idx in range(max(1, polls)):
         try:
@@ -273,23 +357,127 @@ async def inspect_buffer(client, polls: int, interval: float):
             await asyncio.sleep(max(0.1, interval))
 
 
+def _format_hex_spaced(data: bytes) -> str:
+    return " ".join(f"{b:02X}" for b in data)
+
+
+def parse_eda_data(sender, data: bytearray):
+    """Parse 16-byte d306 EDA frame and print key fields.
+
+    Layout (little-endian):
+    - bytes 0-3: hardware timestamp (uint32)
+    - bytes 4-7: static context/session (ignored)
+    - bytes 8-11: raw EDA value (uint32)
+    - bytes 12-15: signal quality/contact score (uint32, expected 0-100)
+    """
+    payload = bytes(data)
+    ts = datetime.now().isoformat(timespec="milliseconds")
+    if len(payload) != 16:
+        print(
+            f"[{ts}] [EDA STREAM] Invalid payload length: {len(payload)} "
+            f"(expected 16)"
+        )
+        return
+
+    clock = struct.unpack("<I", payload[0:4])[0]
+    eda_value = struct.unpack("<I", payload[8:12])[0]
+    signal_quality = struct.unpack("<I", payload[12:16])[0]
+    print(
+        f"[{ts}] [EDA STREAM] Clock: {clock} | EDA Value: {eda_value} | "
+        f"Signal Quality: {signal_quality}%"
+    )
+
+
+async def subscribe_core_streams(client, listen_seconds: int | None = None):
+    """Subscribe to 4 core proprietary notify characteristics.
+
+    Prints one line per notification with timestamp, UUID, payload length,
+    and clean uppercase hex bytes.
+    """
+    print_header("LIVE CORE STREAMS")
+
+    disconnected = asyncio.Event()
+
+    def on_disconnect(_c):
+        print("\n[DISCONNECT] Ring disconnected")
+        disconnected.set()
+
+    try:
+        client.set_disconnected_callback(on_disconnect)
+    except Exception:
+        # Some backends may not support this callback.
+        pass
+
+    active_uuids: list[str] = []
+
+    for uuid in CORE_NOTIFY_CHARS:
+        try:
+            def make_cb(char_uuid: str):
+                def cb(_sender, data):
+                    if char_uuid.lower() == "d306262b-c8c9-4c4b-9050-3a41dea706e5":
+                        parse_eda_data(_sender, bytearray(data))
+                        return
+
+                    ts = datetime.now().isoformat(timespec="milliseconds")
+                    payload = bytes(data)
+                    print(
+                        f"[{ts}] uuid={char_uuid} len={len(payload)} "
+                        f"hex={_format_hex_spaced(payload)}"
+                    )
+
+                return cb
+
+            await client.start_notify(uuid, make_cb(uuid))
+            active_uuids.append(uuid)
+            print(f"[SUB] {uuid}")
+        except Exception as exc:
+            print(f"[SUB-FAIL] {uuid} -> {exc}")
+
+    if not active_uuids:
+        print("[FAIL] Could not subscribe to any core notify streams")
+        return
+
+    print("\n[LISTEN] Streaming started")
+    if listen_seconds is None:
+        print("[LISTEN] Running until Ctrl+C or disconnect")
+    else:
+        print(f"[LISTEN] Running for {listen_seconds}s")
+
+    try:
+        if listen_seconds is None:
+            while not disconnected.is_set():
+                await asyncio.sleep(1)
+        else:
+            end_time = time.time() + max(1, listen_seconds)
+            while time.time() < end_time and not disconnected.is_set():
+                await asyncio.sleep(1)
+    finally:
+        for uuid in active_uuids:
+            try:
+                await client.stop_notify(uuid)
+            except Exception:
+                pass
+
+
 async def main() -> int:
     args = parse_args()
     ring_addr = pick_ring_addr(args)
 
-    connector = NuanicConnector(target_address=ring_addr)
-    if not await connector.connect():
-        print("[FAIL] Could not connect to ring")
-        return 1
-
-    print(f"\n[INIT] Connected to: {connector.target_address or 'selected ring'}")
-
+    connector = NuanicConnector(
+        target_address=ring_addr,
+        unpair_on_disconnect=args.unpair_on_exit,
+    )
     try:
-        client = connector.client
-        chars = list(iter_service_chars(client))
-        if not chars:
-            print(f"[FAIL] Service {SERVICE_UUID} not found")
+        if not await connector.connect():
+            print("[FAIL] Could not connect to ring")
             return 1
+
+        print(f"\n[INIT] Connected to: {connector.target_address or 'selected ring'}")
+
+        client = connector.client
+        if args.subscribe_core_streams:
+            await subscribe_core_streams(client, listen_seconds=args.listen_seconds)
+            return 0
 
         if args.buffer_only:
             await inspect_buffer(
@@ -297,23 +485,48 @@ async def main() -> int:
             )
             return 0
 
-        discovered = await discover_chars(client)
-        await read_non_notify(client, discovered)
+        discovered = await discover_chars(
+            client, only_stream_chars=args.only_stream_chars
+        )
+        all_chars = discovered["all_chars"]
+        target_chars = discovered["target_chars"]
+
+        await read_non_notify(client, all_chars)
 
         if not args.no_profile:
-            await profile_notify(client, discovered, seconds=args.profile_seconds)
+            await profile_notify(client, all_chars, seconds=args.profile_seconds)
 
         if args.write_probe:
-            await run_write_probe(client)
+            if target_chars:
+                await run_write_probe(client)
+            else:
+                print(
+                    f"[SKIP] Write probe skipped because target service {SERVICE_UUID} is missing"
+                )
 
         if args.buffer_poll > 0:
-            await inspect_buffer(
-                client, polls=args.buffer_poll, interval=args.buffer_interval
-            )
+            if target_chars:
+                await inspect_buffer(
+                    client, polls=args.buffer_poll, interval=args.buffer_interval
+                )
+            else:
+                print(
+                    f"[SKIP] Buffer inspection skipped because target service {SERVICE_UUID} is missing"
+                )
 
         return 0
     finally:
+        pre_cleanup_connected = bool(
+            connector.client and getattr(connector.client, "is_connected", False)
+        )
+        print(f"[EXIT-CHECK] Bleak client connected before cleanup: {pre_cleanup_connected}")
+
         await connector.disconnect()
+
+        post_cleanup_connected = bool(
+            connector.client and getattr(connector.client, "is_connected", False)
+        )
+        print(f"[EXIT-CHECK] Bleak client connected after cleanup:  {post_cleanup_connected}")
 
 
 if __name__ == "__main__":

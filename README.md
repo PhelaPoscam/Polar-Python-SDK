@@ -141,6 +141,69 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 - **Update Rate:** 16.8 Hz combined (15.87 Hz IMU + 1.12 Hz physiology)
 - **Packet Format Details:** See [NUANIC_ANALYSIS_REPORT.md](NUANIC_ANALYSIS_REPORT.md)
 
+## Nuanic Reverse-Engineering Snapshot (2026-03-16)
+
+Latest verified live findings (Windows + Bleak, direct ring connection):
+
+- Ring advertisement uses rotating/private BLE MAC addresses.
+- Full GATT table was successfully enumerated on live device.
+- Standard services present: Generic Attribute, Generic Access, Battery, Device Information, SMP.
+- Proprietary service present: `5491faaf-b0c2-4167-8f3d-bc6b31db69e7` with 12 characteristics.
+
+### Proprietary Service Characteristics (UUID -> properties)
+
+- `516b0fb6-d861-4619-9dd0-0105e8b85128` -> `read, write`
+- `dc9c31a7-fbd3-467a-8777-10900c423d3b` -> `read, write`
+- `42dcb71b-1817-43bd-8ea3-7272780a1c9f` -> `notify`
+- `7c3b82e7-22b7-4cb6-8458-ba325edf6ede` -> `read`
+- `2175c13f-60e4-4de5-80af-0d06f1b54880` -> `write`
+- `3cce21a7-e602-4e02-8c52-1e0366c1c846` -> `read, write`
+- `741f0d15-cc3d-4715-a9fb-a5a6bccebc50` -> `write`
+- `d78e5bd8-53d6-4fc3-bc98-03b8cd71684b` -> `read`
+- `d306262b-c8c9-4c4b-9050-3a41dea706e5` -> `notify, read`
+- `3c180fcc-bfec-4b7c-8e52-1a37f123e449` -> `notify, read`
+- `468f2717-6a7d-46f9-9eb7-f92aab208bae` -> `notify`
+- `2204a4f6-b92e-4c64-8022-e938dd2a5dc2` -> `read`
+
+### Observed Live Stream Behavior
+
+From recent session captures in `data/nuanic_logs/`:
+
+- State stream (`3c180fcc...`, 1 byte): observed values `01`, `02`, `03`; current hypothesis is this acts as a state/on-finger indicator and gates high-rate streams.
+- Core sensor stream (`d306262b...`, 16 bytes): high-rate packets (roughly ~22-25 Hz in latest live run) containing timestamp-like counter, dynamic signal field, and trailing quality/contact-like field.
+- Bulk waveform stream (`468f2717...`, 92 bytes): roughly ~1 Hz batched payload likely carrying one-second motion/IMU-like sample block.
+- Silent/event stream (`42dcb71b...`): subscribes successfully but can remain silent during normal wear windows; likely asynchronous/event channel.
+
+### Latest Live Interpretation (2026-03-16)
+
+From a clean `--subscribe-core-streams` run, the following behavior was observed:
+
+1. **State / On-Finger indicator** (`3c180fcc-bfec-4b7c-8e52-1a37f123e449`, 1 byte)
+    - `01`: idle/off-finger (or polling state)
+    - `02`: active/on-finger (high-rate streams begin immediately)
+    - `03`: transient poll/check state (observed interleaved with `01`)
+
+2. **Real-time sensor + quality frame** (`d306262b-c8c9-4c4b-9050-3a41dea706e5`, 16 bytes, ~22-25 Hz)
+    - Bytes `0-3`: monotonic counter/timestamp-like field (increments nearly constant per packet)
+    - Bytes `4-7`: mostly static context field (commonly `9C 01 00 00` in this run)
+    - Bytes `8-11`: highly dynamic signal field (EDA/stress-related candidate)
+    - Bytes `12-15`: quality/contact-like field (observed around `0x64` then drifting downward in step-like fashion)
+
+3. **Bulk motion stream** (`468f2717-6a7d-46f9-9eb7-f92aab208bae`, 92 bytes, ~1 Hz)
+    - First 8 bytes align with counter/timestamp progression.
+    - Remaining 84 bytes appear to be packed one-second motion/waveform data.
+
+4. **Silent stream in this session** (`42dcb71b-1817-43bd-8ea3-7272780a1c9f`)
+    - No packets during this capture window.
+    - Most likely reserved for asynchronous conditions (sync/error/battery/event signaling).
+
+Note: these are reverse-engineered interpretations from live payload behavior and should be treated as current best-fit hypotheses until validated across more sessions.
+
+### Reconnect Stability Note
+
+- Forced unpair-on-disconnect caused unreliable reconnect behavior with rotating MAC addresses.
+- Connector behavior now defaults to plain disconnect (no forced OS unpair), improving reconnect reliability.
+
 ## Analysis & Validation Tools
 
 **Current Analysis Script** (`scripts/analysis/`)

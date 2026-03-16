@@ -60,6 +60,12 @@ Examples:
         help="Refresh display every N IMU packets (default: 5)",
     )
     parser.add_argument(
+        "--calibration-seconds",
+        type=int,
+        default=120,
+        help="MM-like index calibration period in seconds (default: 120)",
+    )
+    parser.add_argument(
         "--no-clear",
         action="store_true",
         help="Don't clear terminal on refresh",
@@ -169,6 +175,7 @@ Examples:
             imu_refresh_packets=args.imu_refresh,
             clear_console=not args.no_clear,
             enable_logging=args.enable_logging,
+            calibration_seconds=args.calibration_seconds,
         )
         # If ring address is provided, pin to it. Otherwise connector will prompt at connect time.
         if args.ring_addr:

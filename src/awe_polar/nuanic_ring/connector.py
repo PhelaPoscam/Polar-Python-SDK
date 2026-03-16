@@ -9,16 +9,16 @@ from bleak import BleakScanner, BleakClient
 class NuanicConnector:
     """Handles BLE connection to Nuanic ring"""
 
-    # GATT UUIDs
+    # GATT UUIDs (current best-fit interpretation from 2026-03 live captures)
     BATTERY_CHARACTERISTIC = "00002a19-0000-1000-8000-00805f9b34fb"
     STRESS_CHARACTERISTIC = (
-        "468f2717-6a7d-46f9-9eb7-f92aab208bae"  # Stress + EDA (1.12 Hz)
+        "468f2717-6a7d-46f9-9eb7-f92aab208bae"  # 92-byte bulk waveform/motion stream (~1 Hz)
     )
     IMU_CHARACTERISTIC = (
-        "d306262b-c8c9-4c4b-9050-3a41dea706e5"  # Accelerometer (15.87 Hz)
+        "d306262b-c8c9-4c4b-9050-3a41dea706e5"  # 16-byte real-time sensor+quality frame (~22-25 Hz)
     )
     RAW_EDA_CHARACTERISTIC = (
-        "3c180fcc-bfec-4b7c-8e52-1a37f123e449"  # Raw EDA data candidate
+        "3c180fcc-bfec-4b7c-8e52-1a37f123e449"  # 1-byte state/on-finger indicator candidate
     )
 
     def __init__(
@@ -27,6 +27,7 @@ class NuanicConnector:
         max_scan_attempts=3,
         max_connect_attempts=3,
         target_address=None,
+        unpair_on_disconnect=False,
     ):
         self.timeout = timeout
         self.max_scan_attempts = max_scan_attempts
@@ -34,6 +35,7 @@ class NuanicConnector:
         self.target_address = (
             target_address  # BLE address to connect to (e.g., "AA:BB:CC:DD:EE:FF")
         )
+        self.unpair_on_disconnect = unpair_on_disconnect
         self.client = None
         self.device = None
 
@@ -79,7 +81,13 @@ class NuanicConnector:
 
         return None
 
-    async def list_available_rings(self, include_device: bool = False):
+    async def list_available_rings(
+        self,
+        include_device: bool = False,
+        scan_timeout: float = 3.0,
+        attempts: int = 1,
+        retry_delay: float = 1.0,
+    ):
         """Scan and return list of all available Nuanic rings.
         Returns: List of dicts with 'address', 'name' keys.
         If include_device=True, each dict also includes 'device' with the Bleak device object.
@@ -87,24 +95,36 @@ class NuanicConnector:
         print("[SCAN] Discovering Nuanic rings...")
 
         try:
-            devices = await BleakScanner.discover(timeout=3.0)
+            for attempt in range(1, max(1, attempts) + 1):
+                if attempts > 1:
+                    print(
+                        f"[SCAN] Attempt {attempt}/{attempts} ({scan_timeout:.1f}s window)..."
+                    )
 
-            # Deduplicate by MAC address to avoid duplicate entries
-            seen_addresses = set()
-            nuanic_devices = []
-            for device in devices:
-                if device.name and "Nuanic" in device.name:
-                    if device.address not in seen_addresses:
-                        seen_addresses.add(device.address)
-                        entry = {
-                            "address": device.address,
-                            "name": device.name,
-                        }
-                        if include_device:
-                            entry["device"] = device
-                        nuanic_devices.append(entry)
+                devices = await BleakScanner.discover(timeout=max(1.0, scan_timeout))
 
-            return nuanic_devices
+                # Deduplicate by MAC address to avoid duplicate entries
+                seen_addresses = set()
+                nuanic_devices = []
+                for device in devices:
+                    if device.name and "Nuanic" in device.name:
+                        if device.address not in seen_addresses:
+                            seen_addresses.add(device.address)
+                            entry = {
+                                "address": device.address,
+                                "name": device.name,
+                            }
+                            if include_device:
+                                entry["device"] = device
+                            nuanic_devices.append(entry)
+
+                if nuanic_devices:
+                    return nuanic_devices
+
+                if attempt < attempts:
+                    await asyncio.sleep(max(0.1, retry_delay))
+
+            return []
 
         except asyncio.CancelledError:
             # Re-raise so Ctrl+C still works
@@ -129,7 +149,14 @@ class NuanicConnector:
         print("RING SELECTION")
         print("=" * 60)
 
-        rings = await self.list_available_rings(include_device=True)
+        # Pairing-mode rings can advertise intermittently, so use a longer scan window
+        # with retries during interactive selection.
+        rings = await self.list_available_rings(
+            include_device=True,
+            scan_timeout=6.0,
+            attempts=3,
+            retry_delay=1.0,
+        )
 
         if not rings:
             print("[!] No Nuanic rings found. Make sure rings are turned on.")
@@ -411,13 +438,18 @@ class NuanicConnector:
         return False
 
     async def disconnect(self):
-        """Disconnect from ring and unpair from Windows"""
+        """Disconnect from ring.
+
+        By default this keeps OS-level pairing intact. Set
+        unpair_on_disconnect=True on connector init if you explicitly want
+        forced unpair for troubleshooting.
+        """
         if self.client:
             await self._cleanup_client()
             print("[OK] Disconnected")
 
-        # Unpair from Windows Bluetooth
-        if self.device:
+        # Optional unpair from Windows Bluetooth
+        if self.unpair_on_disconnect and self.device:
             await self._unpair_device()
 
     async def _unpair_device(self):

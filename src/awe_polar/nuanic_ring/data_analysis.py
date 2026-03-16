@@ -1,6 +1,7 @@
 """Analysis helpers for Nuanic CSV logs."""
 
 import csv
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,293 @@ def load_nuanic_csv(filepath: str) -> dict[str, list[Any]]:
             data["packets"].append(row["full_packet_hex"])
 
     return data
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"\\n", "null", "none", "nan"}:
+        return None
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def load_nuanic_export_csv(filepath: str) -> dict[str, list[Any]]:
+    """Load exported CSV format with columns like dne/srl/srrn/eda."""
+    data = {
+        "device_id": [],
+        "timestamps": [],
+        "dne": [],
+        "srl": [],
+        "srrn": [],
+        "eda": [],
+    }
+
+    with open(filepath, "r", encoding="utf-8") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            data["device_id"].append(row.get("address") or row.get("device_id") or "")
+            data["timestamps"].append(row.get("time") or row.get("timestamp") or "")
+            data["dne"].append(_to_float_or_none(row.get("dne")))
+            data["srl"].append(_to_float_or_none(row.get("srl")))
+            data["srrn"].append(_to_float_or_none(row.get("srrn")))
+            data["eda"].append(_to_float_or_none(row.get("eda")))
+
+    return data
+
+
+def _gaussian_solve(a: list[list[float]], b: list[float]) -> list[float] | None:
+    """Solve Ax=b using Gaussian elimination with partial pivoting."""
+    n = len(a)
+    aug = [row[:] + [b[i]] for i, row in enumerate(a)]
+
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(aug[r][col]))
+        if abs(aug[pivot][col]) < 1e-12:
+            return None
+        if pivot != col:
+            aug[col], aug[pivot] = aug[pivot], aug[col]
+
+        div = aug[col][col]
+        aug[col] = [v / div for v in aug[col]]
+
+        for r in range(n):
+            if r == col:
+                continue
+            factor = aug[r][col]
+            if abs(factor) < 1e-12:
+                continue
+            aug[r] = [aug[r][c] - factor * aug[col][c] for c in range(n + 1)]
+
+    return [aug[i][n] for i in range(n)]
+
+
+def fit_mm_equation_from_export(data: dict[str, list[Any]]) -> dict[str, Any] | None:
+    """Fit a simple linear MM-like equation from exported fields.
+
+    Model:
+      dne ~= b0 + b1*scrn + b2*scl_us + b3*eda
+
+    Where:
+      scrn   <- srrn
+      scl_us <- 1e6 / srl  (assuming srl is resistance in ohms)
+      eda    <- eda
+    """
+    rows3: list[tuple[float, float, float, float]] = []
+    rows2: list[tuple[float, float, float]] = []
+    for y, srl, srrn, eda in zip(
+        data["dne"], data["srl"], data["srrn"], data["eda"], strict=False
+    ):
+        if y is None or srrn is None or srl is None or srl <= 0:
+            continue
+        scl_us = 1_000_000.0 / srl
+        rows2.append((float(y), float(srrn), float(scl_us)))
+        if eda is not None:
+            rows3.append((float(y), float(srrn), float(scl_us), float(eda)))
+
+    # Prefer full model with EDA when enough overlap exists; otherwise fallback.
+    if len(rows3) >= 8:
+        mode = "scrn+scl_us+eda"
+        y_values = [r[0] for r in rows3]
+        x_means = [sum(r[i] for r in rows3) / len(rows3) for i in (1, 2, 3)]
+        x_stds = []
+        for i in (1, 2, 3):
+            m = x_means[i - 1]
+            var = sum((r[i] - m) ** 2 for r in rows3) / len(rows3)
+            x_stds.append(max(1e-12, math.sqrt(var)))
+
+        mtx = [[0.0] * 4 for _ in range(4)]
+        vec = [0.0] * 4
+        for y, scrn, scl_us, eda in rows3:
+            x = [
+                1.0,
+                (scrn - x_means[0]) / x_stds[0],
+                (scl_us - x_means[1]) / x_stds[1],
+                (eda - x_means[2]) / x_stds[2],
+            ]
+            for i in range(4):
+                vec[i] += x[i] * y
+                for j in range(4):
+                    mtx[i][j] += x[i] * x[j]
+
+        beta = _gaussian_solve(mtx, vec)
+        if beta is None:
+            return None
+
+        preds = []
+        for _y, scrn, scl_us, eda in rows3:
+            x = [
+                1.0,
+                (scrn - x_means[0]) / x_stds[0],
+                (scl_us - x_means[1]) / x_stds[1],
+                (eda - x_means[2]) / x_stds[2],
+            ]
+            preds.append(sum(beta[i] * x[i] for i in range(4)))
+
+        sse = sum((y_values[i] - preds[i]) ** 2 for i in range(len(rows3)))
+        sst = sum((y - (sum(y_values) / len(y_values))) ** 2 for y in y_values)
+
+        return {
+            "mode": mode,
+            "rows_used": len(rows3),
+            "rows_available_2f": len(rows2),
+            "rows_available_3f": len(rows3),
+            "beta": {
+                "intercept": beta[0],
+                "scrn_z": beta[1],
+                "scl_us_z": beta[2],
+                "eda_z": beta[3],
+            },
+            "feature_means": {
+                "scrn": x_means[0],
+                "scl_us": x_means[1],
+                "eda": x_means[2],
+            },
+            "feature_stds": {
+                "scrn": x_stds[0],
+                "scl_us": x_stds[1],
+                "eda": x_stds[2],
+            },
+            "metrics": {
+                "r2": 1.0 - (sse / sst) if sst > 1e-12 else 0.0,
+                "rmse": math.sqrt(sse / len(rows3)),
+            },
+        }
+
+    if len(rows2) < 8:
+        return None
+
+    mode = "scrn+scl_us"
+    y_values = [r[0] for r in rows2]
+    x_means = [sum(r[i] for r in rows2) / len(rows2) for i in (1, 2)]
+    x_stds = []
+    for i in (1, 2):
+        m = x_means[i - 1]
+        var = sum((r[i] - m) ** 2 for r in rows2) / len(rows2)
+        x_stds.append(max(1e-12, math.sqrt(var)))
+
+    # Normal equations for 3 params: intercept + 2 standardized features.
+    mtx = [[0.0] * 3 for _ in range(3)]
+    vec = [0.0] * 3
+    for y, scrn, scl_us in rows2:
+        x = [1.0, (scrn - x_means[0]) / x_stds[0], (scl_us - x_means[1]) / x_stds[1]]
+        for i in range(3):
+            vec[i] += x[i] * y
+            for j in range(3):
+                mtx[i][j] += x[i] * x[j]
+
+    beta = _gaussian_solve(mtx, vec)
+    if beta is None:
+        return None
+
+    preds = []
+    for _y, scrn, scl_us in rows2:
+        x = [1.0, (scrn - x_means[0]) / x_stds[0], (scl_us - x_means[1]) / x_stds[1]]
+        preds.append(sum(beta[i] * x[i] for i in range(3)))
+
+    y_mean = sum(y_values) / len(y_values)
+    sse = sum((y_values[i] - preds[i]) ** 2 for i in range(len(rows2)))
+    sst = sum((y - y_mean) ** 2 for y in y_values)
+    r2 = 1.0 - (sse / sst) if sst > 1e-12 else 0.0
+    rmse = math.sqrt(sse / len(rows2))
+
+    return {
+        "mode": mode,
+        "rows_used": len(rows2),
+        "rows_available_2f": len(rows2),
+        "rows_available_3f": len(rows3),
+        "beta": {
+            "intercept": beta[0],
+            "scrn_z": beta[1],
+            "scl_us_z": beta[2],
+        },
+        "feature_means": {
+            "scrn": x_means[0],
+            "scl_us": x_means[1],
+        },
+        "feature_stds": {
+            "scrn": x_stds[0],
+            "scl_us": x_stds[1],
+        },
+        "metrics": {
+            "r2": r2,
+            "rmse": rmse,
+        },
+    }
+
+
+def print_export_fit_report(filepath: str) -> bool:
+    """Print MM-like fit report for exported CSV data format."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        headers = {h.lower() for h in (reader.fieldnames or [])}
+
+    expected = {"dne", "srl", "srrn", "eda"}
+    if not expected.issubset(headers):
+        print("[INFO] CSV does not contain exported fields dne/srl/srrn/eda")
+        return False
+
+    data = load_nuanic_export_csv(filepath)
+    fit = fit_mm_equation_from_export(data)
+
+    print("\n" + "=" * 80)
+    print("NUANIC EXPORTED CSV MM-LIKE FIT")
+    print("=" * 80)
+    print(f"File: {filepath}")
+    print(f"Rows total: {len(data['timestamps'])}")
+
+    valid_dne = sum(1 for v in data["dne"] if v is not None)
+    valid_srl = sum(1 for v in data["srl"] if v is not None)
+    valid_srrn = sum(1 for v in data["srrn"] if v is not None)
+    valid_eda = sum(1 for v in data["eda"] if v is not None)
+    print(
+        "Valid values -> "
+        f"dne: {valid_dne}, srl: {valid_srl}, srrn: {valid_srrn}, eda: {valid_eda}"
+    )
+
+    if not fit:
+        print("\n[WARN] Not enough valid rows to fit equation (need at least 8).")
+        print("       Capture/export a session with non-null dne/srl/srrn/eda.")
+        return True
+
+    print(f"Fit mode: {fit['mode']}")
+    print(f"Rows used for fit: {fit['rows_used']}")
+    print(
+        f"Rows available (2-feature): {fit['rows_available_2f']} | "
+        f"(3-feature): {fit['rows_available_3f']}"
+    )
+    print("\nFitted model (standardized features):")
+    b = fit["beta"]
+    if fit["mode"] == "scrn+scl_us+eda":
+        print(
+            "dne ~= "
+            f"{b['intercept']:.4f} + {b['scrn_z']:.4f}*z(scrn) + "
+            f"{b['scl_us_z']:.4f}*z(scl_us) + {b['eda_z']:.4f}*z(eda)"
+        )
+    else:
+        print(
+            "dne ~= "
+            f"{b['intercept']:.4f} + {b['scrn_z']:.4f}*z(scrn) + "
+            f"{b['scl_us_z']:.4f}*z(scl_us)"
+        )
+
+    print("\nFeature standardization:")
+    means = fit["feature_means"]
+    stds = fit["feature_stds"]
+    print(f"z(scrn)   = (scrn - {means['scrn']:.4f}) / {stds['scrn']:.4f}")
+    print(f"z(scl_us) = (scl_us - {means['scl_us']:.4f}) / {stds['scl_us']:.4f}")
+    if fit["mode"] == "scrn+scl_us+eda":
+        print(f"z(eda)    = (eda - {means['eda']:.4f}) / {stds['eda']:.4f}")
+
+    m = fit["metrics"]
+    print("\nFit quality:")
+    print(f"R^2  = {m['r2']:.4f}")
+    print(f"RMSE = {m['rmse']:.4f}")
+
+    return True
 
 
 def analyze_stress(data: dict[str, list[Any]]) -> dict[str, float] | None:
