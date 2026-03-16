@@ -321,7 +321,9 @@ async def run_write_probe(client):
                 await client.write_gatt_char(uuid, payload)
                 try:
                     echoed = await client.read_gatt_char(uuid)
-                    print(f"  [OK] {label} ({uuid[:8]}...) echo={bytes(echoed).hex()[:32]}")
+                    print(
+                        f"  [OK] {label} ({uuid[:8]}...) echo={bytes(echoed).hex()[:32]}"
+                    )
                 except Exception:
                     print(f"  [OK] {label} ({uuid[:8]}...) write only in this session")
             except Exception as exc:
@@ -412,6 +414,7 @@ async def subscribe_core_streams(client, listen_seconds: int | None = None):
 
     for uuid in CORE_NOTIFY_CHARS:
         try:
+
             def make_cb(char_uuid: str):
                 def cb(_sender, data):
                     if char_uuid.lower() == "d306262b-c8c9-4c4b-9050-3a41dea706e5":
@@ -519,14 +522,18 @@ async def main() -> int:
         pre_cleanup_connected = bool(
             connector.client and getattr(connector.client, "is_connected", False)
         )
-        print(f"[EXIT-CHECK] Bleak client connected before cleanup: {pre_cleanup_connected}")
+        print(
+            f"[EXIT-CHECK] Bleak client connected before cleanup: {pre_cleanup_connected}"
+        )
 
         await connector.disconnect()
 
         post_cleanup_connected = bool(
             connector.client and getattr(connector.client, "is_connected", False)
         )
-        print(f"[EXIT-CHECK] Bleak client connected after cleanup:  {post_cleanup_connected}")
+        print(
+            f"[EXIT-CHECK] Bleak client connected after cleanup:  {post_cleanup_connected}"
+        )
 
 
 if __name__ == "__main__":

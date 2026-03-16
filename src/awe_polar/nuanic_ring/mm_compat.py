@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import math
 
-
 # Empirical linear conversion from a field example:
 # raw=3464 -> 845716.029603 ohms.
 DEFAULT_OHMS_PER_RAW_UNIT = 244.14435034728638
@@ -85,7 +84,9 @@ def decode_raw_resistance_packet(
 
     raw_value = (packet[0] << 8) | packet[1]
     skin_resistance_ohms = raw_value * ohms_per_raw_unit
-    skin_conductance_siemens = 1.0 / skin_resistance_ohms if skin_resistance_ohms > 0 else 0.0
+    skin_conductance_siemens = (
+        1.0 / skin_resistance_ohms if skin_resistance_ohms > 0 else 0.0
+    )
     skin_conductance_microsiemens = skin_conductance_siemens * 1_000_000.0
 
     return {
@@ -182,10 +183,17 @@ class MMLikeScorer:
     def is_calibrated(self, now: datetime | None = None) -> bool:
         if now is None:
             now = datetime.now()
-        if self.started_at is None or self.calibration_min is None or self.calibration_max is None:
+        if (
+            self.started_at is None
+            or self.calibration_min is None
+            or self.calibration_max is None
+        ):
             return False
         elapsed = (now - self.started_at).total_seconds()
-        return elapsed >= self.calibration_seconds and (self.calibration_max - self.calibration_min) > 1e-6
+        return (
+            elapsed >= self.calibration_seconds
+            and (self.calibration_max - self.calibration_min) > 1e-6
+        )
 
     def update(
         self,
@@ -218,9 +226,17 @@ class MMLikeScorer:
 
         return {
             "raw_score_0_to_1": raw,
-            "mm_like_1_to_100": self.latest_scaled_score if self.latest_scaled_score is not None else 0.0,
+            "mm_like_1_to_100": (
+                self.latest_scaled_score
+                if self.latest_scaled_score is not None
+                else 0.0
+            ),
             "calibrated": self.latest_scaled_score is not None,
             "calibration_seconds_remaining": remaining,
-            "calibration_min": self.calibration_min if self.calibration_min is not None else 0.0,
-            "calibration_max": self.calibration_max if self.calibration_max is not None else 0.0,
+            "calibration_min": (
+                self.calibration_min if self.calibration_min is not None else 0.0
+            ),
+            "calibration_max": (
+                self.calibration_max if self.calibration_max is not None else 0.0
+            ),
         }

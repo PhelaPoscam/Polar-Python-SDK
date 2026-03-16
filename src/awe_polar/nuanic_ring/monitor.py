@@ -479,7 +479,9 @@ class NuanicMonitor:
         print("\n" + "=" * 80)
         print("SESSION COMPLETE")
         print("=" * 80)
-        print(f"D306 packets: {self.d306_count} ({self.d306_count / elapsed:.2f} Hz avg)")
+        print(
+            f"D306 packets: {self.d306_count} ({self.d306_count / elapsed:.2f} Hz avg)"
+        )
         print(
             f"468F IMU packets: {self.imu_batch_count} ({self.imu_batch_count / elapsed:.2f} Hz avg)"
         )

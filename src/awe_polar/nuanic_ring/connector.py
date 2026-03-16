@@ -11,15 +11,9 @@ class NuanicConnector:
 
     # GATT UUIDs (current best-fit interpretation from 2026-03 live captures)
     BATTERY_CHARACTERISTIC = "00002a19-0000-1000-8000-00805f9b34fb"
-    STRESS_CHARACTERISTIC = (
-        "468f2717-6a7d-46f9-9eb7-f92aab208bae"  # 92-byte bulk waveform/motion stream (~1 Hz)
-    )
-    IMU_CHARACTERISTIC = (
-        "d306262b-c8c9-4c4b-9050-3a41dea706e5"  # 16-byte real-time sensor+quality frame (~22-25 Hz)
-    )
-    RAW_EDA_CHARACTERISTIC = (
-        "3c180fcc-bfec-4b7c-8e52-1a37f123e449"  # 1-byte state/on-finger indicator candidate
-    )
+    STRESS_CHARACTERISTIC = "468f2717-6a7d-46f9-9eb7-f92aab208bae"  # 92-byte bulk waveform/motion stream (~1 Hz)
+    IMU_CHARACTERISTIC = "d306262b-c8c9-4c4b-9050-3a41dea706e5"  # 16-byte real-time sensor+quality frame (~22-25 Hz)
+    RAW_EDA_CHARACTERISTIC = "3c180fcc-bfec-4b7c-8e52-1a37f123e449"  # 1-byte state/on-finger indicator candidate
 
     def __init__(
         self,
