@@ -17,6 +17,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
+import platform
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -169,14 +170,18 @@ Examples:
             "Default: auto-detect from discovered services."
         ),
     )
-    parser.add_argument(
-        "--unpair-on-exit",
-        action="store_true",
-        help=(
-            "Force OS unpair on exit. Use only when Windows keeps a sticky "
-            "BLE session after Ctrl+C."
-        ),
-    )
+    if platform.system() == "Windows":
+        parser.add_argument(
+            "--keep-paired-on-exit",
+            action="store_true",
+            help="[Windows only] Prevents un-pairing from the device on exit. By default, un-pairing is done to ensure clean reconnections.",
+        )
+    else:
+        parser.add_argument(
+            "--unpair-on-exit",
+            action="store_true",
+            help="Force OS un-pair on exit. Can help with connection issues on some systems.",
+        )
     return parser.parse_args()
 
 
@@ -535,9 +540,19 @@ async def main() -> int:
     args = parse_args()
     ring_addr = pick_ring_addr(args)
 
+    unpair_on_exit_flag = False
+    if platform.system() == "Windows":
+        # On Windows, we unpair by default. The --keep-paired-on-exit flag disables this.
+        if not args.keep_paired_on_exit:
+            unpair_on_exit_flag = True
+    else:
+        # On other OSes, we only unpair if requested.
+        if "unpair_on_exit" in args and args.unpair_on_exit:
+            unpair_on_exit_flag = True
+
     connector = NuanicConnector(
         target_address=ring_addr,
-        unpair_on_disconnect=args.unpair_on_exit,
+        unpair_on_disconnect=unpair_on_exit_flag,
         max_connect_attempts=3,
         connect_backoff_seconds=2.0,
         pair_on_connect=True,

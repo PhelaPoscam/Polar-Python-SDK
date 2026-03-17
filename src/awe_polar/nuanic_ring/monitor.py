@@ -446,7 +446,12 @@ class NuanicMonitor:
                         "",
                         payload_hex,
                         payload_hex,
-                        json.dumps({"uuid": "42dcb71b-1817-43bd-8ea3-7272780a1c9f", "len": len(data)}),
+                        json.dumps(
+                            {
+                                "uuid": "42dcb71b-1817-43bd-8ea3-7272780a1c9f",
+                                "len": len(data),
+                            }
+                        ),
                     ]
                 )
 
@@ -639,7 +644,9 @@ class NuanicMonitor:
         imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
         stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
         raw_eda_ok = await self.connector.subscribe_to_raw_eda(self._raw_eda_callback)
-        live_eda_ok = await self.connector.subscribe_to_live_eda(self._live_eda_callback)
+        live_eda_ok = await self.connector.subscribe_to_live_eda(
+            self._live_eda_callback
+        )
         if not (imu_ok and stress_ok and raw_eda_ok and live_eda_ok):
             print("[FAIL] Could not subscribe to all streams")
             await self.connector.disconnect()
