@@ -7,7 +7,7 @@
 
 **Python:** 3.8-3.11 | **OS:** Windows 10/11
 
-Multi-modal stress monitoring system combining Polar H10 heart rate data with Nuanic smart ring biometric measurements (stress, EDA). Features ML-based stress detection, real-time monitoring, and Streamlit dashboard.
+Multi-modal stress monitoring system combining Polar H10 heart rate data with ring-device biometric measurements (stress, EDA). Features ML-based stress detection, real-time monitoring, and Streamlit dashboard.
 
 ## Quick Start
 
@@ -24,28 +24,28 @@ python scripts/train/train_model.py          # Train ML model
 streamlit run scripts/app/app_streamlit.py   # Run dashboard
 ```
 
-### 3. Nuanic Ring - Stress & EDA Monitoring
+### 3. Ring Device - Stress & EDA Monitoring
 ```bash
 # Real-time monitoring (live display + CSV logs)
-python scripts/nuanic_monitor_cli.py --duration 60
+python scripts/ring_monitor_cli.py --duration 60
 
 # Real-time monitoring without creating CSV logs
-python scripts/nuanic_monitor_cli.py --duration 60 --no-log
+python scripts/ring_monitor_cli.py --duration 60 --no-log
 
 # Data logging (lightweight, no display)
-python scripts/nuanic_logger_cli.py --duration 300
+python scripts/ring_logger_cli.py --duration 300
 
 # Analyze captured data
-python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_*.csv
+python scripts/ring_analyzer_cli.py data/ring_logs/*.csv
 
 # Live waveform visualization
-python scripts/nuanic_monitor_cli.py --waveform --window-seconds 10
+python scripts/ring_monitor_cli.py --waveform --window-seconds 10
 
 # List available rings
-python scripts/nuanic_monitor_cli.py --list-rings
+python scripts/ring_monitor_cli.py --list-rings
 ```
 
-See [Nuanic Master Guide](docs/nuanic/00_master_guide.md) for all options and examples.
+See [Legacy Nuanic Master Guide](docs/archive/nuanic/00_master_guide.md) for detailed protocol-specific options and examples.
 
 ## Features
 
@@ -58,7 +58,7 @@ See [Nuanic Master Guide](docs/nuanic/00_master_guide.md) for all options and ex
 - Hyperparameter tuning via GridSearchCV
 - Model versioning with timestamped artifacts
 
-**Nuanic Ring Integration**
+**Ring Device Integration**
 - Real-time stress measurement (0-100%)
 - EDA (electrodermal activity) data capture
 - CSV logging with timestamp, stress, and sensor data
@@ -71,20 +71,21 @@ See [Nuanic Master Guide](docs/nuanic/00_master_guide.md) for all options and ex
 ```
 AWE_Polar_Project/
 ├── src/awe_polar/
-│   ├── nuanic_ring/           ← Nuanic integration modules
+│   ├── ring_device/           ← Ring integration modules (primary)
 │   │   ├── connector.py        - BLE connection & discovery
 │   │   ├── monitor.py          - IMU + stress monitor, display, CSV logging
 │   │   ├── logger.py           - CSV data logging
 │   │   ├── eda_analyzer.py     - EDA analysis engine
 │   │   └── data_analysis.py    - Stress/EDA CSV analysis utilities
+│   └── nuanic_ring/           ← Backward-compatible import shims
 │   ├── app_streamlit.py       - Dashboard
 │   └── train_model.py         - ML training pipeline
 │
-├── scripts/                   ← Nuanic tools (production ready)
-│   ├── nuanic_monitor_cli.py        - Real-time monitoring CLI
-│   ├── nuanic_logger_cli.py         - Lightweight logging CLI
-│   ├── nuanic_analyzer_cli.py       - CSV analysis CLI
-│   └── discover_nuanic_services.py  - Unified BLE diagnostics (discovery/profile/write-probe/buffer)
+├── scripts/                   ← Ring tools (production ready)
+│   ├── ring_monitor_cli.py          - Real-time monitoring CLI
+│   ├── ring_logger_cli.py           - Lightweight logging CLI
+│   ├── ring_analyzer_cli.py         - CSV analysis CLI
+│   └── discover_ring_services.py    - Unified BLE diagnostics (discovery/profile/write-probe/buffer)
 │
 ├── scripts/train/             ← ML pipeline
 │   └── train_model.py
@@ -93,23 +94,25 @@ AWE_Polar_Project/
 │   └── download_datasets.py
 │
 ├── tests/
-│   ├── test_nuanic_integration.py     ← 33 tests, 100% passing
+│   ├── test_ring_integration.py     ← 33 tests, 100% passing
 │   └── [other tests]
 │
 ├── docs/
 │   ├── contributing.md
-│   ├── nuanic/
-│   │   └── 00_master_guide.md
+│   └── archive/
+│       └── nuanic/
+│           ├── 00_master_guide.md
+│           └── nuanic_reverse_engineering_report.md
 │
 └── data/
     ├── raw/                   - Training datasets
-    └── nuanic_logs/           - Logged Nuanic sessions
+    └── ring_logs/             - Logged ring sessions
 ```
 
 ## Documentation
 
-**Nuanic Ring Integration:**
-- [Nuanic Master Guide](docs/nuanic/00_master_guide.md) - Setup, CLI/API usage, packet decoding, EDA analysis, troubleshooting
+**Ring Device Integration:**
+- [Legacy Nuanic Master Guide (Archived)](docs/archive/nuanic/00_master_guide.md) - Setup, CLI/API usage, packet decoding, EDA analysis, troubleshooting
 
 **Development:**
 - [Contributing Guidelines](docs/contributing.md) - Development standards
@@ -124,7 +127,7 @@ AWE_Polar_Project/
 
 2. **Polar H10:** Pairs via system Bluetooth settings
 
-3. **Nuanic Ring:** Auto-discovered by device name in software
+3. **Ring Device:** Auto-discovered by device name in software
 
 ## Data Formats
 
@@ -229,13 +232,13 @@ Operational implication:
 Recommended commands:
 ```bash
 # Full GATT service/characteristic table (works for either profile)
-python scripts/discover_nuanic_services.py --no-profile --buffer-poll 0
+python scripts/discover_ring_services.py --no-profile --buffer-poll 0
 
 # Nuanic-only buffer check (will skip on non-Nuanic profile)
-python scripts/discover_nuanic_services.py --buffer-only
+python scripts/discover_ring_services.py --buffer-only
 
 # Profile-specific notify subscription (auto|nuanic|moodmetric)
-python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile auto
+python scripts/discover_ring_services.py --subscribe-core-streams --ring-profile auto
 ```
 
 Ring-agnostic roadmap in current code:
@@ -315,7 +318,7 @@ datasets/
 pytest tests/ -v --cov=.
 
 # Test Nuanic integration (33 unit tests)
-pytest tests/test_nuanic_integration.py -v
+pytest tests/test_ring_integration.py -v
 ```
 
 **Test Status:**
@@ -332,7 +335,7 @@ pytest tests/test_nuanic_integration.py -v
 - ✅ Analyzed stress algorithm behavior (DNE baseline calibration, +10.7% initial drift)
 - ✅ Validated sensor independence (stress ↔ EDA correlation = -0.12)
 - ✅ Tested with 5-minute extended capture (4,799 IMU + 325 physiology packets)
-- 📄 **See [Nuanic Master Guide](docs/nuanic/00_master_guide.md) for full technical findings and context**
+- 📄 **See [Legacy Nuanic Master Guide (Archived)](docs/archive/nuanic/00_master_guide.md) for full technical findings and context**
 
 **Code & Documentation:**
 - ✅ 6 core analysis scripts for sensor validation
@@ -343,24 +346,24 @@ pytest tests/test_nuanic_integration.py -v
 
 ## Usage Examples
 
-**Log Nuanic Ring Data:**
+**Log Ring Device Data:**
 ```bash
 # Record for 5 minutes
-python scripts/nuanic_monitor_cli.py --duration 300
-# Output: data/nuanic_logs/nuanic_imu_*.csv + nuanic_stress_*.csv
+python scripts/ring_monitor_cli.py --duration 300
+# Output: data/ring_logs/nuanic_*.csv
 ```
 
 **Analyze Logged Data:**
 ```bash
 # Generate statistics report
-python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_2026-02-27_14-23-45.csv
+python scripts/ring_analyzer_cli.py data/ring_logs/nuanic_stress_2026-02-27_14-23-45.csv
 # Shows: stress range, peaks, EDA analysis
 ```
 
 **Use in Python Code:**
 ```python
-from awe_polar.nuanic_ring import NuanicDataLogger
-from awe_polar.nuanic_ring.eda_analyzer import NuanicEDAAnalyzer
+from awe_polar.ring_device import NuanicDataLogger
+from awe_polar.ring_device.eda_analyzer import NuanicEDAAnalyzer
 
 # Log stress + EDA data
 logger = NuanicDataLogger()
@@ -379,7 +382,7 @@ for eda_value in eda_stream:
 - Python 3.8-3.11
 - Windows 10/11 (Bluetooth capable)
 - Polar H10 heart rate monitor (optional)
-- Nuanic smart ring (optional)
+- Ring device (optional)
 - 2 GB RAM minimum
 - Virtual environment recommended
 

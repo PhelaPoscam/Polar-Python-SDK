@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from awe_polar.nuanic_ring.mm_compat import (
+from awe_polar.ring_device.mm_compat import (
     DEFAULT_OHMS_PER_RAW_UNIT,
     MMFeatures,
     MMLikeScorer,

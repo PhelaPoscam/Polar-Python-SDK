@@ -2,7 +2,7 @@
 """Ring monitor CLI.
 
 Behavior by detected profile:
-- Nuanic: full decoded monitor (IMU + stress/state)
+- nuanic: full decoded monitor (IMU + stress/state)
 - Moodmetric: generic notify capture (UUID, payload len, raw hex)
 """
 
@@ -13,14 +13,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from awe_polar.nuanic_ring.connector import NuanicConnector
-from awe_polar.nuanic_ring.monitor import NuanicMonitor
-from awe_polar.nuanic_ring.waveform_viewer import run_waveform_viewer
+from awe_polar.ring_device.connector import NuanicConnector
+from awe_polar.ring_device.monitor import NuanicMonitor
+from awe_polar.ring_device.waveform_viewer import run_waveform_viewer
 
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Real-time Nuanic ring monitor (IMU + Stress + EDA)",
+        description="Real-time ring monitor (IMU + stress + EDA)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -41,8 +41,8 @@ Examples:
     )
     parser.add_argument(
         "--log-dir",
-        default="data/nuanic_logs",
-        help="Directory to save CSV logs (default: data/nuanic_logs)",
+        default="data/ring_logs",
+        help="Directory to save CSV logs (default: data/ring_logs)",
     )
     log_group = parser.add_mutually_exclusive_group()
     log_group.add_argument(
@@ -112,7 +112,7 @@ Examples:
     parser.add_argument(
         "--discover",
         action="store_true",
-        help="Discover all Nuanic ring services and characteristics, then exit",
+        help="Discover all ring services and characteristics, then exit",
     )
 
     args = parser.parse_args()
@@ -125,7 +125,7 @@ Examples:
                 print("[FAIL] Could not connect to ring")
                 return
             print("\n" + "=" * 70)
-            print("NUANIC RING GATT DISCOVERY")
+            print("RING GATT DISCOVERY")
             print("=" * 70)
             await connector.discover_services()
             await connector.disconnect()
@@ -142,10 +142,10 @@ Examples:
             rings = await connector.list_available_rings()
 
             if not rings:
-                print("\n[FAIL] No Nuanic rings found\n")
+                print("\n[FAIL] No compatible rings found\n")
                 return
 
-            print(f"\n✓ Found {len(rings)} Nuanic ring(s):\n")
+            print(f"\n✓ Found {len(rings)} ring device(s):\n")
             for i, ring in enumerate(rings, 1):
                 print(f"  {i}. {ring['name']:20} | {ring['address']}")
             print()

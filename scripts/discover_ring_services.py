@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified Nuanic diagnostics CLI.
+"""Unified ring diagnostics CLI.
 
 This script consolidates exploratory reverse-engineering tools into one entrypoint:
 - Service/characteristic discovery
@@ -21,8 +21,8 @@ import platform
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from awe_polar.nuanic_ring.connector import NuanicConnector
-from awe_polar.nuanic_ring.ring_profiles import (
+from awe_polar.ring_device.connector import NuanicConnector
+from awe_polar.ring_device.ring_profiles import (
     MOODMETRIC_PROFILE,
     NUANIC_PROFILE,
     UNKNOWN_PROFILE,
@@ -83,7 +83,7 @@ class NotifyStats:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Nuanic diagnostics: discover, profile notify streams, write-probe, and inspect buffer",
+        description="Ring diagnostics: discover, profile notify streams, write-probe, and inspect buffer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

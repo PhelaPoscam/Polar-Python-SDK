@@ -1,7 +1,7 @@
 """
-Tests for Nuanic ring integration modules
+Tests for ring integration modules
 
-pytest test_nuanic_integration.py -v
+pytest tests/test_ring_integration.py -v
 """
 
 import pytest
@@ -15,16 +15,20 @@ import sys
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from awe_polar.nuanic_ring import NuanicConnector, NuanicMonitor, NuanicDataLogger
-from awe_polar.nuanic_ring.eda_analyzer import NuanicEDAAnalyzer
+from awe_polar.ring_device import (
+    NuanicConnector as RingConnector,
+    NuanicMonitor as RingMonitor,
+    NuanicDataLogger as RingDataLogger,
+)
+from awe_polar.ring_device.eda_analyzer import NuanicEDAAnalyzer as RingEDAAnalyzer
 
 
-class TestNuanicConnector:
+class TestRingConnector:
     """Tests for BLE connection management"""
 
     def test_connector_initialization(self):
         """Test connector can be instantiated"""
-        connector = NuanicConnector()
+        connector = RingConnector()
         assert connector is not None
         assert connector.timeout == 15.0
         assert connector.max_scan_attempts == 3
@@ -33,29 +37,29 @@ class TestNuanicConnector:
 
     def test_connector_custom_timeout(self):
         """Test connector with custom timeout"""
-        connector = NuanicConnector(timeout=30.0, max_scan_attempts=5)
+        connector = RingConnector(timeout=30.0, max_scan_attempts=5)
         assert connector.timeout == 30.0
         assert connector.max_scan_attempts == 5
 
     def test_battery_characteristic_uuid(self):
         """Verify battery characteristic UUID"""
-        connector = NuanicConnector()
+        connector = RingConnector()
         assert (
             connector.BATTERY_CHARACTERISTIC == "00002a19-0000-1000-8000-00805f9b34fb"
         )
 
     def test_stress_characteristic_uuid(self):
         """Verify stress characteristic UUID"""
-        connector = NuanicConnector()
+        connector = RingConnector()
         assert connector.STRESS_CHARACTERISTIC == "468f2717-6a7d-46f9-9eb7-f92aab208bae"
 
 
-class TestNuanicMonitor:
+class TestRingMonitor:
     """Tests for real-time stress monitoring"""
 
     def test_monitor_initialization(self):
         """Test monitor can be instantiated"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
         assert monitor is not None
         assert monitor.connector is not None
         assert monitor.current_stress is None
@@ -63,7 +67,7 @@ class TestNuanicMonitor:
 
     def test_parse_stress_packet_basic(self):
         """Test parsing a basic 92-byte stress packet"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         # Create mock packet with stress at byte 14
         packet = bytearray(92)
@@ -80,7 +84,7 @@ class TestNuanicMonitor:
 
     def test_parse_stress_packet_boundaries(self):
         """Test stress parsing at boundary values"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         # Test minimum (0%)
         packet_min = bytearray(92)
@@ -96,7 +100,7 @@ class TestNuanicMonitor:
 
     def test_parse_stress_packet_mid_range(self):
         """Test various mid-range stress values"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         test_cases = [
             (32, 12.5),  # 25% area
@@ -116,7 +120,7 @@ class TestNuanicMonitor:
 
     def test_parse_stress_packet_eda_extraction(self):
         """Test EDA data extraction (bytes 15-91)"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         packet = bytearray(92)
         packet[14] = 100  # stress value
@@ -135,7 +139,7 @@ class TestNuanicMonitor:
 
     def test_parse_stress_packet_undersized(self):
         """Test handling of undersized packets"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         small_packet = bytearray(10)  # Too small
         result = monitor.parse_stress_packet(small_packet)
@@ -144,7 +148,7 @@ class TestNuanicMonitor:
 
     def test_parse_stress_packet_exact_minimum(self):
         """Test packet at minimum size needed (15 bytes for stress at [14])"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         min_packet = bytearray(15)
         min_packet[14] = 127
@@ -155,7 +159,7 @@ class TestNuanicMonitor:
 
     def test_notification_callback(self):
         """Test notification callback updates current values"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         packet = bytearray(92)
         packet[14] = 150  # stress
@@ -171,7 +175,7 @@ class TestNuanicMonitor:
 
     def test_get_current_stress(self):
         """Test retrieving current stress"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         assert monitor.get_current_stress() is None
 
@@ -184,7 +188,7 @@ class TestNuanicMonitor:
 
     def test_get_current_eda(self):
         """Test retrieving current EDA"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         assert monitor.get_current_eda() is None
 
@@ -197,12 +201,12 @@ class TestNuanicMonitor:
         assert eda.startswith("01020304")
 
 
-class TestNuanicDataLogger:
+class TestRingDataLogger:
     """Tests for CSV data logging"""
 
     def test_logger_initialization(self):
         """Test logger can be instantiated"""
-        logger = NuanicDataLogger()
+        logger = RingDataLogger()
         assert logger is not None
         assert logger.log_dir.exists()
         assert logger.connector is not None
@@ -210,14 +214,14 @@ class TestNuanicDataLogger:
 
     def test_logger_custom_directory(self):
         """Test logger with custom directory"""
-        custom_dir = "data/test_nuanic_logs"
-        logger = NuanicDataLogger(log_dir=custom_dir)
+        custom_dir = "data/test_ring_logs"
+        logger = RingDataLogger(log_dir=custom_dir)
         # Normalize paths for cross-platform compatibility
         assert str(logger.log_dir).replace("\\", "/") == custom_dir
 
     def test_logger_creates_correct_file_format(self):
         """Test that CSV file follows expected naming convention"""
-        logger = NuanicDataLogger()
+        logger = RingDataLogger()
         logger._create_log_file()
 
         filename = logger.csv_file.name
@@ -231,7 +235,7 @@ class TestNuanicDataLogger:
         import tempfile
         import csv
 
-        logger = NuanicDataLogger()
+        logger = RingDataLogger()
         logger._create_log_file()
 
         with open(logger.csv_file, "r") as f:
@@ -250,7 +254,7 @@ class TestNuanicDataLogger:
 
     def test_logger_notification_callback(self):
         """Test logging a notification"""
-        logger = NuanicDataLogger()
+        logger = RingDataLogger()
         logger._create_log_file()
 
         packet = bytearray(92)
@@ -269,7 +273,7 @@ class TestNuanicDataLogger:
 
     def test_logger_multiple_notifications(self):
         """Test logging multiple notifications"""
-        logger = NuanicDataLogger()
+        logger = RingDataLogger()
         logger._create_log_file()
 
         for i in range(10):
@@ -280,19 +284,19 @@ class TestNuanicDataLogger:
         assert logger.row_count == 10
 
 
-class TestNuanicEDAAnalyzer:
+class TestRingEDAAnalyzer:
     """Tests for EDA analysis"""
 
     def test_analyzer_initialization(self):
         """Test analyzer can be instantiated"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
         assert analyzer is not None
         assert analyzer.baseline is None
         assert len(analyzer.eda_history) == 0
 
     def test_update_baseline_initial(self):
         """Test initial baseline setting"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         analyzer.update_baseline(100.0)
 
@@ -300,7 +304,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_update_baseline_exponential_moving_average(self):
         """Test baseline updates with exponential moving average"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
         analyzer.baseline = 100.0
 
         # New reading: 110
@@ -312,7 +316,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_add_reading(self):
         """Test adding EDA readings"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         stats = analyzer.add_reading(100.0)
 
@@ -325,7 +329,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_eda_history_limit(self):
         """Test that EDA history is limited to 60 readings"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         # Add 100 readings
         for i in range(100):
@@ -336,7 +340,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_baseline_vs_phasic(self):
         """Test baseline and phasic component calculation"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         # Add stable readings to set baseline
         for _ in range(20):
@@ -353,7 +357,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_peak_detection_threshold(self):
         """Test peak detection responds to large changes"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         # Establish baseline
         for _ in range(20):
@@ -371,7 +375,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_analyze_session(self):
         """Test session-level analysis"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         # Create test session with peaks
         readings = []
@@ -399,7 +403,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_analyze_empty_session(self):
         """Test analysis with empty session"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         stats = analyzer.analyze_session([])
 
@@ -407,7 +411,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_interpretation_high_arousal(self):
         """Test interpretation identifies high arousal"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         stats = {
             "duration_seconds": 60,
@@ -427,7 +431,7 @@ class TestNuanicEDAAnalyzer:
 
     def test_interpretation_low_arousal(self):
         """Test interpretation identifies low arousal"""
-        analyzer = NuanicEDAAnalyzer()
+        analyzer = RingEDAAnalyzer()
 
         stats = {
             "duration_seconds": 60,
@@ -451,7 +455,7 @@ class TestDataIntegration:
 
     def test_stress_raw_to_percent_conversion(self):
         """Test stress value conversion across modules"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         # Test multiple conversions
         conversions = [
@@ -471,7 +475,7 @@ class TestDataIntegration:
 
     def test_eda_hex_format_consistency(self):
         """Test EDA hex encoding is consistent"""
-        monitor = NuanicMonitor()
+        monitor = RingMonitor()
 
         packet1 = bytearray(92)
         packet1[15] = 0xAB

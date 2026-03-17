@@ -110,7 +110,7 @@ pip install -r requirements.txt
 
 ## 2.2 Recommended monitor run
 ```bash
-python scripts/nuanic_monitor_cli.py --duration 60
+python scripts/ring_monitor_cli.py --duration 60
 ```
 
 What one run does:
@@ -121,22 +121,22 @@ What one run does:
 
 ## 2.3 Logging-focused run
 ```bash
-python scripts/nuanic_logger_cli.py --duration 300
+python scripts/ring_logger_cli.py --duration 300
 ```
 
 ## 2.4 CSV analysis run
 ```bash
-python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
+python scripts/ring_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
 ```
 
 ## 2.5 BLE diagnostics (discovery + profiling)
 ```bash
-python scripts/discover_nuanic_services.py --ring-addr <MAC>
+python scripts/discover_ring_services.py --ring-addr <MAC>
 ```
 
 GATT-only discovery (recommended when validating ring type):
 ```bash
-python scripts/discover_nuanic_services.py --no-profile --buffer-poll 0
+python scripts/discover_ring_services.py --no-profile --buffer-poll 0
 ```
 
 ## 2.6 Legacy compatibility command path (historical)
@@ -153,11 +153,11 @@ Use these only if your local tree still contains `scripts/ble/` equivalents.
 ## 3.0 `discover_nuanic_services.py` profile-aware diagnostics
 ```bash
 # Auto-detect profile from services (recommended)
-python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile auto
+python scripts/discover_ring_services.py --subscribe-core-streams --ring-profile auto
 
 # Force known profile
-python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile nuanic
-python scripts/discover_nuanic_services.py --subscribe-core-streams --ring-profile moodmetric
+python scripts/discover_ring_services.py --subscribe-core-streams --ring-profile nuanic
+python scripts/discover_ring_services.py --subscribe-core-streams --ring-profile moodmetric
 ```
 
 Key options:
@@ -168,10 +168,10 @@ Key options:
 
 ## 3.1 `nuanic_monitor_cli.py` (real-time monitoring)
 ```bash
-python scripts/nuanic_monitor_cli.py
-python scripts/nuanic_monitor_cli.py --duration 60
-python scripts/nuanic_monitor_cli.py --list-rings
-python scripts/nuanic_monitor_cli.py --ring-addr 58:A3:D0:95:DF:2D --duration 30
+python scripts/ring_monitor_cli.py
+python scripts/ring_monitor_cli.py --duration 60
+python scripts/ring_monitor_cli.py --list-rings
+python scripts/ring_monitor_cli.py --ring-addr 58:A3:D0:95:DF:2D --duration 30
 ```
 
 Options:
@@ -184,10 +184,10 @@ Options:
 
 ## 3.2 `nuanic_logger_cli.py` (lightweight logging)
 ```bash
-python scripts/nuanic_logger_cli.py
-python scripts/nuanic_logger_cli.py --duration 300
-python scripts/nuanic_logger_cli.py --list-rings
-python scripts/nuanic_logger_cli.py --ring-addr 58:A3:D0:95:DF:2D --duration 60
+python scripts/ring_logger_cli.py
+python scripts/ring_logger_cli.py --duration 300
+python scripts/ring_logger_cli.py --list-rings
+python scripts/ring_logger_cli.py --ring-addr 58:A3:D0:95:DF:2D --duration 60
 ```
 
 Options:
@@ -198,7 +198,7 @@ Options:
 
 ## 3.3 `nuanic_analyzer_cli.py` (file analysis)
 ```bash
-python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_2026-03-05_15-45-19.csv
+python scripts/ring_analyzer_cli.py data/nuanic_logs/nuanic_stress_2026-03-05_15-45-19.csv
 ```
 
 Typical output includes:
@@ -226,7 +226,7 @@ Without `--ring-addr`:
 
 ## 4.2 Connector example
 ```python
-from awe_polar.nuanic_ring import NuanicConnector
+from awe_polar.ring_device import NuanicConnector
 
 connector = NuanicConnector()
 if await connector.connect():
@@ -236,7 +236,7 @@ if await connector.connect():
 
 ## 4.3 Monitor example
 ```python
-from awe_polar.nuanic_ring import NuanicMonitor
+from awe_polar.ring_device import NuanicMonitor
 
 monitor = NuanicMonitor()
 await monitor.start_monitoring()
@@ -245,7 +245,7 @@ stress = monitor.get_current_stress()  # 0-100%
 
 ## 4.4 Logger example
 ```python
-from awe_polar.nuanic_ring import NuanicDataLogger
+from awe_polar.ring_device import NuanicDataLogger
 
 logger = NuanicDataLogger()
 await logger.start_logging(duration_seconds=300)
@@ -253,7 +253,7 @@ await logger.start_logging(duration_seconds=300)
 
 ## 4.5 EDA analyzer example
 ```python
-from awe_polar.nuanic_ring.eda_analyzer import NuanicEDAAnalyzer
+from awe_polar.ring_device.eda_analyzer import NuanicEDAAnalyzer
 
 analyzer = NuanicEDAAnalyzer()
 stats = analyzer.add_reading(eda_value)
@@ -263,7 +263,7 @@ print(analyzer.get_interpretation(stats))
 ## 4.6 MAC dynamics check
 ```python
 import asyncio
-from awe_polar.nuanic_ring import NuanicConnector
+from awe_polar.ring_device import NuanicConnector
 
 async def check_macs():
     c = NuanicConnector()
@@ -471,7 +471,7 @@ When these conflicts appear in legacy logs/docs:
   - Ensure Bluetooth is enabled.
   - Close competing Bluetooth apps.
 - Wrong ring profile selected:
-  - Run `python scripts/discover_nuanic_services.py --no-profile --buffer-poll 0`
+  - Run `python scripts/discover_ring_services.py --no-profile --buffer-poll 0`
   - If service `5491faaf-b0c2-4167-8f3d-bc6b31db69e7` is missing, device is not Nuanic profile.
 - Connection timeout:
   - Retry once.
@@ -490,10 +490,10 @@ When these conflicts appear in legacy logs/docs:
 Historical docs mention moved or archived scripts (`scripts/ble/archive/`) and removed experiments. Treat those references as historical unless files exist in current workspace.
 
 Current known script set (from present tree):
-- `scripts/nuanic_monitor_cli.py`
-- `scripts/nuanic_logger_cli.py`
-- `scripts/nuanic_analyzer_cli.py`
-- `scripts/discover_nuanic_services.py` (unified diagnostics)
+- `scripts/ring_monitor_cli.py`
+- `scripts/ring_logger_cli.py`
+- `scripts/ring_analyzer_cli.py`
+- `scripts/discover_ring_services.py` (unified diagnostics)
 - `scripts/analysis/analyze_nuanic_stream.py`
 
 ## 10. Testing and Quality Notes (Historical Claims)
@@ -541,23 +541,23 @@ timestamp,elapsed_ms,stress_raw,stress_percent,eda_hex,full_packet_hex
 
 ```bash
 # List rings
-python scripts/nuanic_monitor_cli.py --list-rings
+python scripts/ring_monitor_cli.py --list-rings
 
 # Monitor for 60 seconds
-python scripts/nuanic_monitor_cli.py --duration 60
+python scripts/ring_monitor_cli.py --duration 60
 
 # Monitor without creating CSV files
-python scripts/nuanic_monitor_cli.py --duration 60 --no-log
+python scripts/ring_monitor_cli.py --duration 60 --no-log
 
 # Live waveform visualization (stress payload + raw EDA)
-python scripts/nuanic_monitor_cli.py --waveform --window-seconds 10
+python scripts/ring_monitor_cli.py --waveform --window-seconds 10
 
 # Lightweight logging
-python scripts/nuanic_logger_cli.py --duration 300
+python scripts/ring_logger_cli.py --duration 300
 
 # Analyze a captured session
-python scripts/nuanic_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
+python scripts/ring_analyzer_cli.py data/nuanic_logs/nuanic_stress_YYYY-MM-DD_HH-MM-SS.csv
 
 # BLE diagnostics and service inspection
-python scripts/discover_nuanic_services.py --ring-addr <MAC>
+python scripts/discover_ring_services.py --ring-addr <MAC>
 ```

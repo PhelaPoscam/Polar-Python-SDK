@@ -27,7 +27,7 @@ jobs:
     - name: Check formatting (Black)
       run: |
         source venv/bin/activate
-        black --check src/awe_polar/nuanic_ring scripts/nuanic_*.py scripts/discover_nuanic_services.py
+        black --check src/awe_polar/ring_device src/awe_polar/nuanic_ring scripts/*ring*_cli.py scripts/discover_ring_services.py
 
     - name: Run tests
       run: |

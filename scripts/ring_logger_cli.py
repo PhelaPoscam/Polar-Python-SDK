@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nuanic Ring Logger CLI - Log stress and EDA data to CSV."""
+"""Ring logger CLI - Log stress and EDA data to CSV."""
 
 import argparse
 import asyncio
@@ -8,13 +8,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from awe_polar.nuanic_ring.connector import NuanicConnector
-from awe_polar.nuanic_ring.logger import NuanicDataLogger
+from awe_polar.ring_device.connector import NuanicConnector
+from awe_polar.ring_device.logger import NuanicDataLogger
 
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Log Nuanic ring data (Stress + EDA) to CSV",
+        description="Log ring data (stress + EDA) to CSV",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -33,8 +33,8 @@ Examples:
     )
     parser.add_argument(
         "--log-dir",
-        default="data/nuanic_logs",
-        help="Directory to save CSV logs (default: data/nuanic_logs)",
+        default="data/ring_logs",
+        help="Directory to save CSV logs (default: data/ring_logs)",
     )
     parser.add_argument(
         "--ring-addr",
@@ -56,10 +56,10 @@ Examples:
             rings = await connector.list_available_rings()
 
             if not rings:
-                print("\n[FAIL] No Nuanic rings found\n")
+                print("\n[FAIL] No compatible rings found\n")
                 return
 
-            print(f"\n✓ Found {len(rings)} Nuanic ring(s):\n")
+            print(f"\n✓ Found {len(rings)} ring device(s):\n")
             for i, ring in enumerate(rings, 1):
                 print(f"  {i}. {ring['name']:20} | {ring['address']}")
             print()

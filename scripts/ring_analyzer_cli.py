@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nuanic Ring Data Analyzer CLI - Analyze logged CSV data."""
+"""Ring data analyzer CLI - Analyze logged CSV data."""
 
 import argparse
 import sys
@@ -7,18 +7,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from awe_polar.nuanic_ring.data_analysis import print_export_fit_report, print_report
+from awe_polar.ring_device.data_analysis import print_export_fit_report, print_report
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Analyze Nuanic ring CSV log files",
+        description="Analyze ring CSV log files",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s data/nuanic_logs/nuanic_2026-03-05_15-45-19.csv
-  %(prog)s data/nuanic_logs/nuanic_stress_2026-03-05_15-45-19.csv
-  %(prog)s data/nuanic_logs/nuanic_*_stress_*.csv
+    %(prog)s data/ring_logs/nuanic_2026-03-05_15-45-19.csv
+    %(prog)s data/ring_logs/nuanic_stress_2026-03-05_15-45-19.csv
+    %(prog)s data/ring_logs/*.csv
         """,
     )
 
