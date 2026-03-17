@@ -66,6 +66,12 @@ class NuanicConnector:
             "timeout": self.timeout,
             "disconnected_callback": self._on_disconnect,
         }
+
+        # Windows-specific tweaks to help avoid zombie connections and cache issues
+        if platform.system() == "Windows":
+            # Using winrt backend directly avoids some OS caching layers if available
+            kwargs["use_cached_services"] = False
+
         try:
             params = inspect.signature(BleakClient).parameters
             if "pair" in params:
@@ -434,21 +440,32 @@ class NuanicConnector:
             }
 
     async def _cleanup_client(self):
-        """Best-effort cleanup of existing BLE client state."""
-        if not self.client:
+        """Strict cleanup of existing BLE client state to prevent zombie connections."""
+        if getattr(self, "client", None) is None:
             return
 
         try:
-            if self.client.is_connected:
+            if getattr(self.client, "is_connected", False):
                 self._disconnect_event.clear()
+                # Explicitly attempt to stop notifications before disconnecting
+                # to help Windows clear the GATT cache cleanly.
+                for char_uuid in [self.STRESS_CHARACTERISTIC, self.IMU_CHARACTERISTIC, self.RAW_EDA_CHARACTERISTIC]:
+                    try:
+                        await self.client.stop_notify(char_uuid)
+                    except Exception:
+                        pass
+
+                print("[CLEANUP] Disconnecting BleakClient...")
                 await self.client.disconnect()
+
+                # Wait explicitly for the disconnected_callback to fire
                 try:
-                    await asyncio.wait_for(self._disconnect_event.wait(), timeout=3.0)
-                except Exception:
-                    # Some backends may not always fire callback reliably.
-                    pass
-        except Exception:
-            pass
+                    await asyncio.wait_for(self._disconnect_event.wait(), timeout=5.0)
+                    print("[CLEANUP] OS confirmed disconnect.")
+                except asyncio.TimeoutError:
+                    print("[CLEANUP] Warning: OS disconnect callback timed out.")
+        except Exception as e:
+            print(f"[CLEANUP] Error during disconnect: {e}")
         finally:
             self.client = None
 
@@ -478,128 +495,141 @@ class NuanicConnector:
         )
         print(f"[INIT] Connecting to Nuanic ring {search_label}...")
 
-        # If a concrete device object was selected from the latest scan, try it first.
-        # This avoids a second scan/match cycle that can fail when BLE private MAC rotates.
-        if self.device and (
-            not self.target_address
-            or self.device.address.lower() == self.target_address.lower()
-        ):
-            print("[CONN] Trying selected device directly...", end=" ", flush=True)
-            try:
-                self._disconnect_event.clear()
-                self.client = self._create_bleak_client(self.device)
-                await self.client.connect()
-                print("[OK] Connected")
+        # Connection logic is wrapped in a try...finally to ensure absolute safety
+        # against crashes leaving zombie connections open.
+        try:
+            # If a concrete device object was selected from the latest scan, try it first.
+            # This avoids a second scan/match cycle that can fail when BLE private MAC rotates.
+            if self.device and (
+                not self.target_address
+                or self.device.address.lower() == self.target_address.lower()
+            ):
+                print("[CONN] Trying selected device directly...", end=" ", flush=True)
+                try:
+                    self._disconnect_event.clear()
+                    self.client = self._create_bleak_client(self.device)
+                    await self.client.connect()
+                    print("[OK] Connected")
 
-                if self.pair_on_connect:
-                    print("[PAIR] Requested via BleakClient(pair=True)")
-                else:
-                    print("[PAIR] Establishing encryption...", end=" ", flush=True)
-                    try:
-                        await self.client.pair()
-                        print("[OK] Paired")
-                    except Exception:
-                        print("[INFO] Pairing not available")
+                    if self.pair_on_connect:
+                        print("[PAIR] Requested via BleakClient(pair=True)")
+                    else:
+                        print("[PAIR] Establishing encryption...", end=" ", flush=True)
+                        try:
+                            await self.client.pair()
+                            print("[OK] Paired")
+                        except Exception:
+                            print("[INFO] Pairing not available")
 
-                if not getattr(self.client, "is_connected", False):
-                    print("[RETRY] Link dropped right after connect")
+                    if not getattr(self.client, "is_connected", False):
+                        print("[RETRY] Link dropped right after connect")
+                        await self._cleanup_client()
+                    else:
+                        print("\n[OK] Connection established!\n")
+                        return True
+                except Exception as e:
+                    print(f"[RETRY] {e}")
                     await self._cleanup_client()
-                else:
-                    print("\n[OK] Connection established!\n")
-                    return True
-            except Exception as e:
-                print(f"[RETRY] {e}")
-                await self._cleanup_client()
 
-        for attempt in range(1, self.max_connect_attempts + 1):
-            # Step 1: Find device via scan
-            print(
-                f"\n[SCAN {attempt}/{self.max_connect_attempts}] Searching for device...",
-                end=" ",
-                flush=True,
-            )
-            scan_ok = await self.find_device()
-            if not scan_ok:
-                print("[NOT FOUND]")
-                if self.target_address and attempt == 1:
-                    print(
-                        "[HINT] Device not in scan results — may already be bonded to Windows "
-                        "or using a rotating MAC. Trying direct address connection..."
-                    )
-
-            # Step 2: Connect — use scanned device object when available, otherwise
-            # connect by address string directly (works for Windows-bonded devices
-            # that are invisible to BLE scan).
-            connect_target = self.device if scan_ok else self.target_address
-            if connect_target is None:
-                if attempt < self.max_connect_attempts:
-                    print(f"[WAIT] Pausing before retry...")
-                    await asyncio.sleep(self.connect_backoff_seconds)
-                continue
-
-            if scan_ok:
-                print(f"[OK] Found: {self.device.name}")
-
-            print(
-                f"[CONN {attempt}/{self.max_connect_attempts}] Connecting to BLE device...",
-                end=" ",
-                flush=True,
-            )
-            try:
-                self._disconnect_event.clear()
-                self.client = self._create_bleak_client(connect_target)
-                await self.client.connect()
-                print("[OK] Connected")
-            except asyncio.TimeoutError:
-                print(f"[TIMEOUT] ({self.timeout}s)")
-                await self._cleanup_client()
-                if attempt < self.max_connect_attempts:
-                    print(f"[WAIT] Resetting BLE and retrying...")
-                    await asyncio.sleep(self.connect_backoff_seconds)
-                continue
-            except Exception as e:
-                print(f"[ERROR] {e}")
-                await self._cleanup_client()
-                if attempt < self.max_connect_attempts:
-                    print(f"[WAIT] Resetting BLE and retrying...")
-                    await asyncio.sleep(self.connect_backoff_seconds)
-                continue
-
-            # Step 3: Pair (optional)
-            if self.pair_on_connect:
+            for attempt in range(1, self.max_connect_attempts + 1):
+                # Step 1: Find device via scan
                 print(
-                    f"[PAIR {attempt}/{self.max_connect_attempts}] Requested via BleakClient(pair=True)"
+                    f"\n[SCAN {attempt}/{self.max_connect_attempts}] Searching for device...",
+                    end=" ",
+                    flush=True,
                 )
-            else:
+                scan_ok = await self.find_device()
+                if not scan_ok:
+                    print("[NOT FOUND]")
+                    if self.target_address and attempt == 1:
+                        print(
+                            "[HINT] Device not in scan results — may already be bonded to Windows "
+                            "or using a rotating MAC. Trying direct address connection..."
+                        )
+
+                # Step 2: Connect — use scanned device object when available, otherwise
+                # connect by address string directly (works for Windows-bonded devices
+                # that are invisible to BLE scan).
+                connect_target = self.device if scan_ok else self.target_address
+                if connect_target is None:
+                    if attempt < self.max_connect_attempts:
+                        print(f"[WAIT] Pausing before retry...")
+                        await asyncio.sleep(self.connect_backoff_seconds)
+                    continue
+
+                if scan_ok:
+                    print(f"[OK] Found: {self.device.name}")
+
                 print(
-                    f"[PAIR {attempt}/{self.max_connect_attempts}] Establishing encryption...",
+                    f"[CONN {attempt}/{self.max_connect_attempts}] Connecting to BLE device...",
                     end=" ",
                     flush=True,
                 )
                 try:
-                    await self.client.pair()
-                    print("[OK] Paired")
+                    self._disconnect_event.clear()
+                    self.client = self._create_bleak_client(connect_target)
+                    await self.client.connect()
+                    print("[OK] Connected")
+                except asyncio.TimeoutError:
+                    print(f"[TIMEOUT] ({self.timeout}s)")
+                    await self._cleanup_client()
+                    if attempt < self.max_connect_attempts:
+                        print(f"[WAIT] Resetting BLE and retrying...")
+                        await asyncio.sleep(self.connect_backoff_seconds)
+                    continue
                 except Exception as e:
-                    # Pairing may fail if already paired - this is OK
-                    print(f"[INFO] Pairing not available")
+                    print(f"[ERROR] {e}")
+                    await self._cleanup_client()
+                    if attempt < self.max_connect_attempts:
+                        print(f"[WAIT] Resetting BLE and retrying...")
+                        await asyncio.sleep(self.connect_backoff_seconds)
+                    continue
 
-            if not getattr(self.client, "is_connected", False):
-                print("[RETRY] Link dropped right after connect")
-                await self._cleanup_client()
-                if attempt < self.max_connect_attempts:
-                    print(f"[WAIT] Retrying after disconnect...")
-                    await asyncio.sleep(self.connect_backoff_seconds)
-                continue
+                # Step 3: Pair (optional)
+                if self.pair_on_connect:
+                    print(
+                        f"[PAIR {attempt}/{self.max_connect_attempts}] Requested via BleakClient(pair=True)"
+                    )
+                else:
+                    print(
+                        f"[PAIR {attempt}/{self.max_connect_attempts}] Establishing encryption...",
+                        end=" ",
+                        flush=True,
+                    )
+                    try:
+                        await self.client.pair()
+                        print("[OK] Paired")
+                    except Exception as e:
+                        # Pairing may fail if already paired - this is OK
+                        print(f"[INFO] Pairing not available")
 
-            # Success!
-            print(f"\n[OK] Connection established!\n")
-            return True
+                if not getattr(self.client, "is_connected", False):
+                    print("[RETRY] Link dropped right after connect")
+                    await self._cleanup_client()
+                    if attempt < self.max_connect_attempts:
+                        print(f"[WAIT] Retrying after disconnect...")
+                        await asyncio.sleep(self.connect_backoff_seconds)
+                    continue
 
-        # All attempts failed
-        print(
-            f"\n[FAIL] Could not connect after {self.max_connect_attempts} attempts\n"
-        )
-        return False
+                # Success!
+                print(f"\n[OK] Connection established!\n")
+                return True
+
+            # All attempts failed
+            print(
+                f"\n[FAIL] Could not connect after {self.max_connect_attempts} attempts\n"
+            )
+            return False
+
+        except KeyboardInterrupt:
+            # Explicitly catch KeyboardInterrupt to ensure cleanup fires gracefully
+            print("\n[INFO] Connect aborted by user.")
+            await self._cleanup_client()
+            raise
+        except Exception as e:
+            print(f"\n[ERROR] Connect failed unexpectedly: {e}")
+            await self._cleanup_client()
+            raise
 
     async def disconnect(self):
         """Disconnect from ring.
