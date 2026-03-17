@@ -1,6 +1,6 @@
 """Ring profile definitions and detection helpers."""
 
-from typing import Iterable
+from typing import Iterable, List
 
 NUANIC_PROFILE = "nuanic"
 MOODMETRIC_PROFILE = "moodmetric"
@@ -42,6 +42,6 @@ def detect_ring_profile_from_service_uuids(service_uuids: Iterable[str]) -> str:
     return UNKNOWN_PROFILE
 
 
-def notify_uuids_for_profile(profile: str) -> list[str]:
+def notify_uuids_for_profile(profile: str) -> List[str]:
     """Return known notify UUIDs for the given profile."""
     return list(NOTIFY_UUIDS_BY_PROFILE.get(profile, []))

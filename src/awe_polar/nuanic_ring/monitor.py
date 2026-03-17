@@ -573,7 +573,9 @@ class NuanicMonitor:
 
         if self._detected_profile == MOODMETRIC_PROFILE:
             try:
-                ok = await self._run_moodmetric_monitor(duration_seconds=duration_seconds)
+                ok = await self._run_moodmetric_monitor(
+                    duration_seconds=duration_seconds
+                )
             finally:
                 await self.connector.disconnect()
             return ok

@@ -211,7 +211,9 @@ class NuanicConnector:
                 else:
                     addr = addr_raw
                 if addr:
-                    rings.append({"address": addr, "name": name, "source": "windows-paired"})
+                    rings.append(
+                        {"address": addr, "name": name, "source": "windows-paired"}
+                    )
 
             # Deduplicate by address
             dedup = {}
@@ -223,7 +225,9 @@ class NuanicConnector:
 
     async def list_available_rings_with_paired(self):
         """Return discoverable rings plus Windows paired rings (if any)."""
-        scanned = await self.list_available_rings(include_device=True, scan_timeout=6.0, attempts=3, retry_delay=1.0)
+        scanned = await self.list_available_rings(
+            include_device=True, scan_timeout=6.0, attempts=3, retry_delay=1.0
+        )
         paired = self._get_windows_paired_rings()
 
         merged = {}
@@ -276,9 +280,7 @@ class NuanicConnector:
         for idx, ring in enumerate(rings, 1):
             src = ring.get("source", "scan")
             src_tag = "SCAN" if src == "scan" else "PAIRED"
-            print(
-                f"  [{idx}] {ring['name']:15} | MAC: {ring['address']} | {src_tag}"
-            )
+            print(f"  [{idx}] {ring['name']:15} | MAC: {ring['address']} | {src_tag}")
 
         if len(rings) == 1:
             print(f"\nAuto-selecting: {rings[0]['name']} ({rings[0]['address']})")
