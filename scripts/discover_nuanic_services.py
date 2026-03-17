@@ -434,7 +434,9 @@ async def subscribe_core_streams(
         resolved_profile = NUANIC_PROFILE
 
     notify_uuids = notify_uuids_for_profile(resolved_profile)
-    print(f"[PROFILE] Using {active_profile_label} notify set ({len(notify_uuids)} UUIDs)")
+    print(
+        f"[PROFILE] Using {active_profile_label} notify set ({len(notify_uuids)} UUIDs)"
+    )
 
     disconnected = asyncio.Event()
 
@@ -457,8 +459,7 @@ async def subscribe_core_streams(
                 def cb(_sender, data):
                     if (
                         resolved_profile == NUANIC_PROFILE
-                        and char_uuid.lower()
-                        == "d306262b-c8c9-4c4b-9050-3a41dea706e5"
+                        and char_uuid.lower() == "d306262b-c8c9-4c4b-9050-3a41dea706e5"
                     ):
                         parse_eda_data(_sender, bytearray(data))
                         return
