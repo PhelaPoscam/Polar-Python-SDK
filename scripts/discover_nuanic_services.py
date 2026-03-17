@@ -438,6 +438,10 @@ async def subscribe_core_streams(
         f"[PROFILE] Using {active_profile_label} notify set ({len(notify_uuids)} UUIDs)"
     )
 
+    stream_stats: Dict[str, NotifyStats] = {
+        uuid.lower(): NotifyStats() for uuid in notify_uuids
+    }
+
     disconnected = asyncio.Event()
 
     def on_disconnect(_c):
@@ -457,15 +461,18 @@ async def subscribe_core_streams(
 
             def make_cb(char_uuid: str):
                 def cb(_sender, data):
+                    payload = bytes(data)
+                    stats_key = char_uuid.lower()
+                    stream_stats[stats_key].add(payload)
+
                     if (
                         resolved_profile == NUANIC_PROFILE
                         and char_uuid.lower() == "d306262b-c8c9-4c4b-9050-3a41dea706e5"
                     ):
-                        parse_eda_data(_sender, bytearray(data))
+                        parse_eda_data(_sender, bytearray(payload))
                         return
 
                     ts = datetime.now().isoformat(timespec="milliseconds")
-                    payload = bytes(data)
                     print(
                         f"[{ts}] uuid={char_uuid} len={len(payload)} "
                         f"hex={_format_hex_spaced(payload)}"
@@ -503,6 +510,25 @@ async def subscribe_core_streams(
                 await client.stop_notify(uuid)
             except Exception:
                 pass
+
+        print_header("CORE STREAM SUMMARY")
+        silent_uuids: list[str] = []
+        for uuid in notify_uuids:
+            key = uuid.lower()
+            stats = stream_stats[key]
+            if stats.count == 0:
+                silent_uuids.append(uuid)
+            print(f"[SUMMARY] {uuid}")
+            print(f"  packets: {stats.count}")
+            print(f"  rate: {stats.freq_hz():.2f} Hz")
+            print(
+                f"  sizes: {dict(sorted(stats.size_dist.items())) if stats.size_dist else {}}"
+            )
+
+        if silent_uuids:
+            print("[WARN] Silent UUIDs in this run:")
+            for uuid in silent_uuids:
+                print(f"  - {uuid}")
 
 
 async def main() -> int:

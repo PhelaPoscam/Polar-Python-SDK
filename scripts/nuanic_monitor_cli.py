@@ -189,6 +189,23 @@ Examples:
         print(
             f"\n[MONITOR] Starting with ring: {args.ring_addr if args.ring_addr else 'interactive selection'}"
         )
+        print("[MONITOR] UUID map:")
+        print(
+            "  STATE_UUID=3c180fcc-bfec-4b7c-8e52-1a37f123e449 | "
+            "STORAGE_UUID=7c3b82e7-22b7-4cb6-8458-ba325edf6ede"
+        )
+        print(
+            "  LIVE_EDA_UUID=42dcb71b-1817-43bd-8ea3-7272780a1c9f | "
+            "LIVE_DNA_UUID=d306262b-c8c9-4c4b-9050-3a41dea706e5"
+        )
+        print(
+            "  SET_TIME_UUID=dc9c31a7-fbd3-467a-8777-10900c423d3b | "
+            "SAMPLE_RATE_UUID=516b0fb6-d861-4619-9dd0-0105e8b85128"
+        )
+        print(
+            "  STORAGE_FORMAT_UUID=3cce21a7-e602-4e02-8c52-1e0366c1c846 | "
+            "BATTERY_UUID=00002a19-0000-1000-8000-00805f9b34fb"
+        )
         print(
             f"[MONITOR] Duration: {args.duration if args.duration else 'unlimited'} seconds"
         )

@@ -12,10 +12,21 @@ class NuanicConnector:
     """Handles BLE connection to Nuanic ring"""
 
     # GATT UUIDs (current best-fit interpretation from 2026-03 live captures)
+    STATE_UUID = "3c180fcc-bfec-4b7c-8e52-1a37f123e449"
+    STORAGE_UUID = "7c3b82e7-22b7-4cb6-8458-ba325edf6ede"
+    LIVE_EDA_UUID = "42dcb71b-1817-43bd-8ea3-7272780a1c9f"
+    LIVE_DNA_UUID = "d306262b-c8c9-4c4b-9050-3a41dea706e5"
+    SET_TIME_UUID = "dc9c31a7-fbd3-467a-8777-10900c423d3b"
+    SAMPLE_RATE_UUID = "516b0fb6-d861-4619-9dd0-0105e8b85128"
+    STORAGE_FORMAT_UUID = "3cce21a7-e602-4e02-8c52-1e0366c1c846"
+    BATTERY_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
+
+    # Backward-compatible aliases used across the existing monitor code.
     BATTERY_CHARACTERISTIC = "00002a19-0000-1000-8000-00805f9b34fb"
     STRESS_CHARACTERISTIC = "468f2717-6a7d-46f9-9eb7-f92aab208bae"  # 92-byte bulk waveform/motion stream (~1 Hz)
     IMU_CHARACTERISTIC = "d306262b-c8c9-4c4b-9050-3a41dea706e5"  # 16-byte real-time sensor+quality frame (~22-25 Hz)
     RAW_EDA_CHARACTERISTIC = "3c180fcc-bfec-4b7c-8e52-1a37f123e449"  # 1-byte state/on-finger indicator candidate
+    MYSTERY_NOTIFY_CHARACTERISTIC = "42dcb71b-1817-43bd-8ea3-7272780a1c9f"
 
     def __init__(
         self,
@@ -766,6 +777,32 @@ class NuanicConnector:
         if self.client:
             try:
                 await self.client.stop_notify(self.RAW_EDA_CHARACTERISTIC)
+            except:
+                pass
+
+    async def subscribe_to_live_eda(self, callback):
+        """Subscribe to LIVE_EDA UUID notifications (42dcb71b...)."""
+        if not self.client:
+            print("[FAIL] LIVE_EDA subscription error: No client")
+            return False
+
+        if not self.client.is_connected:
+            print("[FAIL] LIVE_EDA subscription error: Not connected")
+            return False
+
+        try:
+            await self.client.start_notify(self.MYSTERY_NOTIFY_CHARACTERISTIC, callback)
+            print("[OK] Subscribed to LIVE_EDA notifications")
+            return True
+        except Exception as e:
+            print(f"[FAIL] LIVE_EDA subscription error: {e}")
+            return False
+
+    async def unsubscribe_from_live_eda(self):
+        """Unsubscribe from LIVE_EDA UUID notifications."""
+        if self.client:
+            try:
+                await self.client.stop_notify(self.MYSTERY_NOTIFY_CHARACTERISTIC)
             except:
                 pass
 

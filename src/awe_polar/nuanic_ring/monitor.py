@@ -68,6 +68,9 @@ class NuanicMonitor:
         self.current_d306_context = None
         self.current_3c18_state_code = None
         self.current_3c18_state_name = "unknown"
+        self.current_live_eda_hex = None
+        self.current_live_eda_len = 0
+        self.live_eda_count = 0
         self.state_count = 0
         self._detected_profile = UNKNOWN_PROFILE
 
@@ -410,6 +413,43 @@ class NuanicMonitor:
             }
         )
 
+    def _live_eda_callback(self, sender, data):
+        """Callback for 42dcb71b live/event notify stream."""
+        timestamp = datetime.now().isoformat()
+        elapsed_ms = int(self._elapsed_seconds() * 1000)
+        payload_hex = data.hex()
+
+        self.live_eda_count += 1
+        self.current_live_eda_hex = payload_hex
+        self.current_live_eda_len = len(data)
+
+        if self.enable_logging and self.log_file:
+            with open(self.log_file, "a", newline="", encoding="utf-8") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    [
+                        timestamp,
+                        elapsed_ms,
+                        "LIVE_EDA_42DC",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        payload_hex,
+                        payload_hex,
+                        json.dumps({"uuid": "42dcb71b-1817-43bd-8ea3-7272780a1c9f", "len": len(data)}),
+                    ]
+                )
+
     def notification_callback(self, sender, data):
         """Backward-compatible stress callback API."""
         parsed = self.parse_stress_packet(data)
@@ -480,6 +520,7 @@ class NuanicMonitor:
         d306_hz = self.d306_count / elapsed
         imu_batch_hz = self.imu_batch_count / elapsed
         state_hz = self.state_count / elapsed
+        live_eda_hz = self.live_eda_count / elapsed
 
         print("=" * 110)
         print("NUANIC MONOLITHIC MONITOR")
@@ -487,7 +528,13 @@ class NuanicMonitor:
         print(
             f"Elapsed: {elapsed:.1f}s | D306: {self.d306_count} pkts ({d306_hz:.1f} Hz) | "
             f"468F IMU: {self.imu_batch_count} pkts ({imu_batch_hz:.1f} Hz) | "
-            f"State (3c18): {self.state_count} pkts ({state_hz:.1f} Hz)"
+            f"State (3c18): {self.state_count} pkts ({state_hz:.1f} Hz) | "
+            f"LIVE_EDA (42dc): {self.live_eda_count} pkts ({live_eda_hz:.1f} Hz)"
+        )
+        print(
+            "UUID map: "
+            "STATE_UUID=3c180fcc... | LIVE_DNA_UUID=d306262b... | "
+            "LIVE_EDA_UUID=42dcb71b... | STORAGE_UUID=7c3b82e7..."
         )
         print(f"D306 Context (latest): {self.current_d306_context}")
         if isinstance(self.current_dne_stress_index, int):
@@ -501,6 +548,12 @@ class NuanicMonitor:
             )
         else:
             print("3C18 State (latest): unknown")
+        if self.current_live_eda_hex:
+            print(
+                f"42DC LIVE_EDA (latest): len={self.current_live_eda_len} hex={self.current_live_eda_hex[:64]}"
+            )
+        else:
+            print("42DC LIVE_EDA (latest): no packets yet")
         print("=" * 110)
 
         print("\n[468F DATA] BATCHED IMU (14 x XYZ @ 14Hz)")
@@ -586,7 +639,8 @@ class NuanicMonitor:
         imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
         stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
         raw_eda_ok = await self.connector.subscribe_to_raw_eda(self._raw_eda_callback)
-        if not (imu_ok and stress_ok and raw_eda_ok):
+        live_eda_ok = await self.connector.subscribe_to_live_eda(self._live_eda_callback)
+        if not (imu_ok and stress_ok and raw_eda_ok and live_eda_ok):
             print("[FAIL] Could not subscribe to all streams")
             await self.connector.disconnect()
             return False
@@ -609,6 +663,7 @@ class NuanicMonitor:
             await self.connector.unsubscribe_from_imu()
             await self.connector.unsubscribe_from_stress()
             await self.connector.unsubscribe_from_raw_eda()
+            await self.connector.unsubscribe_from_live_eda()
             await self.connector.disconnect()
 
         elapsed = self._elapsed_seconds()
@@ -625,7 +680,10 @@ class NuanicMonitor:
             f"3C18 state packets: {self.state_count} ({self.state_count / elapsed:.2f} Hz avg)"
         )
         print(
-            f"Combined: {(self.d306_count + self.imu_batch_count + self.state_count) / elapsed:.2f} Hz avg"
+            f"42DC live EDA packets: {self.live_eda_count} ({self.live_eda_count / elapsed:.2f} Hz avg)"
+        )
+        print(
+            f"Combined: {(self.d306_count + self.imu_batch_count + self.state_count + self.live_eda_count) / elapsed:.2f} Hz avg"
         )
         if self.enable_logging and self.log_file:
             print(f"Log CSV: {self.log_file}")
