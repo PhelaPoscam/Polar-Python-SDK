@@ -1,5 +1,7 @@
 """First-pass parser helpers for Moodmetric notify payloads."""
 
+from __future__ import annotations
+
 from typing import Any
 
 MM_UUID_A095 = "a0956420-9bd2-11e4-bd06-0800200c9a66"
