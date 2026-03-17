@@ -49,7 +49,9 @@ def test_mm_like_scorer_calibrates_and_scales():
     t0 = datetime.now()
 
     low = MMFeatures(scr_frequency_per_min=0.0, scr_amplitude=0.0, scl_microsiemens=0.5)
-    high = MMFeatures(scr_frequency_per_min=8.0, scr_amplitude=5.0, scl_microsiemens=3.0)
+    high = MMFeatures(
+        scr_frequency_per_min=8.0, scr_amplitude=5.0, scl_microsiemens=3.0
+    )
 
     state0 = scorer.update(low, now=t0)
     state1 = scorer.update(high, now=t0 + timedelta(seconds=5))
@@ -69,11 +71,17 @@ def test_mm_like_scr_event_frequency_tracking():
     scorer.update_scr_features(tonic_value=10.0, now=t0)
 
     # First event
-    freq1, amp1 = scorer.update_scr_features(tonic_value=20.0, now=t0 + timedelta(seconds=4))
+    freq1, amp1 = scorer.update_scr_features(
+        tonic_value=20.0, now=t0 + timedelta(seconds=4)
+    )
     # Refractory, should not increase count
-    freq2, amp2 = scorer.update_scr_features(tonic_value=21.0, now=t0 + timedelta(seconds=5))
+    freq2, amp2 = scorer.update_scr_features(
+        tonic_value=21.0, now=t0 + timedelta(seconds=5)
+    )
     # Next valid event
-    freq3, amp3 = scorer.update_scr_features(tonic_value=22.0, now=t0 + timedelta(seconds=8))
+    freq3, amp3 = scorer.update_scr_features(
+        tonic_value=22.0, now=t0 + timedelta(seconds=8)
+    )
 
     assert amp1 > 0
     assert amp2 > 0

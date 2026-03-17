@@ -622,55 +622,56 @@ class NuanicMonitor:
             print("[FAIL] Could not connect to ring")
             return False
 
-        service_uuids = [service.uuid for service in self.connector.client.services]
-        self._detected_profile = detect_ring_profile_from_service_uuids(service_uuids)
-        print(f"[PROFILE] Detected ring profile: {self._detected_profile}")
+        try:
+            service_uuids = [service.uuid for service in self.connector.client.services]
+            self._detected_profile = detect_ring_profile_from_service_uuids(
+                service_uuids
+            )
+            print(f"[PROFILE] Detected ring profile: {self._detected_profile}")
 
-        # Initialize log only when we are ready to start an active stream path.
-        self._create_log_files()
+            # Initialize log only when we are ready to start an active stream path.
+            self._create_log_files()
 
-        if self._detected_profile == MOODMETRIC_PROFILE:
-            try:
-                ok = await self._run_moodmetric_monitor(
+            if self._detected_profile == MOODMETRIC_PROFILE:
+                return await self._run_moodmetric_monitor(
                     duration_seconds=duration_seconds
                 )
+
+            if self._detected_profile == UNKNOWN_PROFILE:
+                print("[WARN] Unknown ring profile; trying Nuanic subscriptions")
+
+            imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
+            stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
+            raw_eda_ok = await self.connector.subscribe_to_raw_eda(
+                self._raw_eda_callback
+            )
+            live_eda_ok = await self.connector.subscribe_to_live_eda(
+                self._live_eda_callback
+            )
+            if not (imu_ok and stress_ok and raw_eda_ok and live_eda_ok):
+                print("[FAIL] Could not subscribe to all streams")
+                return False
+
+            battery = await self.connector.read_battery()
+            if battery is not None:
+                print(f"Battery: {battery}%")
+
+            print("[OK] Monitoring started")
+
+            try:
+                if duration_seconds is None:
+                    while True:
+                        await asyncio.sleep(1)
+                else:
+                    await asyncio.sleep(duration_seconds)
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                print("\n[STOP] Stopping capture...")
             finally:
-                await self.connector.disconnect()
-            return ok
-
-        if self._detected_profile == UNKNOWN_PROFILE:
-            print("[WARN] Unknown ring profile; trying Nuanic subscriptions")
-
-        imu_ok = await self.connector.subscribe_to_imu(self._imu_callback)
-        stress_ok = await self.connector.subscribe_to_stress(self._stress_callback)
-        raw_eda_ok = await self.connector.subscribe_to_raw_eda(self._raw_eda_callback)
-        live_eda_ok = await self.connector.subscribe_to_live_eda(
-            self._live_eda_callback
-        )
-        if not (imu_ok and stress_ok and raw_eda_ok and live_eda_ok):
-            print("[FAIL] Could not subscribe to all streams")
-            await self.connector.disconnect()
-            return False
-
-        battery = await self.connector.read_battery()
-        if battery is not None:
-            print(f"Battery: {battery}%")
-
-        print("[OK] Monitoring started")
-
-        try:
-            if duration_seconds is None:
-                while True:
-                    await asyncio.sleep(1)
-            else:
-                await asyncio.sleep(duration_seconds)
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            print("\n[STOP] Stopping capture...")
+                await self.connector.unsubscribe_from_imu()
+                await self.connector.unsubscribe_from_stress()
+                await self.connector.unsubscribe_from_raw_eda()
+                await self.connector.unsubscribe_from_live_eda()
         finally:
-            await self.connector.unsubscribe_from_imu()
-            await self.connector.unsubscribe_from_stress()
-            await self.connector.unsubscribe_from_raw_eda()
-            await self.connector.unsubscribe_from_live_eda()
             await self.connector.disconnect()
 
         elapsed = self._elapsed_seconds()

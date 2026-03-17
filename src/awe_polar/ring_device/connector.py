@@ -5,7 +5,12 @@ import inspect
 import os
 import platform
 import subprocess
+from pathlib import Path
 from bleak import BleakScanner, BleakClient
+
+# Persists the last-used ring MAC so we can reconnect even when a stale
+# OS-level connection prevents the ring from advertising.
+_ADDR_CACHE_FILE = Path(__file__).parents[3] / "data" / ".last_ring_addr"
 
 
 class NuanicConnector:
@@ -55,6 +60,84 @@ class NuanicConnector:
         """Bleak disconnect callback to confirm OS-level link release."""
         self._disconnect_event.set()
         print("[DISC] BLE disconnect callback fired")
+
+    # ------------------------------------------------------------------
+    # Address cache – lets us reconnect directly when the ring is bonded
+    # to Windows but not advertising (stale connection scenario).
+    # ------------------------------------------------------------------
+
+    def _save_last_address(self, address: str) -> None:
+        try:
+            _ADDR_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _ADDR_CACHE_FILE.write_text(address.strip())
+        except Exception:
+            pass
+
+    def _load_last_address(self) -> str:
+        try:
+            if _ADDR_CACHE_FILE.exists():
+                return _ADDR_CACHE_FILE.read_text().strip() or ""
+        except Exception:
+            pass
+        return ""
+
+    async def _reset_bluetooth_radio(self) -> bool:
+        """Toggle the Windows Bluetooth radio off/on (Windows only).
+
+        This is the programmatic equivalent of flipping Bluetooth off and on
+        in Windows Settings.  It flushes all stale ACL connections, including
+        rings left "connected" from a previous crashed/killed session.  After
+        the reset the ring resumes advertising and the next scan succeeds.
+        """
+        if platform.system() != "Windows":
+            return False
+        try:
+            import winrt.windows.devices.radios as radios_winrt  # type: ignore
+
+            all_radios = await radios_winrt.Radio.get_radios_async()
+            bt_radio = next(
+                (r for r in all_radios if r.kind == radios_winrt.RadioKind.BLUETOOTH),
+                None,
+            )
+            if not bt_radio:
+                print("[BT-RESET] No Bluetooth radio found.")
+                return False
+
+            print("[BT-RESET] Turning Bluetooth off...", end=" ", flush=True)
+            await bt_radio.set_state_async(radios_winrt.RadioState.OFF)
+            await asyncio.sleep(1.5)
+            print("on...", end=" ", flush=True)
+            await bt_radio.set_state_async(radios_winrt.RadioState.ON)
+            await asyncio.sleep(2.5)  # give stack time to re-initialize
+            print("[OK]")
+            return True
+        except Exception as e:
+            print(f"[BT-RESET] Could not reset radio: {e}")
+            return False
+
+    async def _winrt_force_close(self, address: str) -> None:
+        """Dispose the WinRT BluetoothLEDevice handle (Windows only).
+
+        After BleakClient.disconnect() the WinRT device object can still
+        hold the OS-level ACL link open, which leaves the ring in a
+        'connected' state.  Closing the handle tells the OS (and the ring)
+        the connection is gone so the ring resumes advertising.
+        """
+        if platform.system() != "Windows":
+            return
+        try:
+            import winrt.windows.devices.bluetooth as bt_winrt  # type: ignore
+
+            addr_int = int(address.replace(":", ""), 16)
+            device = await bt_winrt.BluetoothLEDevice.from_bluetooth_address_async(
+                addr_int
+            )
+            if device:
+                device.close()
+                print("[CLEANUP] WinRT device handle closed.")
+                await asyncio.sleep(0.3)
+        except Exception:
+            pass
 
     def _create_bleak_client(self, target):
         """Create BleakClient with robust Windows-friendly arguments.
@@ -289,8 +372,34 @@ class NuanicConnector:
         rings = await self.list_available_rings_with_paired()
 
         if not rings:
-            print("[!] No Nuanic rings found. Make sure rings are turned on.")
-            return None
+            print("[!] No Nuanic rings found.")
+
+            # The ring is most likely still 'connected' to Windows from a
+            # previous session.  Reset the BT radio (=toggle off/on) to flush
+            # the stale ACL link, then rescan once.
+            print(
+                "[BT-RESET] Stale connection detected — resetting "
+                "Bluetooth adapter..."
+            )
+            reset_ok = await self._reset_bluetooth_radio()
+            if reset_ok:
+                print("[BT-RESET] Rescanning after radio reset...")
+                rings = await self.list_available_rings_with_paired()
+
+            if not rings:
+                # Radio toggle didn't help (or not on Windows).
+                # Fall back to direct connect using the cached address.
+                cached = self._load_last_address()
+                if cached:
+                    print(
+                        f"[HINT] Ring still not visible — trying direct "
+                        f"reconnect to {cached}"
+                    )
+                    print("[HINT] If this also fails, turn the ring off/on.")
+                    self.target_address = cached
+                    return cached
+                print("[!] No ring address cached. Turn the ring off/on.")
+                return None
 
         print(f"\nFound {len(rings)} ring(s):\n")
 
@@ -444,6 +553,13 @@ class NuanicConnector:
         if getattr(self, "client", None) is None:
             return
 
+        # Capture address before we clear the client reference.
+        _addr = (
+            getattr(self.client, "address", None)
+            or self.target_address
+            or (self.device.address if self.device else None)
+        )
+
         try:
             if getattr(self.client, "is_connected", False):
                 self._disconnect_event.clear()
@@ -453,6 +569,7 @@ class NuanicConnector:
                     self.STRESS_CHARACTERISTIC,
                     self.IMU_CHARACTERISTIC,
                     self.RAW_EDA_CHARACTERISTIC,
+                    self.MYSTERY_NOTIFY_CHARACTERISTIC,
                 ]:
                     try:
                         await self.client.stop_notify(char_uuid)
@@ -472,6 +589,11 @@ class NuanicConnector:
             print(f"[CLEANUP] Error during disconnect: {e}")
         finally:
             self.client = None
+
+        # Dispose the WinRT device handle so the ring drops its link and
+        # resumes advertising for the next scan.
+        if _addr:
+            await self._winrt_force_close(_addr)
 
     async def connect(self):
         """Connect to Nuanic ring with automatic retry and recovery.
@@ -530,6 +652,7 @@ class NuanicConnector:
                         await self._cleanup_client()
                     else:
                         print("\n[OK] Connection established!\n")
+                        self._save_last_address(self.client.address)
                         return True
                 except Exception as e:
                     print(f"[RETRY] {e}")
@@ -617,6 +740,7 @@ class NuanicConnector:
 
                 # Success!
                 print(f"\n[OK] Connection established!\n")
+                self._save_last_address(self.client.address)
                 return True
 
             # All attempts failed
