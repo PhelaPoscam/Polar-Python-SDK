@@ -418,9 +418,11 @@ class NuanicConnector:
         # Multiple rings - let user choose
         while True:
             try:
-                choice = input(
-                    f"\nSelect ring (1-{len(rings)}) or 'q' to cancel: "
-                ).strip()
+                loop = asyncio.get_event_loop()
+                choice = await loop.run_in_executor(
+                    None, input, f"\nSelect ring (1-{len(rings)}) or 'q' to cancel: "
+                )
+                choice = choice.strip()
 
                 if choice.lower() == "q":
                     print("Cancelled.\n")
