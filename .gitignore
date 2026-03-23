@@ -68,3 +68,8 @@ Thumbs.db
 GITHUB_PUSH_GUIDE.md
 QUICK_PUSH.md
 CHECKLIST.md
+
+# Project Specific Caches & Temp
+test_fails.txt
+.last_ring_addr
+.pytest_cache/

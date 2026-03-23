@@ -555,12 +555,7 @@ class NuanicConnector:
         if getattr(self, "client", None) is None:
             return
 
-        # Capture address before we clear the client reference.
-        _addr = (
-            getattr(self.client, "address", None)
-            or self.target_address
-            or (self.device.address if self.device else None)
-        )
+        import gc
 
         try:
             if getattr(self.client, "is_connected", False):
@@ -590,12 +585,37 @@ class NuanicConnector:
         except Exception as e:
             print(f"[CLEANUP] Error during disconnect: {e}")
         finally:
+            # FORCE cleanup for Windows ghost connections:
+            if platform.system() == "Windows":
+                try:
+                    # Explicitly close internal WinRT handles to drop the ACL link
+                    if hasattr(self.client, "_backend"):
+                        if (
+                            hasattr(self.client._backend, "_session")
+                            and self.client._backend._session
+                        ):
+                            self.client._backend._session.close()
+                        if (
+                            hasattr(self.client._backend, "_device")
+                            and self.client._backend._device
+                        ):
+                            self.client._backend._device.close()
+                except Exception:
+                    pass
+
+            # Break circular reference (self -> client -> disconnected_callback -> self)
+            try:
+                self.client.set_disconnected_callback(None)
+            except Exception:
+                pass
+
             self.client = None
 
-        # Dispose the WinRT device handle so the ring drops its link and
-        # resumes advertising for the next scan.
-        if _addr:
-            await self._winrt_force_close(_addr)
+            # Force garbage collector to release lingering COM objects before process exits
+            gc.collect()
+            await asyncio.sleep(
+                0.5
+            )  # Give Windows driver time to process the handle closure
 
     async def connect(self):
         """Connect to Nuanic ring with automatic retry and recovery.

@@ -1,636 +1,492 @@
 from __future__ import annotations
 
-import asyncio as aio
+import asyncio
 import hashlib
 import os
 import queue
 import time
+import threading
 import warnings
 from pathlib import Path
 
-from awe_polar.connector.stream.polar_h10_ble import HeartRate
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from bleak import BleakClient, BleakScanner
-from awe_polar.connector.exporters.queue_sink import QueueSink
-from awe_polar.connector.schemas import SignalPacket
 from dotenv import load_dotenv
 from openai import OpenAI
+
+from awe_polar.connector.exporters.queue_sink import QueueSink
+from awe_polar.connector.schemas import SignalPacket
+from awe_polar.connector.stream.polar_h10_ble import HeartRate
 from awe_polar.reader import StressPredictor, load_model_bundle
 from awe_polar.reader.realtime import ReaderConfig, run_reader
 
+# ==========================================
+# Configuration and Prompts
+# ==========================================
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "models" / "improved_stress_model.pkl"
 SCALER_PATH = PROJECT_ROOT / "models" / "scaler.pkl"
+PREDICTION_INTERVAL = 15  # seconds
+LLM_MODEL = "gpt-4o-mini"
 
+LLM_TREND_PROMPT = """Please analyse trends in stress.
+Right now I am presenting in big meeting. Here is data
+{trend}.
+Current HR: {hr:.1f},
+Current RMSSD: {rmssd:.4f},
+Stress Status: {status}
+from ML model with confidence {confidence:.1%}.
+{prompt} Give response in 10 words"""
+
+LLM_INSIGHT_PROMPT = """Analyze and suggest actionable
+insight based on average heart rate {hr:.1f},
+average RMSSD {rmssd:.4f},
+and stress predicted from ML model which is
+{status} with confidence {confidence:.1%}.
+Right now I am giving a presentation on big meeting.
+Please suggest actionable insight in 10 words"""
+
+# ==========================================
+# Setup & Initialization
+# ==========================================
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if OPENAI_API_KEY:
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    llm_enabled = True
-else:
-    client = None
-    llm_enabled = False
+llm_enabled = bool(OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if llm_enabled else None
 warnings.filterwarnings("ignore")
-stress_trend = ""
+
+# Define global queue for background thread communication
+if "GLOBAL_BLE_QUEUE" not in st.session_state:
+    st.session_state.GLOBAL_BLE_QUEUE = queue.Queue()
 
 
-def check_password():
+def check_password() -> bool:
     """Returns `True` if the user had a correct password."""
 
     def password_entered():
-        """Checks whether a password entered by the user is correct."""
         if (
             hashlib.sha256(st.session_state["password"].encode()).hexdigest()
             == st.secrets["PASSWORD"]
         ):
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # don't store password
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # First run, show input for password.
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         st.write("Please enter the password to use the app.")
         return False
     elif not st.session_state["password_correct"]:
-        # Password not correct, show input + error.
         st.text_input(
             "Password", type="password", on_change=password_entered, key="password"
         )
         st.error("😕 Password incorrect")
         return False
-    else:
-        # Password correct.
-        return True
+    return True
 
 
-def main_app():
-    """Defines the main user interface of the Streamlit application."""
-    st.set_page_config(
-        page_title="Polar AWE",
-        page_icon="❤",
-        layout="wide",
-    )
-
-    st.title("Polar AWE: Stress Monitoring with ML and LLM")
-    st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
-
-    # Initialize session state for persistent data
-    if "hr_data" not in st.session_state:
-        st.session_state.hr_data = pd.DataFrame(columns=["hr", "hrv"])
-    if "stress_result" not in st.session_state:
-        st.session_state.stress_result = "NEUTRAL"
-    if "column4_response" not in st.session_state:
-        st.session_state.column4_response = "Waiting for data..."
-    if "stress_trend" not in st.session_state:
-        st.session_state.stress_trend = ""
-    if "hr_avg" not in st.session_state:
-        st.session_state.hr_avg = 0
-    if "rmssd" not in st.session_state:
-        st.session_state.rmssd = 0
-    if "confidence" not in st.session_state:
-        st.session_state.confidence = 0
-    if "ble_data_queue" not in st.session_state:
-        st.session_state.ble_data_queue = queue.Queue()
-    if "ble_running" not in st.session_state:
-        st.session_state.ble_running = False
-    if "latest_hr" not in st.session_state:
-        st.session_state.latest_hr = 0
-    if "latest_hrv" not in st.session_state:
-        st.session_state.latest_hrv = 0
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "df" not in st.session_state:
-        st.session_state.df = pd.DataFrame(columns=["hr", "hrv"])
-    if "hr_list" not in st.session_state:
-        st.session_state.hr_list = []
-    if "hrv_list" not in st.session_state:
-        st.session_state.hrv_list = []
-
-    # Main content with two columns
-    main_col1, main_col2 = st.columns([2, 1])
-
-    with main_col1:
-        # Top 5 columns for metrics
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            ph1 = st.empty()
-            ph1.markdown(
-                "<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True
-            )
-            ph1.markdown(
-                "<span style='font-size:40px;'>HR: -- bpm</span>",
-                unsafe_allow_html=True,
-            )
-        with col2:
-            ph2 = st.empty()
-            ph2.markdown(
-                "<span style='font-size:60px;'>📈</span>", unsafe_allow_html=True
-            )
-            ph2.markdown(
-                "<span style='font-size:40px;'>HRV: -- ms</span>",
-                unsafe_allow_html=True,
-            )
-        with col3:
-            ph3 = st.empty()
-        with col4:
-            ph4 = st.empty()
-            ph4.markdown(
-                "<span style='font-size:60px;'>😊</span>", unsafe_allow_html=True
-            )
-            ph4.markdown(
-                "<span style='font-size:40px;'>Baseline</span>", unsafe_allow_html=True
-            )
-        with col5:
-            ph5 = st.empty()
-            ph5.markdown(
-                "<span style='font-size:60px;'>📄</span>", unsafe_allow_html=True
-            )
-            ph5.markdown(
-                "<span style='font-size:20px;'>--</span>", unsafe_allow_html=True
-            )
-
-        st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
-
-        # Bottom 2 columns for charts
-        col6, col7 = st.columns(2)
-        with col6:
-            st.subheader("Chart: Heart Rate")
-            chart1 = st.empty()
-        with col7:
-            st.subheader("Chart: Heart Rate Variability (RR)")
-            chart2 = st.empty()
-
-    # Chatbox
-    with main_col2:
-        st.subheader("LLM Chat Box")
-        with st.expander("Chat with the LLM", expanded=True):
-            placeholder = st.empty()
-            if llm_enabled:
-                if "openai_model" not in st.session_state:
-                    st.session_state["openai_model"] = "gpt-4o-mini"
-
-                if "messages" not in st.session_state:
-                    st.session_state.messages = []
-
-                with placeholder.container():
-                    for message in st.session_state.messages:
-                        with st.chat_message(message["role"]):
-                            st.markdown(message["content"])
-
-                prompt = st.chat_input("Ask about your performance and strategy...")
-                if prompt:
-                    st.session_state.messages.append(
-                        {"role": "user", "content": prompt}
-                    )
-                    with placeholder.container():
-                        with st.chat_message("user"):
-                            st.markdown(prompt)
-
-                    modified_prompt = f"""Please analyse trends in stress.
-                    Right now I am presenting in big meeting. Here is data
-                    {st.session_state.stress_trend}.
-                    Current HR: {st.session_state.hr_avg:.1f},
-                    Current RMSSD: {st.session_state.rmssd:.4f},
-                    Stress Status: {st.session_state.stress_result}
-                    from ML model with confidence
-                    {st.session_state.confidence:.1%}).
-                    {prompt} Give response in 10 words"""
-                    api_messages = [
-                        {"role": m["role"], "content": m["content"]}
-                        for m in st.session_state.messages[:-1]
-                    ] + [{"role": "user", "content": modified_prompt}]
-
-                    with placeholder.container():
-                        with st.chat_message("assistant"):
-                            stream = client.chat.completions.create(
-                                model=st.session_state["openai_model"],
-                                messages=api_messages,
-                                stream=True,
-                            )
-                            response = st.write_stream(stream)
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": response}
-                    )
-            else:
-                st.info(
-                    "LLM features are disabled. Add your OpenAI API key "
-                    "to .env to enable chat and insights."
-                )
-
-    st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
-
-    # Load your trained model and scaler
+@st.cache_resource
+def load_predictor():
+    """Load model and scaler once and cache it."""
     try:
         bundle = load_model_bundle(MODEL_PATH, SCALER_PATH)
         predictor = StressPredictor(bundle, feature_order=["hr_bpm", "rmssd"])
-        print("Stress prediction model and scaler loaded successfully!")
+        print("Stress prediction model loaded successfully!")
+        return predictor
     except FileNotFoundError:
         print("Model or scaler file not found.")
-        predictor = None
+        return None
 
-    queue_sink = QueueSink(st.session_state.ble_data_queue)
 
-    last_stress_prediction_time = 0
-    prediction_interval = 15  # seconds
-    stress_result = "NEUTRAL"
-    column4_response = ""
-    stress_auto = ""
-    a = 0
-    rmssd = 0
-    confidence = 0.0
-    hr_avg = 0.0
-
-    def on_prediction(prediction):
-        nonlocal stress_result, confidence, stress_auto
-        confidence = prediction.confidence
-
-        if prediction.label == "High Stress":
-            stress_result = "STRESS"
-            stress_auto = "STRESS"
-        elif prediction.label == "Low Stress":
-            stress_result = "LOW STRESS"
-            stress_auto = "LOW STRESS"
-        else:
-            stress_result = "BASELINE"
-            stress_auto = "BASELINE"
-
-        st.session_state.stress_result = stress_result
-        st.session_state.confidence = confidence
-
-    def calculate_rmssd(rr_intervals):
-        """Calculate RMSSD from RR intervals"""
-        global rmssd
-        if len(rr_intervals) < 2:
+def calculate_rmssd(rr_intervals: list) -> float | None:
+    """Calculate RMSSD from RR intervals."""
+    if len(rr_intervals) < 2:
+        return None
+    try:
+        rr_array = np.array(
+            [float(rr) for rr in rr_intervals if rr is not None and rr > 0]
+        )
+        if len(rr_array) < 2:
             return None
+        return float(np.sqrt(np.mean(np.diff(rr_array) ** 2)))
+    except Exception:
+        return None
 
-        try:
-            rr_array = np.array(
-                [float(rr) for rr in rr_intervals if rr is not None and rr > 0]
-            )
 
-            if len(rr_array) < 2:
-                return None
-
-            diff_rr = np.diff(rr_array)
-            sq_diff_rr = diff_rr**2
-            mean_sq_diff = np.mean(sq_diff_rr)
-            rmssd = np.sqrt(mean_sq_diff)
-
-            return rmssd
-        except Exception:
-            return None
-
-    def print_hr_data(data):
-        """Callback to print HR/HRV and stress prediction"""
-        nonlocal last_stress_prediction_time
-        nonlocal stress_result, column4_response, stress_auto
-        nonlocal a, confidence, hr_avg, rmssd
-
-        if isinstance(data, tuple) and len(data) >= 3:
-            hr_data = data[2]
-
-            if isinstance(hr_data, tuple) and len(hr_data) >= 1:
-                hr = hr_data[0]
-                hrv = hr_data[1] if len(hr_data) > 1 else None
-
-                current_time = time.time()
-
-                if hr is not None:
-                    st.session_state.hr_list.append(hr)
-
-                if hrv is not None:
-                    if isinstance(hrv, list):
-                        st.session_state.hrv_list.extend(hrv)
-                    elif isinstance(hrv, (int, float)):
-                        st.session_state.hrv_list.append(hrv)
-
-                if hr is not None:
-                    print(f"HR: {hr} bpm, HRV in RR:{hrv} ms")
-
-                    new_data = pd.DataFrame([[hr, hrv]], columns=["hr", "hrv"])
-                    st.session_state.df = pd.concat(
-                        [st.session_state.df, new_data], ignore_index=True
-                    )
-
-                    if len(st.session_state.df) > 0:
-                        fig1 = go.Figure()
-                        fig1.add_trace(
-                            go.Scatter(
-                                x=st.session_state.df.index,
-                                y=st.session_state.df["hr"],
-                                mode="lines",
-                                name="HR",
-                            )
-                        )
-                        fig1.update_layout(
-                            title="Heart Rate", xaxis_title="Time", yaxis_title="BPM"
-                        )
-                        chart1.plotly_chart(fig1, use_container_width=True)
-
-                        fig2 = go.Figure()
-                        fig2.add_trace(
-                            go.Scatter(
-                                x=st.session_state.df.index,
-                                y=st.session_state.df["hrv"],
-                                mode="lines",
-                                name="HRV",
-                            )
-                        )
-                        fig2.update_layout(
-                            title="Heart Rate Variability (RMSSD)",
-                            xaxis_title="Time",
-                            yaxis_title="ms",
-                        )
-                        chart2.plotly_chart(fig2, use_container_width=True)
-
-                time_since_last = current_time - last_stress_prediction_time
-                if time_since_last >= prediction_interval:
-                    if (
-                        len(st.session_state.hr_list) >= 5
-                        and len(st.session_state.hrv_list) >= 3
-                    ):
-                        hr_avg = np.mean(st.session_state.hr_list[-10:])
-                        recent_rr = (
-                            st.session_state.hrv_list[-20:]
-                            if len(st.session_state.hrv_list) >= 20
-                            else st.session_state.hrv_list
-                        )
-                        rmssd = calculate_rmssd(recent_rr)
-                        a = 1
-
-                        if rmssd is not None and predictor is not None:
-                            packet = SignalPacket(
-                                source="polar_h10",
-                                signals={"hr_bpm": hr_avg},
-                                features={"rmssd": rmssd},
-                            )
-                            queue_sink.send(packet)
-                            run_reader(
-                                predictor,
-                                st.session_state.ble_data_queue,
-                                on_prediction,
-                                config=ReaderConfig(poll_interval=0.0),
-                                stop_on_empty=True,
-                            )
-
-                            if stress_result == "STRESS":
-                                stress_auto = "STRESS"
-                                print(
-                                    f"STRESS: HR={hr_avg:.1f}, "
-                                    f"RMSSD={rmssd:.4f} "
-                                    f"(Confidence: {confidence:.1%})"
-                                )
-                                trend_msg = (
-                                    f"STRESS: Avg HR={hr_avg:.1f}, "
-                                    f"Avg in 15 seconds RMSSD={rmssd:.4f} "
-                                    f"(Confidence Score: {confidence:.1%})"
-                                )
-                                st.session_state.stress_trend += trend_msg
-                            else:
-                                print(
-                                    f"NO STRESS: HR={hr_avg:.1f}, "
-                                    f"RMSSD={rmssd:.4f} "
-                                    f"(Confidence: {confidence:.1%})"
-                                )
-                                stress_auto = "NO STRESS"
-                                trend_msg = (
-                                    f"NO STRESS: Avg HR={hr_avg:.1f}, "
-                                    f"Avg in 15 seconds RMSSD={rmssd:.4f} "
-                                    f"(Confidence Score: {confidence:.1%})"
-                                )
-                                st.session_state.stress_trend += trend_msg
-                            print(st.session_state.stress_trend)
-                        last_stress_prediction_time = current_time
-
-                    if len(st.session_state.hr_list) > 50:
-                        st.session_state.hr_list = st.session_state.hr_list[-30:]
-                    if len(st.session_state.hrv_list) > 100:
-                        st.session_state.hrv_list = st.session_state.hrv_list[-50:]
-
-                with ph1.container():
-                    st.markdown(
-                        "<span style='font-size:60px;'>❤</span>", unsafe_allow_html=True
-                    )
-                    st.markdown(
-                        f"<span style='font-size:40px;'>HR:{hr} bpm</span>",
-                        unsafe_allow_html=True,
-                    )
-                with ph2.container():
-                    st.markdown(
-                        "<span style='font-size:60px;'>📈</span>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        f"<span style='font-size:40px;'>HRV:{hrv} ms</span>",
-                        unsafe_allow_html=True,
-                    )
-                with ph3.container():
-                    if stress_result == "STRESS":
-                        gauge_value = confidence
-                        gauge_color = "Red"
-                    else:
-                        gauge_value = 1 - confidence
-                        gauge_color = "Green"
-
-                    fig = go.Figure(
-                        go.Indicator(
-                            mode="gauge+number",
-                            value=gauge_value,
-                            domain={"x": [0, 1], "y": [0, 1]},
-                            title={"text": "Stress Level"},
-                            gauge={
-                                "axis": {"range": [None, 1]},
-                                "bar": {"color": gauge_color},
-                                "steps": [
-                                    {"range": [0, 0.5], "color": "lightgray"},
-                                    {"range": [0.5, 1], "color": "gray"},
-                                ],
-                                "threshold": {
-                                    "line": {"color": "red", "width": 4},
-                                    "thickness": 0.75,
-                                    "value": 0.8,
-                                },
-                            },
-                        )
-                    )
-                    ph3.plotly_chart(fig, use_container_width=True)
-
-                with ph4.container():
-                    if stress_result == "NEUTRAL":
-                        st.markdown(
-                            "<span style='font-size:60px;'>ML 😐</span>",
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            "<span style='font-size:40px;'>Predicting Stress...</span>",
-                            unsafe_allow_html=True,
-                        )
-                    elif stress_result == "STRESS":
-                        st.markdown(
-                            "<span style='font-size:60px;'>ML 😰</span>",
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            "<span style='font-size:40px;'>Stress</span>",
-                            unsafe_allow_html=True,
-                        )
-                        if rmssd is not None:
-                            st.markdown(
-                                f"<span style='font-size:20px;'>"
-                                f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
-                                f"(Confidence: {confidence:.1%})</span>",
-                                unsafe_allow_html=True,
-                            )
-                    elif stress_result == "LOW STRESS":
-                        st.markdown(
-                            "<span style='font-size:60px;'>ML 😌</span>",
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            "<span style='font-size:40px;'>Low Stress</span>",
-                            unsafe_allow_html=True,
-                        )
-                        if rmssd is not None:
-                            st.markdown(
-                                f"<span style='font-size:20px;'>"
-                                f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
-                                f"(Confidence: {confidence:.1%})</span>",
-                                unsafe_allow_html=True,
-                            )
-                    else:
-                        st.markdown(
-                            "<span style='font-size:60px;'>ML 😊</span>",
-                            unsafe_allow_html=True,
-                        )
-                        st.markdown(
-                            "<span style='font-size:40px;'>Baseline</span>",
-                            unsafe_allow_html=True,
-                        )
-                        if rmssd is not None:
-                            st.markdown(
-                                f"<span style='font-size:20px;'>"
-                                f"HR={hr_avg:.1f}, RMSSD={rmssd:.4f} "
-                                f"(Confidence: {confidence:.1%})</span>",
-                                unsafe_allow_html=True,
-                            )
-
-                if a == 10:  # this is should be 1
-                    hardcoded_prompt = f"""Analyze and suggest actionable
-                    insight based on average heart rate {hr_avg},
-                    average RMSSD {rmssd},
-                    and stress predicted from ML model which is
-                    {stress_auto} with confidence {confidence}.
-                    Right now I am giving a presentation on big meeting.
-                    Please suggest actionable insight in 10 words"""
-
-                    stream = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[{"role": "user", "content": hardcoded_prompt}],
-                        stream=True,
-                    )
-                    column4_response = ""
-                    for chunk in stream:
-                        if chunk.choices[0].delta.content is not None:
-                            column4_response += chunk.choices[0].delta.content
-                    a = 0
-
-                with ph5.container():
-                    st.markdown(
-                        "<span style='font-size:60px;'>LLM 📄</span>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown(
-                        f"<span style='font-size:20px;'>" f"{column4_response}</span>",
-                        unsafe_allow_html=True,
-                    )
-
-    def mock_step() -> None:
-        """Generate one mock heart rate sample per rerun."""
-        if "mock_hr" not in st.session_state:
-            st.session_state.mock_hr = 70
-            st.session_state.mock_hrv = 40
-
-        hr = st.session_state.mock_hr + np.random.randint(-2, 3)
-        hrv = st.session_state.mock_hrv + np.random.randint(-3, 4)
-        hr = float(np.clip(hr, 60, 100))
-        hrv = float(np.clip(hrv, 30, 60))
-
-        st.session_state.mock_hr = hr
-        st.session_state.mock_hrv = hrv
-        print_hr_data((None, None, (hr, [hrv])))
-
-    def maybe_autorefresh(interval_ms: int = 1000) -> None:
-        refresher = getattr(st, "autorefresh", None)
-        if callable(refresher):
-            try:
-                refresher(interval=interval_ms, key="mock_autorefresh")
-            except TypeError:
-                refresher(interval_ms, key="mock_autorefresh")
-
-    def is_mock_enabled() -> bool:
-        param = st.query_params.get("mock")
-        if isinstance(param, list) and param:
-            param = param[0]
-        if param is None:
-            return False
-        return str(param).strip().lower() in {"1", "true", "yes", "on"}
-
-    async def main():
-        global last_stress_prediction_time
-
-        print("Searching for Polar H10...")
-
-        last_stress_prediction_time = time.time()
-
-        try:
-            device = await BleakScanner.find_device_by_filter(
-                lambda dev, adv: dev.name and "polar h10" in dev.name.lower()
-            )
-
-            if not device:
-                print("Polar H10 device not found")
-                return
-
-            print(f"Found: {device.name}")
-
-            async with BleakClient(device) as client:
-                heartrate = HeartRate(
-                    client,
-                    callback=print_hr_data,
-                    instant_rate=True,
-                    unpack=True,
-                )
-                await heartrate.start_notify()
-
-                try:
-                    while True:
-                        await aio.sleep(1)
-                except KeyboardInterrupt:
-                    await heartrate.stop_notify()
-                    print("Stopped")
-
-        except Exception as e:
-            print(f"Error: {e}")
-
-    if is_mock_enabled():
-        mock_step()
-        maybe_autorefresh()
+# ==========================================
+# Background BLE Task
+# ==========================================
+def ble_background_task(data_queue: queue.Queue, is_mock: bool):
+    """Background thread to handle BLE connectivity or Mock data."""
+    if is_mock:
+        mock_hr = 70
+        mock_hrv = 40
+        while True:
+            time.sleep(1)
+            mock_hr = float(np.clip(mock_hr + np.random.randint(-2, 3), 60, 100))
+            mock_hrv = float(np.clip(mock_hrv + np.random.randint(-3, 4), 30, 60))
+            data_queue.put(("data", (mock_hr, [mock_hrv])))
     else:
-        try:
-            aio.run(main())
-        except KeyboardInterrupt:
-            print("Goodbye!")
-        except Exception as e:
-            print(f"An error occurred: {e}")
+
+        async def run_ble():
+            try:
+                device = await BleakScanner.find_device_by_filter(
+                    lambda dev, adv: dev.name and "polar h10" in dev.name.lower()
+                )
+                if not device:
+                    data_queue.put(("error", "Polar H10 device not found"))
+                    return
+
+                async with BleakClient(device) as client:
+
+                    def _callback(data):
+                        # data mapping from original `print_hr_data`: (..., ..., (hr, [hrv...]))
+                        if isinstance(data, tuple) and len(data) >= 3:
+                            hr_data = data[2]
+                            if isinstance(hr_data, tuple) and len(hr_data) >= 1:
+                                data_queue.put(
+                                    (
+                                        "data",
+                                        (
+                                            hr_data[0],
+                                            hr_data[1] if len(hr_data) > 1 else None,
+                                        ),
+                                    )
+                                )
+
+                    heartrate = HeartRate(
+                        client, callback=_callback, instant_rate=True, unpack=True
+                    )
+                    await heartrate.start_notify()
+                    while True:
+                        await asyncio.sleep(1)
+            except Exception as e:
+                data_queue.put(("error", str(e)))
+
+        asyncio.run(run_ble())
+
+
+def start_ble_thread_once(is_mock: bool):
+    """Start the BLE background thread if not already running."""
+    if "ble_thread_started" not in st.session_state:
+        st.session_state.ble_thread_started = True
+        thread = threading.Thread(
+            target=ble_background_task,
+            args=(st.session_state.GLOBAL_BLE_QUEUE, is_mock),
+            daemon=True,
+        )
+        thread.start()
+
+
+# ==========================================
+# State processing
+# ==========================================
+def process_queue_data(predictor):
+    """Process incoming data from the BLE queue."""
+    current_time = time.time()
+    queue_sink = QueueSink(queue.Queue())  # Temporary sink for realtime reader
+
+    while not st.session_state.GLOBAL_BLE_QUEUE.empty():
+        msg_type, payload = st.session_state.GLOBAL_BLE_QUEUE.get_nowait()
+
+        if msg_type == "data":
+            hr, hrv = payload
+            if hr is not None:
+                st.session_state.hr_list.append(hr)
+                new_data = pd.DataFrame([[hr, hrv]], columns=["hr", "hrv"])
+                st.session_state.df = pd.concat(
+                    [st.session_state.df, new_data], ignore_index=True
+                )
+
+            if hrv is not None:
+                if isinstance(hrv, list):
+                    st.session_state.hrv_list.extend(hrv)
+                elif isinstance(hrv, (int, float)):
+                    st.session_state.hrv_list.append(hrv)
+
+            # Every interval process stress
+            if (
+                current_time - st.session_state.last_prediction_time
+            ) >= PREDICTION_INTERVAL:
+                if (
+                    len(st.session_state.hr_list) >= 5
+                    and len(st.session_state.hrv_list) >= 3
+                ):
+                    hr_avg = np.mean(st.session_state.hr_list[-10:])
+                    recent_rr = st.session_state.hrv_list[-20:]
+                    rmssd = calculate_rmssd(recent_rr)
+
+                    if rmssd is not None and predictor is not None:
+                        # Feed the batch to the predictor
+                        packet = SignalPacket(
+                            source="polar_h10",
+                            signals={"hr_bpm": hr_avg},
+                            features={"rmssd": rmssd},
+                        )
+                        queue_sink.send(packet)
+
+                        def on_prediction(prediction):
+                            st.session_state.stress_result = prediction.label.upper()
+                            st.session_state.confidence = prediction.confidence
+                            st.session_state.stress_auto = (
+                                st.session_state.stress_result
+                            )
+
+                        run_reader(
+                            predictor,
+                            queue_sink.queue,
+                            on_prediction,
+                            config=ReaderConfig(poll_interval=0.0),
+                            stop_on_empty=True,
+                        )
+
+                        st.session_state.hr_avg = hr_avg
+                        st.session_state.rmssd = rmssd
+
+                        # Add to trend
+                        trend_msg = f"{st.session_state.stress_result}: Avg HR={hr_avg:.1f}, Avg RMSSD={rmssd:.4f} (Confidence: {st.session_state.confidence:.1%}) "
+                        st.session_state.stress_trend += trend_msg
+
+                        # Trigger LLM auto-insight periodically (simulate a=10 logic)
+                        st.session_state.prediction_counter += 1
+                        if st.session_state.prediction_counter >= 10 and llm_enabled:
+                            prompt = LLM_INSIGHT_PROMPT.format(
+                                hr=hr_avg,
+                                rmssd=rmssd,
+                                status=st.session_state.stress_auto,
+                                confidence=st.session_state.confidence,
+                            )
+                            stream = client.chat.completions.create(
+                                model=LLM_MODEL,
+                                messages=[{"role": "user", "content": prompt}],
+                                stream=True,
+                            )
+                            response = ""
+                            for chunk in stream:
+                                if chunk.choices[0].delta.content:
+                                    response += chunk.choices[0].delta.content
+                            st.session_state.insight_response = response
+                            st.session_state.prediction_counter = 0
+
+                    st.session_state.last_prediction_time = current_time
+
+            # Cleanup memory
+            if len(st.session_state.hr_list) > 50:
+                st.session_state.hr_list = st.session_state.hr_list[-30:]
+            if len(st.session_state.hrv_list) > 100:
+                st.session_state.hrv_list = st.session_state.hrv_list[-50:]
+
+
+# ==========================================
+# UI Components
+# ==========================================
+@st.fragment(run_every="1s")
+def render_metrics_and_charts(predictor):
+    """Render the dynamically updating top metrics and charts."""
+    process_queue_data(predictor)
+
+    # State aliases
+    hr = st.session_state.hr_list[-1] if st.session_state.hr_list else "--"
+    hrv = st.session_state.hrv_list[-1] if st.session_state.hrv_list else "--"
+    stress_res = st.session_state.stress_result
+    conf = st.session_state.confidence
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.markdown(
+            f"<span style='font-size:60px;'>❤</span><br><span style='font-size:40px;'>HR: {hr} bpm</span>",
+            unsafe_allow_html=True,
+        )
+    with col2:
+        st.markdown(
+            f"<span style='font-size:60px;'>📈</span><br><span style='font-size:40px;'>HRV: {hrv} ms</span>",
+            unsafe_allow_html=True,
+        )
+    with col3:
+        g_val = conf if stress_res == "HIGH STRESS" else 1 - conf
+        g_color = "Red" if stress_res == "HIGH STRESS" else "Green"
+        fig = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=g_val,
+                domain={"x": [0, 1], "y": [0, 1]},
+                title={"text": "Stress Level"},
+                gauge={
+                    "axis": {"range": [None, 1]},
+                    "bar": {"color": g_color},
+                    "steps": [
+                        {"range": [0, 0.5], "color": "lightgray"},
+                        {"range": [0.5, 1], "color": "gray"},
+                    ],
+                    "threshold": {
+                        "line": {"color": "red", "width": 4},
+                        "thickness": 0.75,
+                        "value": 0.8,
+                    },
+                },
+            )
+        )
+        st.plotly_chart(fig, use_container_width=True, key="stress_gauge")
+    with col4:
+        # Format the stress UI output based on label
+        if stress_res == "NEUTRAL":
+            icon, text = "😐", "Predicting..."
+        elif stress_res == "HIGH STRESS":
+            icon, text = "😰", "Stress"
+        elif stress_res == "LOW STRESS":
+            icon, text = "😌", "Low Stress"
+        else:
+            icon, text = "😊", "Baseline"
+
+        st.markdown(
+            f"<span style='font-size:60px;'>ML {icon}</span><br><span style='font-size:40px;'>{text}</span>",
+            unsafe_allow_html=True,
+        )
+        if st.session_state.rmssd > 0:
+            st.markdown(
+                f"<span>HR={st.session_state.hr_avg:.1f}, RMSSD={st.session_state.rmssd:.4f} ({conf:.1%})</span>",
+                unsafe_allow_html=True,
+            )
+    with col5:
+        st.markdown(
+            f"<span style='font-size:60px;'>LLM 📄</span><br><span style='font-size:20px;'>{st.session_state.insight_response}</span>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
+
+    col6, col7 = st.columns(2)
+    with col6:
+        st.subheader("Chart: Heart Rate")
+        if len(st.session_state.df) > 0:
+            fig1 = go.Figure(
+                go.Scatter(
+                    x=st.session_state.df.index,
+                    y=st.session_state.df["hr"],
+                    mode="lines",
+                    name="HR",
+                )
+            )
+            fig1.update_layout(
+                title="Heart Rate",
+                xaxis_title="Time",
+                yaxis_title="BPM",
+                margin=dict(t=30, b=10, l=10, r=10),
+            )
+            st.plotly_chart(fig1, use_container_width=True, key="hr_chart")
+    with col7:
+        st.subheader("Chart: Heart Rate Variability (RR)")
+        if len(st.session_state.df) > 0:
+            fig2 = go.Figure(
+                go.Scatter(
+                    x=st.session_state.df.index,
+                    y=st.session_state.df["hrv"],
+                    mode="lines",
+                    name="HRV",
+                )
+            )
+            fig2.update_layout(
+                title="Heart Rate Variability (RMSSD)",
+                xaxis_title="Time",
+                yaxis_title="ms",
+                margin=dict(t=30, b=10, l=10, r=10),
+            )
+            st.plotly_chart(fig2, use_container_width=True, key="hrv_chart")
+
+
+def render_chatbox():
+    """Render the LLM chat input and history."""
+    st.subheader("LLM Chat Box")
+    with st.expander("Chat with the LLM", expanded=True):
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        if llm_enabled:
+            prompt = st.chat_input("Ask about your performance and strategy...")
+            if prompt:
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                modified_prompt = LLM_TREND_PROMPT.format(
+                    trend=st.session_state.stress_trend,
+                    hr=st.session_state.hr_avg,
+                    rmssd=st.session_state.rmssd,
+                    status=st.session_state.stress_result,
+                    confidence=st.session_state.confidence,
+                    prompt=prompt,
+                )
+
+                api_messages = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.messages[:-1]
+                ]
+                api_messages.append({"role": "user", "content": modified_prompt})
+
+                with st.chat_message("assistant"):
+                    stream = client.chat.completions.create(
+                        model=LLM_MODEL, messages=api_messages, stream=True
+                    )
+                    response = st.write_stream(stream)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": response}
+                )
+        else:
+            st.info(
+                "LLM features are disabled. Add your OpenAI API key to .env to enable chat and insights."
+            )
+
+
+def register_session_state():
+    """Initialize Streamlit session state variables."""
+    if "stress_result" not in st.session_state:
+        st.session_state.update(
+            {
+                "stress_result": "NEUTRAL",
+                "stress_auto": "NEUTRAL",
+                "stress_trend": "",
+                "insight_response": "Waiting for data...",
+                "confidence": 0.0,
+                "hr_avg": 0.0,
+                "rmssd": 0.0,
+                "prediction_counter": 0,
+                "last_prediction_time": time.time(),
+                "messages": [],
+                "df": pd.DataFrame(columns=["hr", "hrv"]),
+                "hr_list": [],
+                "hrv_list": [],
+            }
+        )
+
+
+def main_app():
+    """Defines the main user interface."""
+    st.set_page_config(page_title="Polar AWE", page_icon="❤", layout="wide")
+    st.title("Polar AWE: Stress Monitoring with ML and LLM")
+    st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
+
+    register_session_state()
+    predictor = load_predictor()
+
+    is_mock = str(st.query_params.get("mock", "")).lower() in {"1", "true", "yes"}
+    start_ble_thread_once(is_mock)
+
+    main_col1, main_col2 = st.columns([2, 1])
+
+    with main_col1:
+        render_metrics_and_charts(predictor)
+
+    with main_col2:
+        render_chatbox()
 
 
 if __name__ == "__main__":
-    if check_password():
+    if "PASSWORD" not in st.secrets or check_password():
         main_app()

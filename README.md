@@ -5,131 +5,90 @@
 [![Python](https://img.shields.io/badge/Python-3.8%20to%203.11-blue.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-**Python:** 3.8-3.11 | **OS:** Windows 10/11
+A multi-modal stress monitoring system merging **Polar H10 heart rate data** with **Ring-device biometric measurements** (Stress, Electrodermal Activity). The project offers real-time monitoring, machine-learning-based stress detection, and a reactive Streamlit dashboard with LLM-powered insights.
 
-Multi-modal stress monitoring system combining Polar H10 heart rate data with ring-device biometric measurements (stress, EDA). Features ML-based stress detection, real-time monitoring, and Streamlit dashboard.
+---
 
-## Quick Start
+## 🚀 Quick Start
 
-### 1. Setup
+### 1. Installation
+
+**Requirements:** Python 3.8-3.11, Windows 10/11 (Bluetooth capable).
+
 ```bash
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+cp .env.example .env
 ```
+_Optional: Add your `OPENAI_API_KEY` to `.env` to enable LLM insights in the dashboard._
 
-### 2. Polar H10 - Heart Rate Monitoring
+### 2. Streamlit Dashboard & Monitoring
+Launch the real-time AI dashboard (requires Polar H10 connection):
 ```bash
-python scripts/train/train_model.py          # Train ML model
-streamlit run scripts/app/app_streamlit.py   # Run dashboard
+streamlit run src/awe_polar/app_streamlit.py
 ```
+> **Tip:** You can test the dashboard without hardware using the mock flag: `streamlit run src/awe_polar/app_streamlit.py -- --mock=1`
 
-### 3. Ring Device - Stress & EDA Monitoring
+### 3. Ring Device CLI Tools
+Capture real-time stress and Electrodermal Activity (EDA) using the ring CLI. Uses automatic device discovery.
+
 ```bash
-# Real-time monitoring (live display + CSV logs)
+# Monitor and log data to CSV for 60 seconds
 python scripts/ring_monitor_cli.py --duration 60
 
-# Real-time monitoring without creating CSV logs
-python scripts/ring_monitor_cli.py --duration 60 --no-log
-
-# Data logging (lightweight, no display)
+# Lightweight datalogger (no live display)
 python scripts/ring_logger_cli.py --duration 300
-
-# Analyze captured data
-python scripts/ring_analyzer_cli.py data/ring_logs/*.csv
 
 # Live waveform visualization
 python scripts/ring_monitor_cli.py --waveform --window-seconds 10
 
-# List available rings
+# View discovered devices
 python scripts/ring_monitor_cli.py --list-rings
 ```
 
-See [Legacy Nuanic Master Guide](docs/archive/nuanic/00_master_guide.md) for detailed protocol-specific options and examples.
+---
 
-## Features
+## ✨ Key Features
 
-**Polar H10 Integration**
-- Real-time heart rate monitoring via Bluetooth
-- HRV analysis (RMSSD)
-- ML-based stress detection (Random Forest, Gradient Boosting)
-- Streamlit dashboard with live gauges and visualization
-- LLM-based insights (OpenAI, optional)
-- Hyperparameter tuning via GridSearchCV
-- Model versioning with timestamped artifacts
+- **Heart Rate & HRV Tracking**: Real-time RMSSD extraction from Polar H10 telemetry.
+- **Machine Learning**: Predicts stress levels using Random Forest and Gradient Boosting algorithms (found in `scripts/train/train_model.py`).
+- **Ring Device Integration**: Handles complex protocol reverse-engineering for both **Nuanic** and **Moodmetric** ring profiles. Automatically decodes proprietary BLE streams (including 86 Hz EDA waveforms).
+- **Asynchronous GUI**: Dashboard runs purely on Streamlit, auto-refreshing via background threads to keep LLM Chatboxes responsive.
+- **Diagnostics**: Rich toolkit for offline CSV analysis and BLE debugging (`scripts/ring_analyzer_cli.py`, `scripts/discover_ring_services.py`).
 
-**Ring Device Integration**
-- Real-time stress measurement (0-100%)
-- EDA (electrodermal activity) data capture
-- CSV logging with timestamp, stress, and sensor data
-- Data analysis tools with statistical reporting
-- 33 comprehensive unit tests (100% passing)
-- Production-ready Python modules with clean API
+---
 
-## Project Structure
+## 📂 Project Structure
 
-```
+```text
 AWE_Polar_Project/
 ├── src/awe_polar/
-│   ├── ring_device/           ← Ring integration modules (primary)
-│   │   ├── connector.py        - BLE connection & discovery
-│   │   ├── monitor.py          - IMU + stress monitor, display, CSV logging
-│   │   ├── logger.py           - CSV data logging
-│   │   ├── eda_analyzer.py     - EDA analysis engine
-│   │   └── data_analysis.py    - Stress/EDA CSV analysis utilities
-│   └── nuanic_ring/           ← Backward-compatible import shims
-│   ├── app_streamlit.py       - Dashboard
-│   └── train_model.py         - ML training pipeline
-│
-├── scripts/                   ← Ring tools (production ready)
-│   ├── ring_monitor_cli.py          - Real-time monitoring CLI
-│   ├── ring_logger_cli.py           - Lightweight logging CLI
-│   ├── ring_analyzer_cli.py         - CSV analysis CLI
-│   └── discover_ring_services.py    - Unified BLE diagnostics (discovery/profile/write-probe/buffer)
-│
-├── scripts/train/             ← ML pipeline
-│   └── train_model.py
-│
-├── scripts/data/              ← Data utilities
-│   └── download_datasets.py
-│
-├── tests/
-│   ├── test_ring_integration.py     ← 33 tests, 100% passing
-│   └── [other tests]
-│
-├── docs/
-│   ├── contributing.md
-│   └── archive/
-│       └── nuanic/
-│           ├── 00_master_guide.md
-│           └── nuanic_reverse_engineering_report.md
-│
-└── data/
-    ├── raw/                   - Training datasets
-    └── ring_logs/             - Logged ring sessions
+│   ├── app_streamlit.py       # Main ML + LLM Dashboard (Refactored for async support)
+│   ├── train_model.py         # ML pipeline
+│   ├── ring_device/           # Ring connection logic (Monitors, BLE Client, parsers)
+│   └── nuanic_ring/           # Shims for ring connectivity
+├── scripts/                   # CLI Tools (ring monitoring, logging, diagnostics)
+├── tests/                     # 33 verified unit tests (pytest)
+├── data/                      # Captured CSV logs / Dataset targets
+├── models/                    # Pickled ML models and scalers
+└── docs/                      # Extensive engineering and reverse-engineering guides
 ```
 
-## Documentation
+---
 
-**Ring Device Integration:**
-- [Legacy Nuanic Master Guide (Archived)](docs/archive/nuanic/00_master_guide.md) - Setup, CLI/API usage, packet decoding, EDA analysis, troubleshooting
+## 📚 Technical & Reverse-Engineering Documentation
 
-**Development:**
-- [Contributing Guidelines](docs/contributing.md) - Development standards
+If you are looking to extend the BLE implementation or understand the packet decoding, all the reverse-engineering research is preserved below and in the `docs/` folder.
 
-## Configuration
+- **Hardware Reverse-Engineering:** [Nuanic Analysis Report](docs/archive/nuanic/nuanic_reverse_engineering_report.md)
+- **Legacy Ring Guide:** [00_master_guide.md](docs/archive/nuanic/00_master_guide.md)
+- **Contributing:** [Development Standards](docs/contributing.md)
 
-1. **Environment Setup:**
-   ```bash
-   cp .env.example .env
-   # Add your OpenAI API key (optional, for LLM features)
-   ```
+<details>
+<summary><strong>🔬 Click to expand: Ring Protocol & Byte-Level Payloads</strong></summary>
 
-2. **Polar H10:** Pairs via system Bluetooth settings
-
-3. **Ring Device:** Auto-discovered by device name in software
-
-## Data Formats
+### Data Formats & Payload Specifications
 
 **Nuanic Ring CSV Logging**
 ```
@@ -142,19 +101,14 @@ timestamp,stress_raw,stress_percent,eda_hex,full_packet_hex
 - **EDA:** Bytes 15-91 (77 samples) → ~86 Hz PPG/EDA waveform → 0-100 μS range
 - **IMU:** Bytes 8-13 of acceleration packet → ACC_X, ACC_Y, ACC_Z signed int16 → ±32,768 range
 - **Update Rate:** 16.8 Hz combined (15.87 Hz IMU + 1.12 Hz physiology)
-- **Packet Format Details:** See [NUANIC_ANALYSIS_REPORT.md](NUANIC_ANALYSIS_REPORT.md)
 
-## Nuanic Reverse-Engineering Snapshot (2026-03-16)
+### Nuanic Reverse-Engineering Snapshot (2026-03-16)
 
 Latest verified live findings (Windows + Bleak, direct ring connection):
-
 - Ring advertisement uses rotating/private BLE MAC addresses.
-- Full GATT table was successfully enumerated on live device.
-- Standard services present: Generic Attribute, Generic Access, Battery, Device Information, SMP.
 - Proprietary service present: `5491faaf-b0c2-4167-8f3d-bc6b31db69e7` with 12 characteristics.
 
-### Proprietary Service Characteristics (UUID -> properties)
-
+**Proprietary Service Characteristics:**
 - `516b0fb6-d861-4619-9dd0-0105e8b85128` -> `read, write`
 - `dc9c31a7-fbd3-467a-8777-10900c423d3b` -> `read, write`
 - `42dcb71b-1817-43bd-8ea3-7272780a1c9f` -> `notify`
@@ -168,228 +122,46 @@ Latest verified live findings (Windows + Bleak, direct ring connection):
 - `468f2717-6a7d-46f9-9eb7-f92aab208bae` -> `notify`
 - `2204a4f6-b92e-4c64-8022-e938dd2a5dc2` -> `read`
 
-### Observed Live Stream Behavior
+**Observed Live Stream Behavior:**
+1. **State / On-Finger indicator** (`3c180fcc...`, 1 byte): `01` = idle, `02` = active/on-finger.
+2. **Real-time sensor + quality frame** (`d306262b...`, 16 bytes, ~22-25 Hz):
+    - Bytes `0-3`: monotonic counter/timestamp.
+    - Bytes `8-11`: highly dynamic signal field (EDA/stress-related candidate).
+    - Bytes `12-15`: quality/contact-like field.
+3. **Bulk motion stream** (`468f2717...`, 92 bytes, ~1 Hz): Packed one-second motion/waveform data.
 
-From recent session captures in `data/nuanic_logs/`:
+### Ring Profile Matrix (Nuanic vs Moodmetric)
+The diagnostics CLI discovers both, but they expose different proprietary profiles.
+- **Nuanic Profile:** Target proprietary service `5491faaf...`. Operational implication: `--buffer-only` is meaningful here. 
+- **Moodmetric Profile:** Exposes different custom services (e.g. `dd499b70...`). Diagnostics skip Nuanic-only buffer steps here.
 
-- State stream (`3c180fcc...`, 1 byte): observed values `01`, `02`, `03`; current hypothesis is this acts as a state/on-finger indicator and gates high-rate streams.
-- Core sensor stream (`d306262b...`, 16 bytes): high-rate packets (roughly ~22-25 Hz in latest live run) containing timestamp-like counter, dynamic signal field, and trailing quality/contact-like field.
-- Bulk waveform stream (`468f2717...`, 92 bytes): roughly ~1 Hz batched payload likely carrying one-second motion/IMU-like sample block.
-- Silent/event stream (`42dcb71b...`): subscribes successfully but can remain silent during normal wear windows; likely asynchronous/event channel.
-
-### Latest Live Interpretation (2026-03-16)
-
-From a clean `--subscribe-core-streams` run, the following behavior was observed:
-
-1. **State / On-Finger indicator** (`3c180fcc-bfec-4b7c-8e52-1a37f123e449`, 1 byte)
-    - `01`: idle/off-finger (or polling state)
-    - `02`: active/on-finger (high-rate streams begin immediately)
-    - `03`: transient poll/check state (observed interleaved with `01`)
-
-2. **Real-time sensor + quality frame** (`d306262b-c8c9-4c4b-9050-3a41dea706e5`, 16 bytes, ~22-25 Hz)
-    - Bytes `0-3`: monotonic counter/timestamp-like field (increments nearly constant per packet)
-    - Bytes `4-7`: mostly static context field (commonly `9C 01 00 00` in this run)
-    - Bytes `8-11`: highly dynamic signal field (EDA/stress-related candidate)
-    - Bytes `12-15`: quality/contact-like field (observed around `0x64` then drifting downward in step-like fashion)
-
-3. **Bulk motion stream** (`468f2717-6a7d-46f9-9eb7-f92aab208bae`, 92 bytes, ~1 Hz)
-    - First 8 bytes align with counter/timestamp progression.
-    - Remaining 84 bytes appear to be packed one-second motion/waveform data.
-
-4. **Silent stream in this session** (`42dcb71b-1817-43bd-8ea3-7272780a1c9f`)
-    - No packets during this capture window.
-    - Most likely reserved for asynchronous conditions (sync/error/battery/event signaling).
-
-Note: these are reverse-engineered interpretations from live payload behavior and should be treated as current best-fit hypotheses until validated across more sessions.
-
-### Reconnect Stability Note
-
-- Forced unpair-on-disconnect caused unreliable reconnect behavior with rotating MAC addresses.
-- Connector behavior now defaults to plain disconnect (no forced OS unpair), improving reconnect reliability.
-
-## Ring Profile Matrix (Nuanic vs Moodmetric)
-
-The diagnostics CLI can discover both Nuanic and Moodmetric devices, but they do not expose the same proprietary GATT profile.
-
-### Nuanic profile (project target)
-- Proprietary service: `5491faaf-b0c2-4167-8f3d-bc6b31db69e7`
-- Includes project-specific characteristics such as:
-    - `7c3b82e7-22b7-4cb6-8458-ba325edf6ede` (buffer read)
-    - `d306262b-c8c9-4c4b-9050-3a41dea706e5` (real-time frame)
-    - `468f2717-6a7d-46f9-9eb7-f92aab208bae` (bulk waveform)
-
-### Moodmetric profile (compatible for discovery, different schema)
-- Does not expose the Nuanic proprietary service `5491faaf...`
-- Typical observed custom services include:
-    - `dd499b70-e4cd-4988-a923-a7aab7283f8e`
-    - `aed4978e-9c7a-11e3-8d05-425861b86ab6`
-    - `0000e001-0000-1000-8000-00805f9b34fb`
-
-Operational implication:
-- `--buffer-only` is meaningful for Nuanic profile devices.
-- On Moodmetric profile devices, diagnostics will now skip Nuanic-only buffer steps with a compatibility message instead of failing.
-
-Recommended commands:
-```bash
-# Full GATT service/characteristic table (works for either profile)
-python scripts/discover_ring_services.py --no-profile --buffer-poll 0
-
-# Nuanic-only buffer check (will skip on non-Nuanic profile)
-python scripts/discover_ring_services.py --buffer-only
-
-# Profile-specific notify subscription (auto|nuanic|moodmetric)
-python scripts/discover_ring_services.py --subscribe-core-streams --ring-profile auto
-```
-
-Ring-agnostic roadmap in current code:
-- Diagnostics now supports profile-aware notify subscription sets.
-- `--ring-profile auto` detects profile from discovered services.
-- Monitor includes a Moodmetric adapter with first-pass payload decoding and JSON `decoded_fields` logging.
-
-## Moodmetric Capture Summary (2026-03-16)
-
-Live capture from `Moodmetric-ED62` confirmed active notify traffic and profile-specific stream behavior.
-
-Observed notify UUID activity:
-- Active in run: `a0956420-9bd2-11e4-bd06-0800200c9a66`, `90bd4fd0-4309-11e4-916c-0800200c9a66`, `f1b41cde-dbf5-4acf-8679-ecb8b4dca6ff`, occasional `5d7a90a0-ab7e-11e4-bcd8-0800200c9a66`
-- Silent in this run: `c48650d0-a2d8-11e4-bcd8-0800200c9a66`
-
-Working interpretation (hypothesis, needs multi-session validation):
-- `90bd...` (12 bytes) and `a095...` (7 bytes) appear redundant/related frames carrying overlapping values.
-- `a095...` candidate layout:
-    - bytes 0-1: rolling counter/clock (uint16)
+**Moodmetric Capture Working Interpretation (2026-03-16):**
+- Notifying UUIDs `a095...` (7 bytes) candidate layout:
+    - bytes 0-1: rolling counter
     - bytes 2-3: state/quality-like field
     - byte 4: stress-like index candidate
     - bytes 5-6: raw signal/EDA-like value candidate
-- `f1b4...` (2 bytes) is likely a high-rate raw ADC-like channel.
+- UUID `f1b4...` (2 bytes) is likely a high-rate raw ADC channel.
+</details>
 
-Example overlap seen in capture:
-- `90bd`: `400000850092920074004400`
-- `a095`: `032d4000927444`
+*(Note: The `ring_device` library handles all the complex byte-shifting, dynamic MAC rotating, and GATT Subscription logic internally.)*
 
-Interpretation note:
-- This mapping is reverse-engineering guidance and not yet firmware-confirmed.
+---
 
-## Analysis & Validation Tools
+## 🧪 Testing
 
-**Current Analysis Script** (`scripts/analysis/`)
-- `analyze_nuanic_stream.py` - Stream-level analysis for captured Nuanic data
-
-**To run analysis:**
+The codebase includes comprehensive unit testing.
 ```bash
-# Analyze captured stream(s)
-python scripts/analysis/analyze_nuanic_stream.py
-```
-
-**Legacy BLE Scripts** (`scripts/ble/archive/`)
-- Discovery/diagnostic scripts from exploratory phase
-- Kept for reference
-- Not required for production monitoring
-
-## Datasets for ML Training
-
-For WESAD, SWELL, and UBFC-Phys datasets:
-
-```bash
-# Verify local availability
-python scripts/data/download_datasets.py --verify-only
-
-# Extract from ZIP files (if you have them locally)
-python scripts/data/download_datasets.py --extract
-```
-
-**Official Sources:**
-- WESAD: https://archive.ics.uci.edu/ml/datasets/WESAD
-- SWELL: https://cs.ru.nl/~skoldijk/SWELL-KW/Dataset.html
-- UBFC-Phys: https://ieee-dataport.org/open-access/ubfc-phys
-
-**Expected Layout:**
-```
-datasets/
-├── WESAD/
-├── SWELL/
-└── UBFC-Phys/
-```
-
-## Testing
-
-```bash
-# Run all tests with coverage
+# Test the complete test suite
 pytest tests/ -v --cov=.
 
-# Test Nuanic integration (33 unit tests)
+# Test specifically ring device integration (33 unit tests)
 pytest tests/test_ring_integration.py -v
 ```
 
-**Test Status:**
-- ✅ 33/33 unit tests passing
-- ✅ All modules verified and functional
-- ✅ 100% success rate
+---
 
-## What's New (Feb 27, 2026)
+## 📄 License & Credits
 
-**Hardware Analysis & Reverse Engineering:**
-- ✅ Decoded dual-stream BLE architecture (15.87 Hz IMU + 1.12 Hz physiology = 16.8 Hz combined)
-- ✅ Verified IMU acceleration data (bytes 8-11, ±32K range, 6× stationary/movement variance)
-- ✅ Extracted EDA waveform (bytes 15-91, 77 samples @ 86 Hz, 0-100 μS)
-- ✅ Analyzed stress algorithm behavior (DNE baseline calibration, +10.7% initial drift)
-- ✅ Validated sensor independence (stress ↔ EDA correlation = -0.12)
-- ✅ Tested with 5-minute extended capture (4,799 IMU + 325 physiology packets)
-- 📄 **See [Legacy Nuanic Master Guide (Archived)](docs/archive/nuanic/00_master_guide.md) for full technical findings and context**
-
-**Code & Documentation:**
-- ✅ 6 core analysis scripts for sensor validation
-- ✅ 18 legacy exploratory scripts archived for reference
-- ✅ Comprehensive technical report with experimental validation
-- ✅ Cleaned codebase (organized analysis folder structure)
-- ✅ Production-ready data logging and analysis tools
-
-## Usage Examples
-
-**Log Ring Device Data:**
-```bash
-# Record for 5 minutes
-python scripts/ring_monitor_cli.py --duration 300
-# Output: data/ring_logs/nuanic_*.csv
-```
-
-**Analyze Logged Data:**
-```bash
-# Generate statistics report
-python scripts/ring_analyzer_cli.py data/ring_logs/nuanic_stress_2026-02-27_14-23-45.csv
-# Shows: stress range, peaks, EDA analysis
-```
-
-**Use in Python Code:**
-```python
-from awe_polar.ring_device import NuanicDataLogger
-from awe_polar.ring_device.eda_analyzer import NuanicEDAAnalyzer
-
-# Log stress + EDA data
-logger = NuanicDataLogger()
-await logger.start_logging(duration_seconds=300)
-
-# Analyze EDA patterns
-analyzer = NuanicEDAAnalyzer()
-for eda_value in eda_stream:
-    stats = analyzer.add_reading(eda_value)
-    if stats['is_peak']:
-        print(f"Stress response detected")
-```
-
-## System Requirements
-
-- Python 3.8-3.11
-- Windows 10/11 (Bluetooth capable)
-- Polar H10 heart rate monitor (optional)
-- Ring device (optional)
-- 2 GB RAM minimum
-- Virtual environment recommended
-
-## License
-
-See [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+See the [LICENSE](LICENSE) file for details.  
+Built for Python 3.8 to 3.11 natively on Windows 10/11 environments. ML datasets utilize references from WESAD, SWELL, and UBFC-Phys.
