@@ -79,11 +79,10 @@ AWE_Polar_Project/
 
 ## 📚 Technical & Reverse-Engineering Documentation
 
-If you are looking to extend the BLE implementation or understand the packet decoding, all the reverse-engineering research is preserved below and in the `docs/` folder.
+The complex GATT reverse-engineering, specific ring mappings, and low-level CLI diagnostic tools are now fully open-sourced in their own dedicated SDK repository.
 
-- **Hardware Reverse-Engineering:** [Nuanic Analysis Report](docs/archive/nuanic/nuanic_reverse_engineering_report.md)
-- **Legacy Ring Guide:** [00_master_guide.md](docs/archive/nuanic/00_master_guide.md)
-- **Contributing:** [Development Standards](docs/contributing.md)
+- **Ring Integration & Reverse-Engineering:** [Nuanic_Moodmetric_BLE on GitHub](https://github.com/PhelaPoscam/Nuanic_Moodmetric_BLE)
+- **Contributing to AWE:** [Development Standards](docs/contributing.md)
 
 <details>
 <summary><strong>🔬 Click to expand: Ring Protocol & Byte-Level Payloads</strong></summary>
