@@ -19,7 +19,7 @@ plotly
 
 # Bluetooth Low Energy
 bleak
-nuanic-ring @ git+https://github.com/PhelaPoscam/Nuanic_Moodmetric_BLE.git
+nuanic-ring @ git+https://github.com/PhelaPoscam/Nuanic_Moodmetric_BLE.git@main
 
 # Web Application
 streamlit>=1.28,<1.32; python_version < "3.9"
