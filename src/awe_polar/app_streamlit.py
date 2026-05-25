@@ -5,6 +5,7 @@ import hashlib
 import os
 import queue
 import time
+from collections import deque
 import threading
 import warnings
 from pathlib import Path
@@ -127,45 +128,116 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
     if is_mock:
         mock_hr = 70
         mock_hrv = 40
+        ecg_phase = 0
+        ppg_phase = 0
+        acc_time = 0
         while True:
-            time.sleep(1)
-            mock_hr = float(np.clip(mock_hr + np.random.randint(-2, 3), 60, 100))
-            mock_hrv = float(np.clip(mock_hrv + np.random.randint(-3, 4), 30, 60))
-            data_queue.put(("data", (mock_hr, [mock_hrv])))
+            time.sleep(0.1)  # 10 Hz chunk generation
+
+            # Generate HR/HRV once per second (10% probability at 10Hz)
+            if np.random.random() < 0.1:
+                mock_hr = float(np.clip(mock_hr + np.random.randint(-2, 3), 60, 100))
+                mock_hrv = float(np.clip(mock_hrv + np.random.randint(-3, 4), 30, 60))
+                data_queue.put(("data", (mock_hr, [mock_hrv])))
+
+            # Generate ECG (13 samples at 10Hz = 130Hz)
+            mock_ecg = []
+            for _ in range(13):
+                t = ecg_phase % 130
+                if t < 10:  # P-wave
+                    val = 100 * np.sin(np.pi * t / 10)
+                elif t < 15:  # Flat
+                    val = 0
+                elif t == 16:  # Q-wave
+                    val = -150
+                elif t == 17 or t == 18:  # R-wave spike
+                    val = 1200 if t == 17 else 800
+                elif t == 19:  # S-wave
+                    val = -300
+                elif t < 25:  # Flat
+                    val = 0
+                elif t < 40:  # T-wave
+                    val = 250 * np.sin(np.pi * (t - 25) / 15)
+                else:
+                    val = 0
+                val += np.random.randint(-15, 16)  # Add noise
+                mock_ecg.append(int(val))
+                ecg_phase += 1
+            data_queue.put(("ecg", mock_ecg))
+
+            # Generate PPG (6 samples at 10Hz = 60Hz)
+            mock_ppg = []
+            for _ in range(6):
+                t = ppg_phase % 60
+                val = (
+                    50000
+                    + 4000 * np.sin(2 * np.pi * t / 60)
+                    + 1500 * np.sin(4 * np.pi * t / 60)
+                )
+                val += np.random.randint(-100, 101)
+                mock_ppg.append(
+                    [int(val), int(val * 0.9), int(val * 0.85), int(val * 0.8)]
+                )
+                ppg_phase += 1
+            data_queue.put(("ppg", mock_ppg))
+
+            # Generate ACC (2 samples at 10Hz = 20Hz)
+            mock_acc = []
+            for _ in range(2):
+                x = int(100 * np.sin(acc_time) + np.random.randint(-5, 6))
+                y = int(50 * np.cos(acc_time) + np.random.randint(-5, 6))
+                z = int(980 + 20 * np.sin(acc_time * 2) + np.random.randint(-5, 6))
+                mock_acc.append((x, y, z))
+                acc_time += 0.05
+            data_queue.put(("acc", mock_acc))
     else:
 
         async def run_ble():
             try:
                 device = await BleakScanner.find_device_by_filter(
-                    lambda dev, adv: dev.name and "polar h10" in dev.name.lower()
+                    lambda dev, adv: dev.name and "polar" in dev.name.lower(),
+                    timeout=10.0,
                 )
                 if not device:
-                    data_queue.put(("error", "Polar H10 device not found"))
+                    data_queue.put(("error", "Polar device not found"))
                     return
 
-                async with BleakClient(device) as client:
+                def _callback(data):
+                    if isinstance(data, tuple) and len(data) >= 2:
+                        hr_val, rr_ints = data
+                        data_queue.put(("data", (hr_val, rr_ints if rr_ints else None)))
 
-                    def _callback(data):
-                        # data mapping from original `print_hr_data`: (..., ..., (hr, [hrv...]))
-                        if isinstance(data, tuple) and len(data) >= 3:
-                            hr_data = data[2]
-                            if isinstance(hr_data, tuple) and len(hr_data) >= 1:
-                                data_queue.put(
-                                    (
-                                        "data",
-                                        (
-                                            hr_data[0],
-                                            hr_data[1] if len(hr_data) > 1 else None,
-                                        ),
-                                    )
-                                )
+                def _ecg_callback(data):
+                    data_queue.put(("ecg", data[1]))
 
-                    heartrate = HeartRate(
-                        client, callback=_callback, instant_rate=True, unpack=True
-                    )
-                    await heartrate.start_notify()
-                    while True:
-                        await asyncio.sleep(1)
+                def _ppg_callback(data):
+                    data_queue.put(("ppg", data[1]))
+
+                def _acc_callback(data):
+                    data_queue.put(("acc", data[1]))
+
+                def _ppi_callback(data):
+                    data_queue.put(("data", (None, data[1])))
+
+                def _gyro_callback(data):
+                    data_queue.put(("gyro", data[1]))
+
+                def _mag_callback(data):
+                    data_queue.put(("mag", data[1]))
+
+                heartrate = HeartRate(
+                    device,
+                    callback=_callback,
+                    ecg_callback=_ecg_callback,
+                    ppg_callback=_ppg_callback,
+                    acc_callback=_acc_callback,
+                    ppi_callback=_ppi_callback,
+                    gyro_callback=_gyro_callback,
+                    mag_callback=_mag_callback,
+                )
+                await heartrate.start_notify()
+                while True:
+                    await asyncio.sleep(1)
             except Exception as e:
                 data_queue.put(("error", str(e)))
 
@@ -281,6 +353,16 @@ def process_queue_data(predictor):
                 st.session_state.hr_list = st.session_state.hr_list[-30:]
             if len(st.session_state.hrv_list) > 100:
                 st.session_state.hrv_list = st.session_state.hrv_list[-50:]
+        elif msg_type == "ecg":
+            st.session_state.ecg_deque.extend(payload)
+        elif msg_type == "ppg":
+            st.session_state.ppg_deque.extend([s[0] for s in payload])
+        elif msg_type == "acc":
+            st.session_state.acc_deque.extend(payload)
+        elif msg_type == "gyro":
+            st.session_state.gyro_deque.extend(payload)
+        elif msg_type == "mag":
+            st.session_state.mag_deque.extend(payload)
 
 
 # ==========================================
@@ -361,43 +443,190 @@ def render_metrics_and_charts(predictor):
 
     st.markdown("<hr style='margin: 2rem 0;'>", unsafe_allow_html=True)
 
-    col6, col7 = st.columns(2)
-    with col6:
-        st.subheader("Chart: Heart Rate")
-        if len(st.session_state.df) > 0:
-            fig1 = go.Figure(
+    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "ECG", "PPG", "IMU"])
+
+    with tab1:
+        col6, col7 = st.columns(2)
+        with col6:
+            st.subheader("Chart: Heart Rate")
+            if len(st.session_state.df) > 0:
+                fig1 = go.Figure(
+                    go.Scatter(
+                        x=st.session_state.df.index,
+                        y=st.session_state.df["hr"],
+                        mode="lines",
+                        name="HR",
+                    )
+                )
+                fig1.update_layout(
+                    title="Heart Rate",
+                    xaxis_title="Time",
+                    yaxis_title="BPM",
+                    margin=dict(t=30, b=10, l=10, r=10),
+                )
+                st.plotly_chart(fig1, use_container_width=True, key="hr_chart")
+        with col7:
+            st.subheader("Chart: Heart Rate Variability (RR)")
+            if len(st.session_state.df) > 0:
+                fig2 = go.Figure(
+                    go.Scatter(
+                        x=st.session_state.df.index,
+                        y=st.session_state.df["hrv"],
+                        mode="lines",
+                        name="HRV",
+                    )
+                )
+                fig2.update_layout(
+                    title="Heart Rate Variability (RMSSD)",
+                    xaxis_title="Time",
+                    yaxis_title="ms",
+                    margin=dict(t=30, b=10, l=10, r=10),
+                )
+                st.plotly_chart(fig2, use_container_width=True, key="hrv_chart")
+
+    with tab2:
+        st.subheader("Live ECG Waveform")
+        ecg_data = list(st.session_state.ecg_deque)
+        if len(ecg_data) > 0:
+            fig_ecg = go.Figure(
                 go.Scatter(
-                    x=st.session_state.df.index,
-                    y=st.session_state.df["hr"],
+                    y=ecg_data,
                     mode="lines",
-                    name="HR",
+                    name="ECG",
+                    line=dict(color="#00D2C4", width=1.5),
                 )
             )
-            fig1.update_layout(
-                title="Heart Rate",
-                xaxis_title="Time",
-                yaxis_title="BPM",
+            fig_ecg.update_layout(
+                title="ECG Waveform (130Hz)",
+                xaxis_title="Sample Index",
+                yaxis_title="Voltage (µV)",
                 margin=dict(t=30, b=10, l=10, r=10),
+                height=400,
             )
-            st.plotly_chart(fig1, use_container_width=True, key="hr_chart")
-    with col7:
-        st.subheader("Chart: Heart Rate Variability (RR)")
-        if len(st.session_state.df) > 0:
-            fig2 = go.Figure(
+            st.plotly_chart(fig_ecg, use_container_width=True, key="live_ecg_chart")
+        else:
+            st.info(
+                "ECG stream inactive or waiting for data. Note: ECG is exclusive to Polar H10 chest strap."
+            )
+
+    with tab3:
+        st.subheader("Live PPG Optical Pulse Waveform")
+        ppg_data = list(st.session_state.ppg_deque)
+        if len(ppg_data) > 0:
+            fig_ppg = go.Figure(
                 go.Scatter(
-                    x=st.session_state.df.index,
-                    y=st.session_state.df["hrv"],
+                    y=ppg_data,
                     mode="lines",
-                    name="HRV",
+                    name="PPG",
+                    line=dict(color="#FF7F0E", width=2),
                 )
             )
-            fig2.update_layout(
-                title="Heart Rate Variability (RMSSD)",
-                xaxis_title="Time",
-                yaxis_title="ms",
+            fig_ppg.update_layout(
+                title="PPG Optical Waveform",
+                xaxis_title="Sample Index",
+                yaxis_title="Reflectance (Raw)",
                 margin=dict(t=30, b=10, l=10, r=10),
+                height=400,
             )
-            st.plotly_chart(fig2, use_container_width=True, key="hrv_chart")
+            st.plotly_chart(fig_ppg, use_container_width=True, key="live_ppg_chart")
+        else:
+            st.info(
+                "PPG stream inactive or waiting for data. Note: PPG is exclusive to Polar Verity Sense / OH1."
+            )
+
+    with tab4:
+        st.subheader("Inertial Measurement Unit (IMU) Data")
+        acc_data = list(st.session_state.acc_deque)
+        gyro_data = list(st.session_state.gyro_deque)
+        mag_data = list(st.session_state.mag_deque)
+
+        def parse_imu_deque(dq):
+            x_vals, y_vals, z_vals = [], [], []
+            for sample in dq:
+                if hasattr(sample, "x"):
+                    x_vals.append(sample.x)
+                    y_vals.append(sample.y)
+                    z_vals.append(sample.z)
+                elif isinstance(sample, (list, tuple)) and len(sample) >= 3:
+                    x_vals.append(sample[0])
+                    y_vals.append(sample[1])
+                    z_vals.append(sample[2])
+            return x_vals, y_vals, z_vals
+
+        if len(acc_data) > 0:
+            ax, ay, az = parse_imu_deque(acc_data)
+            fig_acc = go.Figure()
+            fig_acc.add_trace(
+                go.Scatter(y=ax, mode="lines", name="X", line=dict(color="#FF4B4B"))
+            )
+            fig_acc.add_trace(
+                go.Scatter(y=ay, mode="lines", name="Y", line=dict(color="#00D2C4"))
+            )
+            fig_acc.add_trace(
+                go.Scatter(y=az, mode="lines", name="Z", line=dict(color="#FF7F0E"))
+            )
+            fig_acc.update_layout(
+                title="Accelerometer (3-Axis)",
+                xaxis_title="Sample Index",
+                yaxis_title="mg",
+                margin=dict(t=30, b=10, l=10, r=10),
+                height=300,
+            )
+            st.plotly_chart(fig_acc, use_container_width=True, key="live_acc_chart")
+        else:
+            st.info("Accelerometer stream inactive or waiting for data.")
+
+        if len(gyro_data) > 0:
+            gx, gy, gz = parse_imu_deque(gyro_data)
+            fig_gyro = go.Figure()
+            fig_gyro.add_trace(
+                go.Scatter(
+                    y=gx, mode="lines", name="X (Pitch)", line=dict(color="#FF4B4B")
+                )
+            )
+            fig_gyro.add_trace(
+                go.Scatter(
+                    y=gy, mode="lines", name="Y (Roll)", line=dict(color="#00D2C4")
+                )
+            )
+            fig_gyro.add_trace(
+                go.Scatter(
+                    y=gz, mode="lines", name="Z (Yaw)", line=dict(color="#FF7F0E")
+                )
+            )
+            fig_gyro.update_layout(
+                title="Gyroscope (3-Axis)",
+                xaxis_title="Sample Index",
+                yaxis_title="deg/s",
+                margin=dict(t=30, b=10, l=10, r=10),
+                height=300,
+            )
+            st.plotly_chart(fig_gyro, use_container_width=True, key="live_gyro_chart")
+        else:
+            st.info("Gyroscope stream inactive or waiting for data.")
+
+        if len(mag_data) > 0:
+            mx, my, mz = parse_imu_deque(mag_data)
+            fig_mag = go.Figure()
+            fig_mag.add_trace(
+                go.Scatter(y=mx, mode="lines", name="X", line=dict(color="#FF4B4B"))
+            )
+            fig_mag.add_trace(
+                go.Scatter(y=my, mode="lines", name="Y", line=dict(color="#00D2C4"))
+            )
+            fig_mag.add_trace(
+                go.Scatter(y=mz, mode="lines", name="Z", line=dict(color="#FF7F0E"))
+            )
+            fig_mag.update_layout(
+                title="Magnetometer (3-Axis)",
+                xaxis_title="Sample Index",
+                yaxis_title="µT",
+                margin=dict(t=30, b=10, l=10, r=10),
+                height=300,
+            )
+            st.plotly_chart(fig_mag, use_container_width=True, key="live_mag_chart")
+        else:
+            st.info("Magnetometer stream inactive or waiting for data.")
 
 
 def render_chatbox():
@@ -462,6 +691,11 @@ def register_session_state():
                 "df": pd.DataFrame(columns=["hr", "hrv"]),
                 "hr_list": [],
                 "hrv_list": [],
+                "ecg_deque": deque(maxlen=500),
+                "ppg_deque": deque(maxlen=300),
+                "acc_deque": deque(maxlen=200),
+                "gyro_deque": deque(maxlen=200),
+                "mag_deque": deque(maxlen=200),
             }
         )
 
