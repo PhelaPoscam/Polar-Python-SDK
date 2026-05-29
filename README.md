@@ -5,41 +5,49 @@
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A real-time stress monitoring and physiological visualization system using **Polar H10, Verity Sense, and Grit X Pro devices**. The project offers real-time monitoring, machine-learning-based stress detection, and a reactive Streamlit dashboard with live waveform charts and LLM-powered insights.
+A real-time stress monitoring and physiological visualization system using **Polar H10, Verity Sense, and Vantage/Grit watches**. The project offers real-time monitoring, machine-learning-based stress detection, a reactive Streamlit dashboard with live waveform charts, and a premium console terminal dashboard with event logging and hotkey markers.
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Installation
-
+### 1. Installation & Setup
 **Requirements:** Python 3.8+, Windows 10/11 (Bluetooth capable).
 
-```bash
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cp .env.example .env
+You can run the automatic setup script in PowerShell to create the virtual environment and install all dependencies:
+```powershell
+.\setup.ps1
 ```
-_Optional: Add your `OPENAI_API_KEY` to `.env` to enable LLM insights in the dashboard._
+*(Alternatively, configure manually: `python -m venv .venv`, `.\.venv\Scripts\Activate.ps1`, `pip install -r requirements.txt`)*
 
-### 2. Streamlit Dashboard & Monitoring
-Launch the real-time AI dashboard:
-```bash
-streamlit run src/awe_polar/app_streamlit.py
+### 2. Streamlit Dashboard
+Verify setup and launch the Streamlit dashboard using:
+```powershell
+.\start.ps1
 ```
-> **Tip:** You can test all dashboard tabs and high-frequency waveforms without hardware using the mock flag: `streamlit run src/awe_polar/app_streamlit.py -- --mock=1`
+*(Manual command: `streamlit run src/awe_polar/app_streamlit.py`)*
+
+### 3. Premium Terminal Dashboard
+Launch the premium command-line dashboard with real-time event markers, battery monitoring, and 1 Hz CSV data logging:
+```bash
+.venv\Scripts\python.exe scripts\monitor_polar_terminal.py
+```
+
+*   **Specify Device**: Target a specific device (like a Vantage watch) by passing the name or MAC address:
+    ```bash
+    .venv\Scripts\python.exe scripts\monitor_polar_terminal.py --device Vantage
+    ```
+*   **Hotkey Event Markers**: Press `SPACE` (marker), `S` (stimulus_on), `B` (baseline_start), or `R` (rest_start) to log markers on-screen and save them directly in the CSV files under `data/`.
 
 ---
 
 ## ✨ Key Features
 
-- **Multi-Device Support**: Captures raw physiological telemetry from the Polar H10 chest strap, Polar Verity Sense optical sensor, and Polar Grit X Pro smartwatch.
+- **Multi-Device Support**: Captures raw physiological telemetry from the Polar H10 chest strap, Polar Verity Sense optical sensor, and Polar smartwatch line (Grit, Vantage).
 - **High-Frequency Waveforms**: Live streaming and rendering of ECG electrical signals (130Hz), PPG optical pulse waves (55Hz), and IMU kinematics (3-axis Accelerometer, Gyroscope, and Magnetometer).
 - **Stress & HRV Analysis**: Dynamic calculation of RMSSD from R-R intervals (heart rate variability) and optical PPI data feed.
-- **Machine Learning**: Predicts stress levels in real time using Random Forest and Gradient Boosting models.
-- **Interactive UI Layout**: Premium dashboard layout featuring tabs for Overview (HR/HRV), Live ECG Waveform, Live PPG Optical Pulse, and 3-axis IMU Kinematics.
-- **Asynchronous GUI & LLM**: Streamlit dashboard runs on background worker threads to keep LLM chatboxes and Live gauge charts completely fluid.
+- **Console Terminal Dashboard**: Full-featured interactive terminal view with a heart rate trend sparkline graph, background battery status checking, active stream rate monitor, and live event marker logs.
+- **Automated Logging**: Saves session data periodically at 1 Hz directly to CSV files inside the `data/` directory.
 
 ---
 
@@ -47,23 +55,27 @@ streamlit run src/awe_polar/app_streamlit.py
 
 ```text
 AWE_Polar_Project/
+├── setup.ps1                  # PowerShell automatic environment setup
+├── start.ps1                  # PowerShell application launcher
 ├── src/awe_polar/
-│   ├── app_streamlit.py       # Main ML + LLM Dashboard (tabbed waveforms & kinematics)
+│   ├── app_streamlit.py       # Main Streamlit Dashboard (tabbed waveforms & kinematics)
 │   ├── connector/             # BLE Device connection and data streaming layer
+│   │   └── stream/            # Specialized device modules (Base, H10, VeritySense, Watch)
 │   ├── reader/                # Real-time data reading and ML stress inference logic
-│   └── train_model.py         # ML pipeline
-├── scripts/                   # CLI Tools (downloading datasets, inference, training)
+│   └── train_model.py         # ML pipeline training script
+├── scripts/                   # Consolidated CLI Tools
+│   ├── monitor_polar_terminal.py # Premium live console dashboard with logging & hotkeys
+│   ├── connect_polar.py       # Simple streaming utility
+│   ├── download_datasets.py   # Dataset setup helper
+│   ├── replicate_tabnet_stress.py # TabNet model training pipeline
+│   ├── scan_ble.py            # BLE device discovery scanner
+│   ├── pair_watch.ps1         # Windows WinRT device pairing script
+│   └── ...                    # Helper and setup utilities
 ├── tests/                     # 51 verified unit tests (pytest)
-├── data/                      # Dataset files and logs
+├── data/                      # Session log files and datasets
 ├── models/                    # Pickled ML models and scalers
 └── docs/                      # Project guides
 ```
-
----
-
-## 📚 Technical Documentation
-
-*   **Contributing to AWE:** [Development Standards](docs/contributing.md)
 
 ---
 
@@ -80,4 +92,4 @@ pytest tests/ -v --cov=.
 ## 📄 License & Credits
 
 See the [LICENSE](LICENSE) file for details.  
-Built for Python 3.8+ natively on Windows 10/11 environments. ML datasets utilize references from WESAD, SWELL, and UBFC-Phys.
+Built for Python 3.8+ natively on Windows 10/11 environments.

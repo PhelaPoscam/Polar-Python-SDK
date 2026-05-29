@@ -2,12 +2,10 @@
 Test suite for train_model.py - Stress prediction model training
 """
 
-import pytest
 import pandas as pd
 import numpy as np
-import os
 import joblib
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 class TestDataLoading:

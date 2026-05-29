@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from bleak import BleakClient, BleakScanner
+from bleak import BleakScanner
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -194,10 +194,24 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
 
         async def run_ble():
             try:
-                device = await BleakScanner.find_device_by_filter(
-                    lambda dev, adv: dev.name and "polar" in dev.name.lower(),
-                    timeout=10.0,
-                )
+                devices = await BleakScanner.discover(timeout=7.0)
+                polar_devices = [
+                    d for d in devices if d.name and "polar" in d.name.lower()
+                ]
+                device = None
+                if polar_devices:
+                    for d in polar_devices:
+                        name_lower = d.name.lower()
+                        if (
+                            "sense" in name_lower
+                            or "h10" in name_lower
+                            or "oh1" in name_lower
+                        ):
+                            device = d
+                            break
+                    if not device:
+                        device = polar_devices[0]
+
                 if not device:
                     data_queue.put(("error", "Polar device not found"))
                     return

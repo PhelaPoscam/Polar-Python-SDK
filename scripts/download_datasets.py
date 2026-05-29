@@ -14,7 +14,6 @@ import os
 import sys
 import zipfile
 
-
 DATASET_LAYOUT = {
     "WESAD": "WESAD",
     "SWELL": "SWELL",
@@ -23,7 +22,9 @@ DATASET_LAYOUT = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Verify local dataset layout and extract archives.")
+    parser = argparse.ArgumentParser(
+        description="Verify local dataset layout and extract archives."
+    )
     parser.add_argument(
         "--data-dir",
         default="datasets",
@@ -76,7 +77,9 @@ def extract_archives(base_dir: str) -> None:
             extracted = True
 
     if not extracted:
-        print(f"No ZIP archives found under: {base_dir} or {os.path.join(base_dir, 'archives')}")
+        print(
+            f"No ZIP archives found under: {base_dir} or {os.path.join(base_dir, 'archives')}"
+        )
 
 
 def print_instructions(base_dir: str, status: dict[str, bool]) -> None:
@@ -90,7 +93,9 @@ def print_instructions(base_dir: str, status: dict[str, bool]) -> None:
     missing = [name for name, present in status.items() if not present]
     if missing:
         print("\nMissing datasets detected.")
-        print("Download each dataset from its official source and place the raw files under:")
+        print(
+            "Download each dataset from its official source and place the raw files under:"
+        )
         for name in missing:
             print(f"- {os.path.join(base_dir, DATASET_LAYOUT[name])}")
         print("\nIf you have ZIP archives, place them under either:")

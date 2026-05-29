@@ -73,3 +73,5 @@ CHECKLIST.md
 test_fails.txt
 .last_ring_addr
 .pytest_cache/
+.coverage
+polar-ble-sdk/

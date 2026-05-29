@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -87,9 +88,6 @@ def generate_sample_data(
     return df
 
 
-import argparse
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate sample HRV data for AWE Polar Project."
@@ -108,10 +106,10 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print(f"Generating sample HRV data for AWE Polar Project...\n")
+    print("Generating sample HRV data for AWE Polar Project...\n")
     generate_sample_data(n_samples=args.n_samples, output_file=args.output_file)
     print("\nSample data generation complete!")
-    print("\nYou can now run: python scripts/train_model.py")
+    print("\nYou can now run: python src/awe_polar/train_model.py")
 
 
 if __name__ == "__main__":

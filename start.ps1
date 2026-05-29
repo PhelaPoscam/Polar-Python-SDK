@@ -3,7 +3,7 @@
 Write-Host "Starting AWE Polar Project..." -ForegroundColor Green
 
 # Check if virtual environment exists
-if (-Not (Test-Path "venv")) {
+if (-Not (Test-Path ".venv")) {
     Write-Host "Virtual environment not found. Running setup first..." -ForegroundColor Yellow
     .\setup.ps1
     exit
@@ -11,7 +11,7 @@ if (-Not (Test-Path "venv")) {
 
 # Activate virtual environment
 Write-Host "Activating virtual environment..." -ForegroundColor Yellow
-.\venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 
 # Check for required files
 if (-Not (Test-Path ".env")) {
@@ -22,10 +22,10 @@ if (-Not (Test-Path ".env")) {
 
 if (-Not (Test-Path "models\improved_stress_model.pkl")) {
     Write-Host "`nWarning: Model file not found!" -ForegroundColor Red
-    Write-Host "Please run 'python scripts/train/train_model.py' first to train the model" -ForegroundColor Yellow
+    Write-Host "Please run 'python src/awe_polar/train_model.py' first to train the model" -ForegroundColor Yellow
     exit
 }
 
 # Start the Streamlit app
 Write-Host "`nStarting Streamlit app..." -ForegroundColor Green
-streamlit run scripts/app/app_streamlit.py
+streamlit run src/awe_polar/app_streamlit.py

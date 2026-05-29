@@ -5,8 +5,7 @@ Test suite for app_streamlit.py - Stress monitoring application
 import pytest
 import numpy as np
 import pandas as pd
-import asyncio
-from unittest.mock import Mock, MagicMock, patch, AsyncMock
+from unittest.mock import Mock
 
 
 class TestStressPrediction:
@@ -72,14 +71,14 @@ class TestStressPrediction:
         """Test handling of invalid input"""
         # Test with invalid HR
         try:
-            hr_float = float("invalid")
+            float("invalid")
             assert False, "Should have raised ValueError"
         except ValueError:
             assert True
 
         # Test with None
         try:
-            rmssd_float = float(None)
+            float(None)
             assert False, "Should have raised TypeError"
         except (ValueError, TypeError):
             assert True
@@ -131,7 +130,7 @@ class TestRMSSDCalculation:
         rr_intervals = [1000, 1020, 980, 1010]
 
         # Manual calculation
-        diffs = [20, -40, 30]  # differences
+        _diffs = [20, -40, 30]  # differences
         sq_diffs = [400, 1600, 900]
         mean_sq = sum(sq_diffs) / len(sq_diffs)  # 966.67
         expected_rmssd = np.sqrt(mean_sq)  # ~31.09
