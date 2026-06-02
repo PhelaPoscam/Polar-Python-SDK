@@ -28,4 +28,5 @@ if (-Not (Test-Path "models\improved_stress_model.pkl")) {
 
 # Start the Streamlit app
 Write-Host "`nStarting Streamlit app..." -ForegroundColor Green
+$env:PYTHONPATH = "src"
 streamlit run src/awe_polar/app_streamlit.py

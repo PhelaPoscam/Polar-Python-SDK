@@ -118,21 +118,24 @@ class PolarVeritySense(BasePolarDevice):
             try:
                 self.ppg_callback((ppg_data.timestamp, ppg_data.samples))
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()
 
     def _acc_handler(self, acc_data) -> None:
         if self.acc_callback:
             try:
                 self.acc_callback((acc_data.timestamp, acc_data.data))
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()
 
     def _gyro_handler(self, gyro_data) -> None:
         if self.gyro_callback:
             try:
                 self.gyro_callback((gyro_data.timestamp, gyro_data.data))
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()
 
     def _mag_handler(self, mag_data) -> None:
         if self.mag_callback:
@@ -140,4 +143,5 @@ class PolarVeritySense(BasePolarDevice):
                 mag_vals = [(s.x, s.y, s.z) for s in mag_data.data]
                 self.mag_callback((mag_data.timestamp, mag_vals))
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()

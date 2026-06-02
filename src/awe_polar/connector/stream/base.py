@@ -21,7 +21,7 @@ class BasePolarDevice:
 
         device_name = getattr(self.device, "name", "") or ""
 
-        async def _subscribe():
+        async def _subscribe_and_start():
             await self.polar_device._client.start_notify(
                 PolarCharacteristic.PMD_CONTROL_POINT.value,
                 self.polar_device._handle_pmd_control,
@@ -29,21 +29,24 @@ class BasePolarDevice:
             await self.polar_device._client.start_notify(
                 PolarCharacteristic.PMD_DATA.value, self.polar_device._handle_pmd_data
             )
+            self._running = True
+            await self.start_streams()
 
         try:
-            await _subscribe()
+            await _subscribe_and_start()
             print("Connected and authenticated successfully.")
         except Exception as e:
+            err_str = str(e)
             if (
-                "Authentication" in str(e)
-                or "Insufficient" in str(e)
-                or "(5)" in str(e)
+                "Authentication" in err_str
+                or "Insufficient" in err_str
+                or "(5)" in err_str
+                or "-2147023673" in err_str
             ):
                 print(
                     f"Device ({device_name}) requires pairing. Initiating BLE pairing/bonding..."
                 )
                 try:
-                    await self.polar_device._client.pair()
                     print("\n" + "=" * 80)
                     print("PAIRING PIN REQUESTED!")
                     print(
@@ -52,20 +55,22 @@ class BasePolarDevice:
                     print(
                         "Confirm/type the pairing PIN code on both the device and the PC."
                     )
-                    print("Waiting 25 seconds for you to complete this...")
                     print("=" * 80 + "\n")
-                    await asyncio.sleep(25.0)
-                    print("Re-establishing connection to apply pairing keys...")
+                    await self.polar_device._client.pair()
+                    # pair() stores bond keys in Windows registry, but the current
+                    # connection is still unauthenticated. We must reconnect so Windows
+                    # opens a fresh encrypted session using the new bond keys.
+                    print("Pairing accepted. Re-establishing authenticated connection...")
                     await self.polar_device._client.disconnect()
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.0)
                     await self.polar_device._client.connect()
-                    print("Retrying subscription...")
-                    await _subscribe()
+                    print("Retrying stream subscription...")
+                    await _subscribe_and_start()
                     print("Connected and authenticated successfully after pairing!")
                 except Exception as pair_err:
                     print(f"Failed to complete pairing: {pair_err}")
                     raise e
-            elif "not found" in str(e).lower() or "FB005C81" in str(e):
+            elif "not found" in err_str.lower() or "FB005C81" in err_str:
                 print("\n" + "=" * 60)
                 print(
                     "SDK STREAM NOT ACTIVE: The device is not exposing the measurement service."
@@ -75,9 +80,6 @@ class BasePolarDevice:
                 raise e
             else:
                 raise e
-
-        self._running = True
-        await self.start_streams()
 
     async def start_streams(self) -> None:
         """To be overridden by subclasses to start their specific streams."""

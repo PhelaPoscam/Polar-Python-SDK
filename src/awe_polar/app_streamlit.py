@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.append(str(PROJECT_ROOT / "src"))
+
 import asyncio
 import hashlib
 import os
@@ -8,7 +13,6 @@ import time
 from collections import deque
 import threading
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -27,7 +31,6 @@ from awe_polar.reader.realtime import ReaderConfig, run_reader
 # ==========================================
 # Configuration and Prompts
 # ==========================================
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "models" / "improved_stress_model.pkl"
 SCALER_PATH = PROJECT_ROOT / "models" / "scaler.pkl"
 PREDICTION_INTERVAL = 15  # seconds
@@ -68,14 +71,15 @@ def check_password() -> bool:
     """Returns `True` if the user had a correct password."""
 
     def password_entered():
-        if (
-            hashlib.sha256(st.session_state["password"].encode()).hexdigest()
-            == st.secrets["PASSWORD"]
-        ):
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
+        if "password" in st.session_state:
+            if (
+                hashlib.sha256(st.session_state["password"].encode()).hexdigest()
+                == st.secrets["PASSWORD"]
+            ):
+                st.session_state["password_correct"] = True
+                del st.session_state["password"]
+            else:
+                st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
         st.text_input(
@@ -326,7 +330,7 @@ def process_queue_data(predictor):
 
                         run_reader(
                             predictor,
-                            queue_sink.queue,
+                            queue_sink._queue,
                             on_prediction,
                             config=ReaderConfig(poll_interval=0.0),
                             stop_on_empty=True,
