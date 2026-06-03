@@ -17,6 +17,7 @@ class PolarVeritySense(BasePolarDevice):
         mag_callback: Optional[Callable] = None,
         **kwargs,
     ) -> None:
+        kwargs.setdefault("reconnect_before_streaming", True)
         super().__init__(device, **kwargs)
         self.callback = callback  # Callback for Heart Rate and RR-Intervals
         self.ppi_callback = ppi_callback
@@ -34,7 +35,10 @@ class PolarVeritySense(BasePolarDevice):
             features = await self.polar_device.get_available_features()
             feature_names = [f.name for f in features] if features else []
             print(f"[DEBUG] Available PMD features: {feature_names or '(none)'}")
-        except Exception:
+        except Exception as e:
+            err_str = str(e)
+            if any(term in err_str for term in ("Authentication", "Insufficient", "(5)", "-2147023673", "not connected", "Not connected")):
+                raise e
             print("[DEBUG] get_available_features() failed:")
             traceback.print_exc()
             features = []
@@ -135,9 +139,7 @@ class PolarVeritySense(BasePolarDevice):
 
     def _hr_handler(self, hr_data) -> None:
         if self.callback:
-            # If PPI stream is active, the standard HR service reports 0 BPM.
-            # In this case, we ignore it and rely on the PPI stream instead.
-            if self._ppi_active:
+            if hr_data.heartrate == 0:
                 return
             try:
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))

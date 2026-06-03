@@ -12,13 +12,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT / "src"))
 
 import numpy as np
-from bleak import BleakScanner
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from awe_polar.connector.ble_discovery import discover_polar_device
 from awe_polar.connector.stream import create_polar_connector
 
 # Global stdout encoding fix for Windows to support sparklines and symbols
@@ -452,31 +452,7 @@ async def main():
         state["status"] = "Scanning for Polar devices (Sense/H10/OH1)..."
 
     with Live(build_dashboard(0.0, marker_legend), refresh_per_second=10) as live:
-        devices = await BleakScanner.discover(timeout=6.0)
-
-        device = None
-        if args.device:
-            dev_target = args.device.lower()
-            for d in devices:
-                if d.name and (
-                    dev_target in d.name.lower() or dev_target == d.address.lower()
-                ):
-                    device = d
-                    break
-        else:
-            polar_devices = [d for d in devices if d.name and "polar" in d.name.lower()]
-            if polar_devices:
-                for d in polar_devices:
-                    name_lower = d.name.lower()
-                    if (
-                        "sense" in name_lower
-                        or "h10" in name_lower
-                        or "oh1" in name_lower
-                    ):
-                        device = d
-                        break
-                if not device:
-                    device = polar_devices[0]
+        device = await discover_polar_device(args.device, timeout=20.0)
 
         if not device:
             if args.device:

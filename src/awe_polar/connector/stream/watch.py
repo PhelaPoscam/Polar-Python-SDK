@@ -99,7 +99,7 @@ class PolarWatch(BasePolarDevice):
 
     def _hr_handler(self, hr_data) -> None:
         if self.callback:
-            if self._ppi_active:
+            if hr_data.heartrate == 0:
                 return
             try:
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))

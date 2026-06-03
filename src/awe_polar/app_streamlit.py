@@ -18,10 +18,10 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from bleak import BleakScanner
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from awe_polar.connector.ble_discovery import discover_polar_device
 from awe_polar.connector.exporters.queue_sink import QueueSink
 from awe_polar.connector.schemas import SignalPacket
 from awe_polar.connector.stream.polar_h10_ble import HeartRate
@@ -197,24 +197,9 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
     else:
 
         async def run_ble():
+            heartrate = None
             try:
-                devices = await BleakScanner.discover(timeout=7.0)
-                polar_devices = [
-                    d for d in devices if d.name and "polar" in d.name.lower()
-                ]
-                device = None
-                if polar_devices:
-                    for d in polar_devices:
-                        name_lower = d.name.lower()
-                        if (
-                            "sense" in name_lower
-                            or "h10" in name_lower
-                            or "oh1" in name_lower
-                        ):
-                            device = d
-                            break
-                    if not device:
-                        device = polar_devices[0]
+                device = await discover_polar_device(timeout=20.0)
 
                 if not device:
                     data_queue.put(("error", "Polar device not found"))
@@ -258,6 +243,9 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
                     await asyncio.sleep(1)
             except Exception as e:
                 data_queue.put(("error", str(e)))
+            finally:
+                if heartrate:
+                    await heartrate.stop_notify()
 
         asyncio.run(run_ble())
 

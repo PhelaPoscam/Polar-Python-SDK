@@ -1,13 +1,13 @@
 import asyncio
 import sys
 from pathlib import Path
-from bleak import BleakScanner
 
 # Dynamically add the 'src' directory to sys.path so 'awe_polar' is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT / "src"))
 
 try:
+    from awe_polar.connector.ble_discovery import discover_polar_device
     from awe_polar.connector.stream.polar_h10_ble import HeartRate
 except ImportError as e:
     print(
@@ -48,20 +48,7 @@ def ecg_callback(data):
 
 async def main():
     print("Scanning for Polar devices...")
-    devices = await BleakScanner.discover(timeout=7.0)
-    polar_devices = [d for d in devices if d.name and "polar" in d.name.lower()]
-
-    device = None
-    if polar_devices:
-        # Prioritize dedicated sensors (Sense, H10, OH1) over watches to avoid Windows pairing issues
-        for d in polar_devices:
-            name_lower = d.name.lower()
-            if "sense" in name_lower or "h10" in name_lower or "oh1" in name_lower:
-                device = d
-                break
-        if not device:
-            # Fall back to the first found Polar device
-            device = polar_devices[0]
+    device = await discover_polar_device(timeout=20.0)
 
     if not device:
         print(
