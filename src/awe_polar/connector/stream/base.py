@@ -20,7 +20,9 @@ class BasePolarDevice:
         self.connect_timeout = kwargs.get("connect_timeout", 20.0)
         self.retry_backoff = kwargs.get("retry_backoff", 1.5)
         self.pair_before_streaming = kwargs.get("pair_before_streaming", False)
-        self.reconnect_before_streaming = kwargs.get("reconnect_before_streaming", False)
+        self.reconnect_before_streaming = kwargs.get(
+            "reconnect_before_streaming", False
+        )
         self.pair_timeout = kwargs.get("pair_timeout", 60.0)
         self.post_pair_delay = kwargs.get("post_pair_delay", 2.0)
 
@@ -115,7 +117,9 @@ class BasePolarDevice:
                     print(
                         "SDK STREAM NOT ACTIVE: The device is not exposing the measurement service."
                     )
-                    print("Please ensure SDK Sharing is active and the device is ready.")
+                    print(
+                        "Please ensure SDK Sharing is active and the device is ready."
+                    )
                     print("=" * 60 + "\n")
                     await self._disconnect_client()
                     raise e

@@ -37,7 +37,17 @@ class PolarVeritySense(BasePolarDevice):
             print(f"[DEBUG] Available PMD features: {feature_names or '(none)'}")
         except Exception as e:
             err_str = str(e)
-            if any(term in err_str for term in ("Authentication", "Insufficient", "(5)", "-2147023673", "not connected", "Not connected")):
+            if any(
+                term in err_str
+                for term in (
+                    "Authentication",
+                    "Insufficient",
+                    "(5)",
+                    "-2147023673",
+                    "not connected",
+                    "Not connected",
+                )
+            ):
                 raise e
             print("[DEBUG] get_available_features() failed:")
             traceback.print_exc()
@@ -100,7 +110,9 @@ class PolarVeritySense(BasePolarDevice):
         # 5. Start Gyro stream
         if self.gyro_callback and PmdMeasurementType.GYRO in features:
             try:
-                gyro_settings = await self._get_default_settings(PmdMeasurementType.GYRO)
+                gyro_settings = await self._get_default_settings(
+                    PmdMeasurementType.GYRO
+                )
                 await self.polar_device.start_gyro_stream(
                     self._gyro_handler,
                     sample_rate=gyro_settings.get(PmdSettingType.SAMPLE_RATE, 52),
@@ -168,6 +180,7 @@ class PolarVeritySense(BasePolarDevice):
                 self.ppg_callback((ppg_data.timestamp, ppg_data.samples))
             except Exception:
                 import traceback
+
                 traceback.print_exc()
 
     def _acc_handler(self, acc_data) -> None:
@@ -176,6 +189,7 @@ class PolarVeritySense(BasePolarDevice):
                 self.acc_callback((acc_data.timestamp, acc_data.data))
             except Exception:
                 import traceback
+
                 traceback.print_exc()
 
     def _gyro_handler(self, gyro_data) -> None:
@@ -184,6 +198,7 @@ class PolarVeritySense(BasePolarDevice):
                 self.gyro_callback((gyro_data.timestamp, gyro_data.data))
             except Exception:
                 import traceback
+
                 traceback.print_exc()
 
     def _mag_handler(self, mag_data) -> None:
@@ -193,4 +208,5 @@ class PolarVeritySense(BasePolarDevice):
                 self.mag_callback((mag_data.timestamp, mag_vals))
             except Exception:
                 import traceback
+
                 traceback.print_exc()
