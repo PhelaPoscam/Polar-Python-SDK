@@ -6,7 +6,6 @@ from typing import Optional
 
 from bleak import BleakScanner
 
-
 PREFERRED_POLAR_TOKENS = ("sense", "verity", "oh1", "h10")
 
 
@@ -81,3 +80,60 @@ async def discover_polar_device(
         await scanner.stop()
 
     return selected_device or fallback_device
+
+
+async def discover_dual_polar_devices(
+    h10_target: Optional[str] = None,
+    sense_target: Optional[str] = None,
+    *,
+    timeout: float = 10.0,
+) -> tuple[Optional[object], Optional[object]]:
+    """Scan for both a Polar H10 and a Polar Verity Sense/OH1 simultaneously.
+
+    Returns:
+        tuple: (h10_device, sense_device)
+    """
+    found_h10 = None
+    found_sense = None
+
+    def _on_detect(device, advertisement_data):
+        nonlocal found_h10, found_sense
+        name = _device_name(device, advertisement_data)
+        name_lower = name.lower()
+
+        # Match H10
+        is_h10_candidate = "h10" in name_lower
+        if h10_target:
+            target_l = h10_target.lower()
+            is_h10_candidate = (
+                target_l in name_lower or target_l == device.address.lower()
+            )
+
+        if is_h10_candidate and not found_h10:
+            found_h10 = device
+
+        # Match Sense / Verity / OH1
+        is_sense_candidate = any(
+            token in name_lower for token in ("sense", "verity", "oh1")
+        )
+        if sense_target:
+            target_l = sense_target.lower()
+            is_sense_candidate = (
+                target_l in name_lower or target_l == device.address.lower()
+            )
+
+        if is_sense_candidate and not found_sense:
+            found_sense = device
+
+    scanner = BleakScanner(_on_detect)
+    await scanner.start()
+    try:
+        start_time = time.monotonic()
+        while time.monotonic() - start_time < timeout:
+            if found_h10 and found_sense:
+                break
+            await asyncio.sleep(0.1)
+    finally:
+        await scanner.stop()
+
+    return found_h10, found_sense

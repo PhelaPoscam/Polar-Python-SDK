@@ -14,6 +14,7 @@ class PolarH10(BasePolarDevice):
         acc_callback: Optional[Callable] = None,
         **kwargs,
     ) -> None:
+        kwargs.setdefault("reconnect_before_streaming", True)
         super().__init__(device, **kwargs)
         self.callback = callback  # Callback for Heart Rate and RR-Intervals
         self.ecg_callback = ecg_callback

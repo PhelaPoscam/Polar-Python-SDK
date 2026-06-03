@@ -18,6 +18,7 @@ class PolarWatch(BasePolarDevice):
         ppg_callback: Optional[Callable] = None,
         **kwargs,
     ) -> None:
+        kwargs.setdefault("reconnect_before_streaming", True)
         super().__init__(device, **kwargs)
         self.callback = callback  # Callback for Heart Rate and RR-Intervals
         self.ecg_callback = ecg_callback
@@ -102,7 +103,9 @@ class PolarWatch(BasePolarDevice):
         # 6. Start Gyro stream
         if self.gyro_callback and PmdMeasurementType.GYRO in features:
             try:
-                gyro_settings = await self._get_default_settings(PmdMeasurementType.GYRO)
+                gyro_settings = await self._get_default_settings(
+                    PmdMeasurementType.GYRO
+                )
                 await self.polar_device.start_gyro_stream(
                     self._gyro_handler,
                     sample_rate=gyro_settings.get(PmdSettingType.SAMPLE_RATE, 52),

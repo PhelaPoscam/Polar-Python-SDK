@@ -39,6 +39,38 @@ Launch the premium command-line dashboard with real-time event markers, battery 
     ```
 *   **Hotkey Event Markers**: Press `SPACE` (marker), `S` (stimulus_on), `B` (baseline_start), or `R` (rest_start) to log markers on-screen and save them directly in the CSV files under `data/`.
 
+### 4. Dual-Device Terminal Dashboard
+If you want to monitor both a Polar H10 chest strap and a Polar Verity Sense optical sensor side-by-side simultaneously:
+```bash
+.venv\Scripts\python.exe scripts\monitor_dual_polar.py
+```
+*   **Optional Filters**: Specify target devices:
+    ```bash
+    .venv\Scripts\python.exe scripts\monitor_dual_polar.py --h10 "H10 EA396220" --sense "Sense 11781835"
+    ```
+*   **Separate Logging**: Automatically saves independent, conflict-free CSV logs under `data/` for each connected device.
+
+---
+
+## 📊 Sensor Sampling Frequencies & CSV Logging
+
+### 1. Device Capabilities (Maximum Sampling Rates)
+Polar devices transmit sensor data at high frequencies via their PMD (Physical Measurement Device) service:
+*   **Polar H10:**
+    *   **ACC (Accelerometer):** 200 Hz
+    *   **ECG (Electrocardiogram):** 130 Hz
+    *   **Heart Rate / RR-Intervals:** Event-driven (per heartbeat, ~1 Hz)
+*   **Polar Verity Sense:**
+    *   **PPG (Photoplethysmography):** 55 Hz (can be configured up to 135 Hz)
+    *   **ACC (Accelerometer):** 52 Hz (can be configured up to 208 Hz)
+    *   **GYRO (Gyroscope):** 52 Hz (can be configured up to 208 Hz)
+    *   **MAG (Magnetometer):** 20 Hz
+    *   **HR / PPI (Pulse-to-Pulse / HRV):** Event-driven (per pulse, ~1 Hz)
+
+### 2. CSV Logging Rates & High-Frequency Option
+*   **Default 1 Hz Logging:** By default, the terminal dashboards (`monitor_polar_terminal.py` and `monitor_dual_polar.py`) sample and record data to CSV at **1 Hz**. This contains the latest values at each second boundary. This downsampling prevents the creation of extremely sparse CSV files that result from mixing different sampling rates (e.g. 200 Hz ACC vs 1 Hz HR).
+*   **High-Frequency Recording:** To record data at the **maximum native rate** (e.g. capturing all 200 Hz accelerometer samples or all 130 Hz ECG samples), you should write samples to the CSV directly within the device callback functions (such as `acc_callback_h10` or `ppg_callback_sense`) in the scripts. To prevent rate mismatch conflicts, it is recommended to write to separate stream-specific files (e.g., `*_acc.csv`, `*_ppg.csv`).
+
 ---
 
 ## ✨ Key Features
