@@ -1,4 +1,4 @@
-# Python
+# Python compilation artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,58 +20,47 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual Environment
+# Virtual environments
 venv/
 env/
 ENV/
-.venv
+.venv/
 .venv*/
 
-# Environment Variables
+# Environment variables
 .env
 
-# IDE
+# IDE and Editor configs
 .vscode/
 .idea/
 .vs/
+.commandcode/
 *.swp
 *.swo
 *~
 
-# Machine Learning Models (large files)
+# Machine Learning models (large files)
 *.pkl
 *.h5
 *.joblib
 
-# Data Files (large/sensitive files)
+# Data files (large/sensitive files)
 *.csv
 *.xlsx
-all_hrv_data*.csv
 datasets/
 Papers/
-
-# Keep sample generator script but ignore generated data
-!generate_sample_data.py
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
 
-# OS
+# OS generated files
 .DS_Store
 Thumbs.db
 
-# Streamlit
+# Streamlit config/cache
 .streamlit/
 
-# Local Setup Guides (not needed in repo)
-GITHUB_PUSH_GUIDE.md
-QUICK_PUSH.md
-CHECKLIST.md
-
-# Project Specific Caches & Temp
-test_fails.txt
-.last_ring_addr
+# Test caches & coverage
 .pytest_cache/
 .coverage
-polar-ble-sdk/
