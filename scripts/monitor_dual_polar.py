@@ -36,15 +36,29 @@ if sys.platform == "win32":
 
 # CSV column schemas — single source of truth for each device.
 H10_CSV_COLUMNS = [
-    "Timestamp", "HeartRate_BPM", "HRV_RMSSD_ms", "Battery",
-    "ACC_X", "ACC_Y", "ACC_Z",
+    "Timestamp",
+    "HeartRate_BPM",
+    "HRV_RMSSD_ms",
+    "Battery",
+    "ACC_X",
+    "ACC_Y",
+    "ACC_Z",
 ]
 SENSE_CSV_COLUMNS = [
-    "Timestamp", "HeartRate_BPM", "HRV_RMSSD_ms", "Battery",
+    "Timestamp",
+    "HeartRate_BPM",
+    "HRV_RMSSD_ms",
+    "Battery",
     "PPG_Last",
-    "ACC_X", "ACC_Y", "ACC_Z",
-    "GYRO_X", "GYRO_Y", "GYRO_Z",
-    "MAG_X", "MAG_Y", "MAG_Z",
+    "ACC_X",
+    "ACC_Y",
+    "ACC_Z",
+    "GYRO_X",
+    "GYRO_Y",
+    "GYRO_Z",
+    "MAG_X",
+    "MAG_Y",
+    "MAG_Z",
 ]
 
 # Global states

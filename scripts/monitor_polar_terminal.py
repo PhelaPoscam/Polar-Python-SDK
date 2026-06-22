@@ -43,9 +43,15 @@ CSV_COLUMNS = [
     "HeartRate_BPM",
     "HRV_RMSSD_ms",
     "Battery_Percent",
-    "ACC_X", "ACC_Y", "ACC_Z",
-    "GYRO_X", "GYRO_Y", "GYRO_Z",
-    "MAG_X", "MAG_Y", "MAG_Z",
+    "ACC_X",
+    "ACC_Y",
+    "ACC_Z",
+    "GYRO_X",
+    "GYRO_Y",
+    "GYRO_Z",
+    "MAG_X",
+    "MAG_Y",
+    "MAG_Z",
     "Marker",
 ]
 

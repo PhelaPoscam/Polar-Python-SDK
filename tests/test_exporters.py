@@ -12,8 +12,11 @@ from awe_polar.connector.schemas import SignalPacket
 class TestCsvSink:
     def test_csv_writes_header_and_row(self):
         p = SignalPacket(
-            timestamp=1000.0, source="h10", subject_id="s1",
-            signals={"hr": 72}, features={"rmssd": 40.0},
+            timestamp=1000.0,
+            source="h10",
+            subject_id="s1",
+            signals={"hr": 72},
+            features={"rmssd": 40.0},
         )
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "test.csv"

@@ -35,15 +35,22 @@ class PolarH10(BasePolarDevice):
 
         # 2. Start ECG stream
         await self._start_pmd_stream(
-            self.ecg_callback, PmdMeasurementType.ECG, "start_ecg_stream",
-            self._ecg_handler, features,
-            {"sample_rate": 130, "resolution": 14}, "ECG",
+            self.ecg_callback,
+            PmdMeasurementType.ECG,
+            "start_ecg_stream",
+            self._ecg_handler,
+            features,
+            {"sample_rate": 130, "resolution": 14},
+            "ECG",
         )
 
         # 3. Start ACC stream
         await self._start_pmd_stream(
-            self.acc_callback, PmdMeasurementType.ACC, "start_acc_stream",
-            self._acc_handler, features,
+            self.acc_callback,
+            PmdMeasurementType.ACC,
+            "start_acc_stream",
+            self._acc_handler,
+            features,
             {"sample_rate": 200, "resolution": 16, "range": 8, "channels": None},
             "ACC",
         )

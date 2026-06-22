@@ -16,8 +16,21 @@ def mock_bundle():
     from sklearn.linear_model import LogisticRegression
     from sklearn.preprocessing import StandardScaler
 
-    X = np.array([[70, 45], [75, 40], [80, 30], [85, 25], [90, 20],
-                  [60, 50], [65, 55], [70, 48], [72, 52], [68, 58]], dtype=float)
+    X = np.array(
+        [
+            [70, 45],
+            [75, 40],
+            [80, 30],
+            [85, 25],
+            [90, 20],
+            [60, 50],
+            [65, 55],
+            [70, 48],
+            [72, 52],
+            [68, 58],
+        ],
+        dtype=float,
+    )
     y = np.array([0, 0, 1, 1, 1, 0, 0, 0, 0, 0])
 
     scaler = StandardScaler().fit(X)
@@ -54,8 +67,9 @@ class TestStressPredictor:
     def test_low_stress_boundary_label(self, mock_bundle):
         pred = StressPredictor(mock_bundle)
         # Feed values that give a mid-range score
-        packet = SignalPacket(source="h10", signals={"hr_bpm": 72},
-                              features={"rmssd": 70.0})
+        packet = SignalPacket(
+            source="h10", signals={"hr_bpm": 72}, features={"rmssd": 70.0}
+        )
         result = pred.predict(packet)
         # With realistic data we get a valid label
         assert result.label in {"High Stress", "Baseline", "Low Stress"}
@@ -64,8 +78,9 @@ class TestStressPredictor:
     def test_custom_feature_order(self, mock_bundle):
         # Use the standard 2-feature order — the scaler was trained on 2 features.
         pred = StressPredictor(mock_bundle, feature_order=["hr_bpm", "rmssd"])
-        packet = SignalPacket(source="h10", signals={"hr_bpm": 80},
-                              features={"rmssd": 30.0})
+        packet = SignalPacket(
+            source="h10", signals={"hr_bpm": 80}, features={"rmssd": 30.0}
+        )
         result = pred.predict(packet)
         assert isinstance(result, Prediction)
 

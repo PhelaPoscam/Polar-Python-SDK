@@ -53,23 +53,33 @@ class PolarVeritySense(BasePolarDevice):
 
         # 2. Start ECG stream
         await self._start_pmd_stream(
-            self.ecg_callback, PmdMeasurementType.ECG, "start_ecg_stream",
-            self._ecg_handler, features,
-            {"sample_rate": 130, "resolution": 14}, "ECG",
+            self.ecg_callback,
+            PmdMeasurementType.ECG,
+            "start_ecg_stream",
+            self._ecg_handler,
+            features,
+            {"sample_rate": 130, "resolution": 14},
+            "ECG",
         )
 
         # 3. Start PPG stream
         await self._start_pmd_stream(
-            self.ppg_callback, PmdMeasurementType.PPG, "start_ppg_stream",
-            self._ppg_handler, features,
+            self.ppg_callback,
+            PmdMeasurementType.PPG,
+            "start_ppg_stream",
+            self._ppg_handler,
+            features,
             {"sample_rate": self._ppg_default_rate, "resolution": 22, "channels": 4},
             "PPG",
         )
 
         # 4. Start ACC stream
         await self._start_pmd_stream(
-            self.acc_callback, PmdMeasurementType.ACC, "start_acc_stream",
-            self._acc_handler, features,
+            self.acc_callback,
+            PmdMeasurementType.ACC,
+            "start_acc_stream",
+            self._acc_handler,
+            features,
             {"sample_rate": 52, "resolution": 16, "range": 8, "channels": None},
             "ACC",
         )
@@ -87,16 +97,22 @@ class PolarVeritySense(BasePolarDevice):
 
         # 6. Start Gyro stream
         await self._start_pmd_stream(
-            self.gyro_callback, PmdMeasurementType.GYRO, "start_gyro_stream",
-            self._gyro_handler, features,
+            self.gyro_callback,
+            PmdMeasurementType.GYRO,
+            "start_gyro_stream",
+            self._gyro_handler,
+            features,
             {"sample_rate": 52, "resolution": 16, "range": 2, "channels": 3},
             "GYRO",
         )
 
         # 7. Start Magnetometer stream
         await self._start_pmd_stream(
-            self.mag_callback, PmdMeasurementType.MAG, "start_mag_stream",
-            self._mag_handler, features,
+            self.mag_callback,
+            PmdMeasurementType.MAG,
+            "start_mag_stream",
+            self._mag_handler,
+            features,
             {"sample_rate": 20, "resolution": 16, "range": 50, "channels": 3},
             "MAG",
         )

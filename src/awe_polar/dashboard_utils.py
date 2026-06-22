@@ -25,6 +25,7 @@ _SPARK_CHARS = " ▂▃▄▅▆▇█"
 
 # ── Calculations ─────────────────────────────────────────────────────────────
 
+
 def calculate_rmssd(rr_list) -> float:
     """Root-mean-square of successive RR-interval differences."""
     if len(rr_list) < 2:
@@ -57,6 +58,7 @@ def draw_sparkline(history, width: int = 30) -> str:
 
 # ── Hz tracking ──────────────────────────────────────────────────────────────
 
+
 def update_hz_for_state(
     state: dict[str, Any],
     *streams: tuple[str, deque],
@@ -82,6 +84,7 @@ def update_hz_for_state(
 
 # ── Battery ──────────────────────────────────────────────────────────────────
 
+
 async def read_battery(conn) -> str:
     """Read battery level from a connected Polar device, returning a display string."""
     try:
@@ -99,6 +102,7 @@ async def update_battery_loop(conn, state: dict[str, Any]) -> None:
 
 
 # ── CSV helpers ──────────────────────────────────────────────────────────────
+
 
 class CsvLogger:
     """Manages a single CSV log file with header validation."""

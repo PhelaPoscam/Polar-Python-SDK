@@ -1,7 +1,9 @@
 """Unit tests for CognitiveAgent — SpeedyIBL-style adaptive state machine."""
 
 from awe_polar.game_bridge.cognitive_agent import (
-    AdaptiveState, CognitiveAgent, CognitiveAgentConfig,
+    AdaptiveState,
+    CognitiveAgent,
+    CognitiveAgentConfig,
 )
 
 

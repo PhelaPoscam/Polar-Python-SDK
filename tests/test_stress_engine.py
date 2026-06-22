@@ -27,23 +27,32 @@ class TestStressEngine:
 
     def test_converges_to_stress(self):
         # decay=0 means score fully resets to the weighted evidence each update
-        engine = StressEngine(UATRConfig(evidence_weight=1.0, decay=0.0,
-                                          min_state_seconds=0.0, change_cost=0.0))
+        engine = StressEngine(
+            UATRConfig(
+                evidence_weight=1.0, decay=0.0, min_state_seconds=0.0, change_cost=0.0
+            )
+        )
         for _ in range(3):
             engine.update(StressSignal(score=0.8, confidence=0.9))
         assert engine.state == StressState.STRESS
 
     def test_converges_to_no_stress(self):
-        engine = StressEngine(UATRConfig(evidence_weight=1.0, decay=0.0,
-                                          min_state_seconds=0.0, change_cost=0.0))
+        engine = StressEngine(
+            UATRConfig(
+                evidence_weight=1.0, decay=0.0, min_state_seconds=0.0, change_cost=0.0
+            )
+        )
         for _ in range(3):
             engine.update(StressSignal(score=0.2, confidence=0.9))
         assert engine.state == StressState.NO_STRESS
 
     def test_hysteresis_prevents_rapid_flip(self):
         """min_state_seconds should block state changes within the cooldown window."""
-        engine = StressEngine(UATRConfig(min_state_seconds=999.0, decay=0.0,
-                                          evidence_weight=1.0, change_cost=0.0))
+        engine = StressEngine(
+            UATRConfig(
+                min_state_seconds=999.0, decay=0.0, evidence_weight=1.0, change_cost=0.0
+            )
+        )
         engine.update(StressSignal(score=0.8, confidence=0.9))
         assert engine.state == StressState.STRESS
         # Immediately send low signal — state should hold at STRESS
@@ -51,8 +60,11 @@ class TestStressEngine:
         assert engine.state == StressState.STRESS
 
     def test_change_cost_blocks_near_boundary(self):
-        engine = StressEngine(UATRConfig(evidence_weight=1.0, decay=1.0,
-                                          min_state_seconds=0.0, change_cost=0.5))
+        engine = StressEngine(
+            UATRConfig(
+                evidence_weight=1.0, decay=1.0, min_state_seconds=0.0, change_cost=0.5
+            )
+        )
         engine.update(StressSignal(score=0.49, confidence=0.9))  # near boundary
         # score is ~0.49, abs(0.49-0.5)=0.01 < change_cost=0.5 → no state change
         assert engine.state == StressState.NEUTRAL
