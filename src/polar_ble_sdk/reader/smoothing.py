@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polar_ble_sdk.game_bridge.stress_engine import StressEngine, StressSignal, StressState
+from polar_ble_sdk.game_bridge.stress_engine import (
+    StressEngine,
+    StressSignal,
+    StressState,
+)
 
 
 @dataclass
