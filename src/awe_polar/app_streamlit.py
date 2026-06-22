@@ -20,6 +20,16 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+
+# Fallback for older Streamlit versions (< 1.33) without fragment support
+if hasattr(st, "fragment"):
+    fragment = st.fragment
+else:
+
+    def fragment(*args, **kwargs):  # type: ignore
+        return lambda f: f
+
+
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -376,7 +386,7 @@ def process_queue_data(predictor):
 # ==========================================
 # UI Components
 # ==========================================
-@st.fragment(run_every="1s")
+@fragment(run_every="1s")
 def render_metrics_and_charts(predictor):
     """Render the dynamically updating top metrics and charts."""
     process_queue_data(predictor)
