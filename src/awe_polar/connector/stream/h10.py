@@ -1,5 +1,5 @@
 from typing import Callable, Optional
-from polar_python.constants import PmdMeasurementType, PmdSettingType
+from polar_python.constants import PmdMeasurementType
 from .base import BasePolarDevice
 
 
@@ -22,8 +22,6 @@ class PolarH10(BasePolarDevice):
 
     async def start_streams(self) -> None:
         """Start the H10 specific streams (HR, ECG, ACC)."""
-        import traceback
-
         features = await self.polar_device.get_available_features()
 
         # 1. Start standard Heart Rate stream
@@ -36,34 +34,19 @@ class PolarH10(BasePolarDevice):
                 raise
 
         # 2. Start ECG stream
-        if self.ecg_callback and PmdMeasurementType.ECG in features:
-            try:
-                ecg_settings = await self._get_default_settings(PmdMeasurementType.ECG)
-                await self.polar_device.start_ecg_stream(
-                    self._ecg_handler,
-                    sample_rate=ecg_settings.get(PmdSettingType.SAMPLE_RATE, 130),
-                    resolution=ecg_settings.get(PmdSettingType.RESOLUTION, 14),
-                )
-                print("[DEBUG] ECG stream started OK")
-            except Exception:
-                print("[DEBUG] ECG stream failed:")
-                traceback.print_exc()
+        await self._start_pmd_stream(
+            self.ecg_callback, PmdMeasurementType.ECG, "start_ecg_stream",
+            self._ecg_handler, features,
+            {"sample_rate": 130, "resolution": 14}, "ECG",
+        )
 
         # 3. Start ACC stream
-        if self.acc_callback and PmdMeasurementType.ACC in features:
-            try:
-                acc_settings = await self._get_default_settings(PmdMeasurementType.ACC)
-                await self.polar_device.start_acc_stream(
-                    self._acc_handler,
-                    sample_rate=acc_settings.get(PmdSettingType.SAMPLE_RATE, 200),
-                    resolution=acc_settings.get(PmdSettingType.RESOLUTION, 16),
-                    range=acc_settings.get(PmdSettingType.RANGE, 8),
-                    channels=acc_settings.get(PmdSettingType.CHANNELS, None),
-                )
-                print("[DEBUG] ACC stream started OK")
-            except Exception:
-                print("[DEBUG] ACC stream failed:")
-                traceback.print_exc()
+        await self._start_pmd_stream(
+            self.acc_callback, PmdMeasurementType.ACC, "start_acc_stream",
+            self._acc_handler, features,
+            {"sample_rate": 200, "resolution": 16, "range": 8, "channels": None},
+            "ACC",
+        )
 
     def _hr_handler(self, hr_data) -> None:
         if self.callback:

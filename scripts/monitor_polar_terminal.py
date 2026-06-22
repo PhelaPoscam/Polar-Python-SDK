@@ -6,12 +6,12 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 # Add src/ directory to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT / "src"))
 
-import numpy as np
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
@@ -20,16 +20,37 @@ from rich.text import Text
 
 from awe_polar.connector.ble_discovery import discover_polar_device
 from awe_polar.connector.stream import create_polar_connector
+from awe_polar.dashboard_utils import (
+    BATTERY_SERVICE_UUID,
+    CsvLogger,
+    calculate_rmssd,
+    draw_sparkline,
+    read_battery,
+    update_battery_loop,
+    update_hz_for_state,
+)
 
 # Global stdout encoding fix for Windows to support sparklines and symbols
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
     except Exception:
         pass
 
+# CSV column schema — single source of truth for header and row order.
+CSV_COLUMNS = [
+    "Timestamp",
+    "HeartRate_BPM",
+    "HRV_RMSSD_ms",
+    "Battery_Percent",
+    "ACC_X", "ACC_Y", "ACC_Z",
+    "GYRO_X", "GYRO_Y", "GYRO_Z",
+    "MAG_X", "MAG_Y", "MAG_Z",
+    "Marker",
+]
+
 # Global state dictionary
-state = {
+state: dict[str, Any] = {
     "device_name": "Scanning...",
     "device_address": "-",
     "device_type": "-",
@@ -62,10 +83,10 @@ state = {
 }
 
 # Statistics counters
-ppg_timestamps = deque(maxlen=20)
-acc_timestamps = deque(maxlen=20)
-gyro_timestamps = deque(maxlen=20)
-mag_timestamps = deque(maxlen=20)
+ppg_timestamps: deque[tuple[float, int]] = deque(maxlen=20)
+acc_timestamps: deque[tuple[float, int]] = deque(maxlen=20)
+gyro_timestamps: deque[tuple[float, int]] = deque(maxlen=20)
+mag_timestamps: deque[tuple[float, int]] = deque(maxlen=20)
 
 
 class _NonBlockingLineReader:
@@ -149,36 +170,7 @@ def _format_marker_legend(hotkeys: dict) -> str:
     return " | ".join(parts)
 
 
-def calculate_rmssd(rr_list) -> float:
-    if len(rr_list) < 2:
-        return 0.0
-    rr_array = np.array([float(rr) for rr in rr_list if rr is not None and rr > 0])
-    if len(rr_array) < 2:
-        return 0.0
-    return float(np.sqrt(np.mean(np.diff(rr_array) ** 2)))
-
-
-def draw_sparkline(history, width=30) -> str:
-    if not history:
-        return ""
-    data = list(history)[-width:]
-    if len(data) == 0:
-        return ""
-    val_min = min(data)
-    val_max = max(data)
-    val_range = val_max - val_min
-    if val_range == 0:
-        val_range = 1
-
-    chars = " ▂▃▄▅▆▇█"
-    num_chars = len(chars)
-
-    spark = ""
-    for v in data:
-        idx = int((v - val_min) / val_range * (num_chars - 1))
-        idx = max(0, min(num_chars - 1, idx))
-        spark += chars[idx]
-    return spark
+# calculate_rmssd, draw_sparkline, update_hz → imported from dashboard_utils
 
 
 def hr_callback(data):
@@ -237,23 +229,13 @@ def mag_callback(data):
 
 
 def update_hz():
-    now = time.time()
-    for name, ts_list in [
+    update_hz_for_state(
+        state,
         ("ppg", ppg_timestamps),
         ("acc", acc_timestamps),
         ("gyro", gyro_timestamps),
         ("mag", mag_timestamps),
-    ]:
-        recent = [item for item in ts_list if now - item[0] <= 1.5]
-        if not recent:
-            state[f"{name}_hz"] = 0.0
-        else:
-            total_samples = sum(item[1] for item in recent)
-            time_span = now - recent[0][0]
-            if time_span > 0.1:
-                state[f"{name}_hz"] = total_samples / time_span
-            else:
-                state[f"{name}_hz"] = 0.0
+    )
 
 
 def build_dashboard(elapsed_time: float, marker_legend: str = "") -> Panel:
@@ -401,18 +383,12 @@ def build_dashboard(elapsed_time: float, marker_legend: str = "") -> Panel:
     )
 
 
-async def update_battery_loop(conn):
+async def _battery_loop(conn):
+    """Background battery refresh, updating the module-level ``state`` dict."""
     while True:
         if conn and conn.polar_device and conn.polar_device._client:
-            try:
-                data = await conn.polar_device._client.read_gatt_char(
-                    "00002a19-0000-1000-8000-00805f9b34fb"
-                )
-                if data:
-                    state["battery"] = f"{int(data[0])}%"
-            except Exception:
-                pass
-        await asyncio.sleep(30)  # Check battery every 30 seconds
+            state["battery"] = await read_battery(conn)
+        await asyncio.sleep(30)
 
 
 async def main():
@@ -486,14 +462,7 @@ async def main():
             state["status"] = "Connected! Streaming live data."
 
             # Read battery once immediately
-            try:
-                data = await conn.polar_device._client.read_gatt_char(
-                    "00002a19-0000-1000-8000-00805f9b34fb"
-                )
-                if data:
-                    state["battery"] = f"{int(data[0])}%"
-            except Exception:
-                pass
+            state["battery"] = await read_battery(conn)
 
             # Initialize CSV Logger
             csv_path = None
@@ -512,28 +481,10 @@ async def main():
 
                 # Write header
                 with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
-                    writer = csv.writer(f)
-                    writer.writerow(
-                        [
-                            "Timestamp",
-                            "HeartRate_BPM",
-                            "HRV_RMSSD_ms",
-                            "Battery_Percent",
-                            "ACC_X",
-                            "ACC_Y",
-                            "ACC_Z",
-                            "GYRO_X",
-                            "GYRO_Y",
-                            "GYRO_Z",
-                            "MAG_X",
-                            "MAG_Y",
-                            "MAG_Z",
-                            "Marker",
-                        ]
-                    )
+                    csv.writer(f).writerow(CSV_COLUMNS)
 
             # Start background battery update loop
-            battery_task = asyncio.create_task(update_battery_loop(conn))
+            battery_task = asyncio.create_task(_battery_loop(conn))
 
             start_time = time.time()
             last_log_time = start_time

@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import sys
 import time
+import traceback
+from typing import Any
 from polar_python import PolarDevice
 from polar_python.constants import (
     PmdMeasurementType,
@@ -14,7 +16,7 @@ class BasePolarDevice:
 
     def __init__(self, device, **kwargs) -> None:
         self.device = device
-        self.polar_device = None
+        self.polar_device: Any = None
         self._running = False
         self.connect_attempts = kwargs.get("connect_attempts", 3)
         self.connect_timeout = kwargs.get("connect_timeout", 20.0)
@@ -29,7 +31,7 @@ class BasePolarDevice:
     async def start_notify(self) -> None:
         """Connect to device and initialize notifications."""
         device_name = getattr(self.device, "name", "") or ""
-        last_error = None
+        last_error: Any = None
 
         async def _subscribe_and_start():
             await self.polar_device._client.start_notify(
@@ -228,3 +230,45 @@ class BasePolarDevice:
                 f"Warning: Could not fetch settings for {measurement_type.name}: {ex}"
             )
             return {}
+
+    async def _start_pmd_stream(
+        self,
+        callback,
+        measurement_type: PmdMeasurementType,
+        method_name: str,
+        handler,
+        features: list,
+        defaults: dict,
+        label: str,
+    ) -> None:
+        """Start a PMD measurement stream with standard setup, debug logging and error handling.
+
+        Args:
+            callback: The user-provided callback (None if stream not requested).
+            measurement_type: PMD measurement type enum for feature check and settings fetch.
+            method_name: Name of the start method on polar_device (e.g. ``"start_ecg_stream"``).
+            handler: The internal handler method bound to this instance.
+            features: List of available PMD features from ``get_available_features()``.
+            defaults: Fallback kwargs keyed by string parameter name when not available in settings.
+            label: Human-readable stream name for debug output.
+        """
+        if not callback:
+            return
+        if measurement_type not in features:
+            print(f"[DEBUG] {label} skipped — not in available features")
+            return
+        try:
+            settings = await self._get_default_settings(measurement_type)
+            # Normalise setting-type keys to plain strings so they can be unpacked as **kwargs.
+            resolved: dict[str, object] = {}
+            for key, value in settings.items():
+                key_str = key.value if hasattr(key, "value") else str(key)
+                resolved[key_str] = value
+            for key, value in defaults.items():
+                resolved.setdefault(key, value)
+            method = getattr(self.polar_device, method_name)
+            await method(handler, **resolved)
+            print(f"[DEBUG] {label} stream started OK")
+        except Exception:
+            print(f"[DEBUG] {label} stream failed:")
+            traceback.print_exc()

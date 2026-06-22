@@ -132,11 +132,11 @@ def calculate_rmssd(rr_intervals: list) -> float | None:
 def ble_background_task(data_queue: queue.Queue, is_mock: bool):
     """Background thread to handle BLE connectivity or Mock data."""
     if is_mock:
-        mock_hr = 70
-        mock_hrv = 40
+        mock_hr = 70.0
+        mock_hrv = 40.0
         ecg_phase = 0
         ppg_phase = 0
-        acc_time = 0
+        acc_time = 0.0
         while True:
             time.sleep(0.1)  # 10 Hz chunk generation
 

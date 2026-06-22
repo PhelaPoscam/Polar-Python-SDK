@@ -1,6 +1,6 @@
 """Backwards compatibility layer for Polar connection wrappers."""
 
-from .__init__ import create_polar_connector
+from . import create_polar_connector
 
 
 def HeartRate(device, **kwargs):

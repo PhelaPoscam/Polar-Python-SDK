@@ -1,5 +1,8 @@
 from typing import Callable, Optional
-from polar_python.constants import PmdMeasurementType, PmdSettingType
+
+import traceback
+
+from polar_python.constants import PmdMeasurementType
 from .base import BasePolarDevice
 
 
@@ -15,6 +18,7 @@ class PolarVeritySense(BasePolarDevice):
         acc_callback: Optional[Callable] = None,
         gyro_callback: Optional[Callable] = None,
         mag_callback: Optional[Callable] = None,
+        ecg_callback: Optional[Callable] = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("reconnect_before_streaming", True)
@@ -25,16 +29,87 @@ class PolarVeritySense(BasePolarDevice):
         self.acc_callback = acc_callback
         self.gyro_callback = gyro_callback
         self.mag_callback = mag_callback
+        self.ecg_callback = ecg_callback
         self._ppi_active = False
+        # Configurable defaults for subclasses (Watch overrides some).
+        self._strict_hr = False
+        self._catch_auth_on_features = True
+        self._ppg_default_rate = 55
 
     async def start_streams(self) -> None:
-        """Start the Verity Sense specific streams."""
-        import traceback
+        """Start the Verity Sense (and compatible) streams."""
+        features = await self._fetch_available_features()
 
+        # 1. Start standard Heart Rate stream
+        if self.callback:
+            try:
+                await self.polar_device.start_hr_stream(self._hr_handler)
+                print("[DEBUG] HR stream started OK")
+            except Exception as e:
+                print(f"[DEBUG] HR stream failed: {e}")
+                if self._strict_hr:
+                    raise
+                traceback.print_exc()
+
+        # 2. Start ECG stream
+        await self._start_pmd_stream(
+            self.ecg_callback, PmdMeasurementType.ECG, "start_ecg_stream",
+            self._ecg_handler, features,
+            {"sample_rate": 130, "resolution": 14}, "ECG",
+        )
+
+        # 3. Start PPG stream
+        await self._start_pmd_stream(
+            self.ppg_callback, PmdMeasurementType.PPG, "start_ppg_stream",
+            self._ppg_handler, features,
+            {"sample_rate": self._ppg_default_rate, "resolution": 22, "channels": 4},
+            "PPG",
+        )
+
+        # 4. Start ACC stream
+        await self._start_pmd_stream(
+            self.acc_callback, PmdMeasurementType.ACC, "start_acc_stream",
+            self._acc_handler, features,
+            {"sample_rate": 52, "resolution": 16, "range": 8, "channels": None},
+            "ACC",
+        )
+
+        # 5. Start PPI stream
+        if self.ppi_callback and PmdMeasurementType.PPI in features:
+            try:
+                self._ppi_active = True
+                await self.polar_device.start_ppi_stream(self._ppi_handler)
+                print("[DEBUG] PPI stream started OK")
+            except Exception:
+                self._ppi_active = False
+                print("[DEBUG] PPI stream failed:")
+                traceback.print_exc()
+
+        # 6. Start Gyro stream
+        await self._start_pmd_stream(
+            self.gyro_callback, PmdMeasurementType.GYRO, "start_gyro_stream",
+            self._gyro_handler, features,
+            {"sample_rate": 52, "resolution": 16, "range": 2, "channels": 3},
+            "GYRO",
+        )
+
+        # 7. Start Magnetometer stream
+        await self._start_pmd_stream(
+            self.mag_callback, PmdMeasurementType.MAG, "start_mag_stream",
+            self._mag_handler, features,
+            {"sample_rate": 20, "resolution": 16, "range": 50, "channels": 3},
+            "MAG",
+        )
+
+    async def _fetch_available_features(self) -> list:
+        """Query PMD features, optionally catching non-auth errors."""
+        if not self._catch_auth_on_features:
+            return await self.polar_device.get_available_features()
         try:
             features = await self.polar_device.get_available_features()
             feature_names = [f.name for f in features] if features else []
             print(f"[DEBUG] Available PMD features: {feature_names or '(none)'}")
+            return features
         except Exception as e:
             err_str = str(e)
             if any(
@@ -51,99 +126,7 @@ class PolarVeritySense(BasePolarDevice):
                 raise e
             print("[DEBUG] get_available_features() failed:")
             traceback.print_exc()
-            features = []
-
-        # 1. Start standard Heart Rate stream
-        if self.callback:
-            try:
-                await self.polar_device.start_hr_stream(self._hr_handler)
-                print("[DEBUG] HR stream started OK")
-            except Exception:
-                print("[DEBUG] HR stream failed:")
-                traceback.print_exc()
-
-        # 2. Start PPG stream
-        if self.ppg_callback and PmdMeasurementType.PPG in features:
-            try:
-                ppg_settings = await self._get_default_settings(PmdMeasurementType.PPG)
-                await self.polar_device.start_ppg_stream(
-                    self._ppg_handler,
-                    sample_rate=ppg_settings.get(PmdSettingType.SAMPLE_RATE, 55),
-                    resolution=ppg_settings.get(PmdSettingType.RESOLUTION, 22),
-                    channels=ppg_settings.get(PmdSettingType.CHANNELS, 4),
-                )
-                print("[DEBUG] PPG stream started OK")
-            except Exception:
-                print("[DEBUG] PPG stream failed:")
-                traceback.print_exc()
-        elif self.ppg_callback:
-            print(f"[DEBUG] PPG skipped — not in features: {feature_names}")
-
-        # 3. Start ACC stream
-        if self.acc_callback and PmdMeasurementType.ACC in features:
-            try:
-                acc_settings = await self._get_default_settings(PmdMeasurementType.ACC)
-                await self.polar_device.start_acc_stream(
-                    self._acc_handler,
-                    sample_rate=acc_settings.get(PmdSettingType.SAMPLE_RATE, 52),
-                    resolution=acc_settings.get(PmdSettingType.RESOLUTION, 16),
-                    range=acc_settings.get(PmdSettingType.RANGE, 8),
-                    channels=acc_settings.get(PmdSettingType.CHANNELS, None),
-                )
-                print("[DEBUG] ACC stream started OK")
-            except Exception:
-                print("[DEBUG] ACC stream failed:")
-                traceback.print_exc()
-        elif self.acc_callback:
-            print(f"[DEBUG] ACC skipped — not in features: {feature_names}")
-
-        # 4. Start PPI stream
-        if self.ppi_callback and PmdMeasurementType.PPI in features:
-            try:
-                self._ppi_active = True
-                await self.polar_device.start_ppi_stream(self._ppi_handler)
-                print("[DEBUG] PPI stream started OK")
-            except Exception:
-                print("[DEBUG] PPI stream failed:")
-                traceback.print_exc()
-
-        # 5. Start Gyro stream
-        if self.gyro_callback and PmdMeasurementType.GYRO in features:
-            try:
-                gyro_settings = await self._get_default_settings(
-                    PmdMeasurementType.GYRO
-                )
-                await self.polar_device.start_gyro_stream(
-                    self._gyro_handler,
-                    sample_rate=gyro_settings.get(PmdSettingType.SAMPLE_RATE, 52),
-                    resolution=gyro_settings.get(PmdSettingType.RESOLUTION, 16),
-                    range=gyro_settings.get(PmdSettingType.RANGE, 2),
-                    channels=gyro_settings.get(PmdSettingType.CHANNELS, 3),
-                )
-                print("[DEBUG] GYRO stream started OK")
-            except Exception:
-                print("[DEBUG] GYRO stream failed:")
-                traceback.print_exc()
-        elif self.gyro_callback:
-            print(f"[DEBUG] GYRO skipped — not in features: {feature_names}")
-
-        # 6. Start Magnetometer stream
-        if self.mag_callback and PmdMeasurementType.MAG in features:
-            try:
-                mag_settings = await self._get_default_settings(PmdMeasurementType.MAG)
-                await self.polar_device.start_mag_stream(
-                    self._mag_handler,
-                    sample_rate=mag_settings.get(PmdSettingType.SAMPLE_RATE, 20),
-                    resolution=mag_settings.get(PmdSettingType.RESOLUTION, 16),
-                    range=mag_settings.get(PmdSettingType.RANGE, 50),
-                    channels=mag_settings.get(PmdSettingType.CHANNELS, 3),
-                )
-                print("[DEBUG] MAG stream started OK")
-            except Exception:
-                print("[DEBUG] MAG stream failed:")
-                traceback.print_exc()
-        elif self.mag_callback:
-            print(f"[DEBUG] MAG skipped — not in features: {feature_names}")
+            return []
 
     async def stop_notify(self) -> None:
         self._ppi_active = False
@@ -155,6 +138,13 @@ class PolarVeritySense(BasePolarDevice):
                 return
             try:
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))
+            except Exception:
+                pass
+
+    def _ecg_handler(self, ecg_data) -> None:
+        if self.ecg_callback:
+            try:
+                self.ecg_callback((ecg_data.timestamp, ecg_data.data))
             except Exception:
                 pass
 

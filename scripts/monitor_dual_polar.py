@@ -6,12 +6,12 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
+from typing import Any
 
 # Add src/ directory to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT / "src"))
 
-import numpy as np
 from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
@@ -20,16 +20,35 @@ from rich.text import Text
 
 from awe_polar.connector.ble_discovery import discover_dual_polar_devices
 from awe_polar.connector.stream import create_polar_connector
+from awe_polar.dashboard_utils import (
+    calculate_rmssd,
+    draw_sparkline,
+    read_battery,
+    update_hz_for_state,
+)
 
 # Global stdout encoding fix for Windows to support sparklines
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
     except Exception:
         pass
 
+# CSV column schemas — single source of truth for each device.
+H10_CSV_COLUMNS = [
+    "Timestamp", "HeartRate_BPM", "HRV_RMSSD_ms", "Battery",
+    "ACC_X", "ACC_Y", "ACC_Z",
+]
+SENSE_CSV_COLUMNS = [
+    "Timestamp", "HeartRate_BPM", "HRV_RMSSD_ms", "Battery",
+    "PPG_Last",
+    "ACC_X", "ACC_Y", "ACC_Z",
+    "GYRO_X", "GYRO_Y", "GYRO_Z",
+    "MAG_X", "MAG_Y", "MAG_Z",
+]
+
 # Global states
-state_h10 = {
+state_h10: dict[str, Any] = {
     "name": "Polar H10",
     "address": "-",
     "status": "Scanning...",
@@ -46,7 +65,7 @@ state_h10 = {
     "csv_rows_written": 0,
 }
 
-state_sense = {
+state_sense: dict[str, Any] = {
     "name": "Polar Sense",
     "address": "-",
     "status": "Scanning...",
@@ -75,43 +94,14 @@ state_sense = {
 }
 
 # Timestamp histories for Hz calculation
-h10_acc_ts = deque(maxlen=20)
-sense_ppg_ts = deque(maxlen=20)
-sense_acc_ts = deque(maxlen=20)
-sense_gyro_ts = deque(maxlen=20)
-sense_mag_ts = deque(maxlen=20)
+h10_acc_ts: deque[tuple[float, int]] = deque(maxlen=20)
+sense_ppg_ts: deque[tuple[float, int]] = deque(maxlen=20)
+sense_acc_ts: deque[tuple[float, int]] = deque(maxlen=20)
+sense_gyro_ts: deque[tuple[float, int]] = deque(maxlen=20)
+sense_mag_ts: deque[tuple[float, int]] = deque(maxlen=20)
 
 
-def calculate_rmssd(rr_list) -> float:
-    if len(rr_list) < 2:
-        return 0.0
-    rr_array = np.array([float(rr) for rr in rr_list if rr is not None and rr > 0])
-    if len(rr_array) < 2:
-        return 0.0
-    return float(np.sqrt(np.mean(np.diff(rr_array) ** 2)))
-
-
-def draw_sparkline(history, width=30) -> str:
-    if not history:
-        return ""
-    data = list(history)[-width:]
-    if len(data) == 0:
-        return ""
-    val_min = min(data)
-    val_max = max(data)
-    val_range = val_max - val_min
-    if val_range == 0:
-        val_range = 1
-
-    chars = " ▂▃▄▅▆▇█"
-    num_chars = len(chars)
-
-    spark = ""
-    for v in data:
-        idx = int((v - val_min) / val_range * (num_chars - 1))
-        idx = max(0, min(num_chars - 1, idx))
-        spark += chars[idx]
-    return spark
+# calculate_rmssd, draw_sparkline → imported from dashboard_utils
 
 
 # Callbacks for H10
@@ -196,29 +186,15 @@ def mag_callback_sense(data):
 
 def update_hz():
     now = time.time()
-    # H10 ACC Hz
-    recent_h10_acc = [item for item in h10_acc_ts if now - item[0] <= 1.5]
-    if not recent_h10_acc:
-        state_h10["acc_hz"] = 0.0
-    else:
-        total = sum(item[1] for item in recent_h10_acc)
-        span = now - recent_h10_acc[0][0]
-        state_h10["acc_hz"] = total / span if span > 0.1 else 0.0
-
-    # Sense PPG/ACC/GYRO/MAG Hz
-    for name, ts_list in [
+    update_hz_for_state(state_h10, ("acc", h10_acc_ts), now=now)
+    update_hz_for_state(
+        state_sense,
         ("ppg", sense_ppg_ts),
         ("acc", sense_acc_ts),
         ("gyro", sense_gyro_ts),
         ("mag", sense_mag_ts),
-    ]:
-        recent = [item for item in ts_list if now - item[0] <= 1.5]
-        if not recent:
-            state_sense[f"{name}_hz"] = 0.0
-        else:
-            total = sum(item[1] for item in recent)
-            span = now - recent[0][0]
-            state_sense[f"{name}_hz"] = total / span if span > 0.1 else 0.0
+        now=now,
+    )
 
 
 def build_device_panel(state: dict, is_h10: bool) -> Panel:
@@ -376,17 +352,11 @@ def build_dual_dashboard(elapsed: float) -> Panel:
     )
 
 
-async def update_battery_loop(conn, state_dict):
+async def _battery_loop(conn, state_dict):
+    """Background battery refresh, updating the given state dict."""
     while True:
         if conn and conn.polar_device and conn.polar_device._client:
-            try:
-                data = await conn.polar_device._client.read_gatt_char(
-                    "00002a19-0000-1000-8000-00805f9b34fb"
-                )
-                if data:
-                    state_dict["battery"] = f"{int(data[0])}%"
-            except Exception:
-                pass
+            state_dict["battery"] = await read_battery(conn)
         await asyncio.sleep(30)
 
 
@@ -466,27 +436,11 @@ async def main():
 
             if conn_h10:
                 state_h10["status"] = "Connected! Streaming data."
-                # Initial battery check
-                try:
-                    data = await conn_h10.polar_device._client.read_gatt_char(
-                        "00002a19-0000-1000-8000-00805f9b34fb"
-                    )
-                    if data:
-                        state_h10["battery"] = f"{int(data[0])}%"
-                except Exception:
-                    pass
+                state_h10["battery"] = await read_battery(conn_h10)
 
             if conn_sense:
                 state_sense["status"] = "Connected! Streaming data."
-                # Initial battery check
-                try:
-                    data = await conn_sense.polar_device._client.read_gatt_char(
-                        "00002a19-0000-1000-8000-00805f9b34fb"
-                    )
-                    if data:
-                        state_sense["battery"] = f"{int(data[0])}%"
-                except Exception:
-                    pass
+                state_sense["battery"] = await read_battery(conn_sense)
 
             # Setup CSV loggers
             csv_path_h10 = None
@@ -503,18 +457,7 @@ async def main():
                     with open(
                         csv_path_h10, mode="w", newline="", encoding="utf-8"
                     ) as f:
-                        writer = csv.writer(f)
-                        writer.writerow(
-                            [
-                                "Timestamp",
-                                "HeartRate_BPM",
-                                "HRV_RMSSD_ms",
-                                "Battery",
-                                "ACC_X",
-                                "ACC_Y",
-                                "ACC_Z",
-                            ]
-                        )
+                        csv.writer(f).writerow(H10_CSV_COLUMNS)
 
                 if conn_sense:
                     csv_path_sense = log_dir / f"dual_session_sense_{timestamp_str}.csv"
@@ -522,35 +465,17 @@ async def main():
                     with open(
                         csv_path_sense, mode="w", newline="", encoding="utf-8"
                     ) as f:
-                        writer = csv.writer(f)
-                        writer.writerow(
-                            [
-                                "Timestamp",
-                                "HeartRate_BPM",
-                                "HRV_RMSSD_ms",
-                                "Battery",
-                                "PPG_Last",
-                                "ACC_X",
-                                "ACC_Y",
-                                "ACC_Z",
-                                "GYRO_X",
-                                "GYRO_Y",
-                                "GYRO_Z",
-                                "MAG_X",
-                                "MAG_Y",
-                                "MAG_Z",
-                            ]
-                        )
+                        csv.writer(f).writerow(SENSE_CSV_COLUMNS)
 
             # Battery update tasks
             battery_tasks = []
             if conn_h10:
                 battery_tasks.append(
-                    asyncio.create_task(update_battery_loop(conn_h10, state_h10))
+                    asyncio.create_task(_battery_loop(conn_h10, state_h10))
                 )
             if conn_sense:
                 battery_tasks.append(
-                    asyncio.create_task(update_battery_loop(conn_sense, state_sense))
+                    asyncio.create_task(_battery_loop(conn_sense, state_sense))
                 )
 
             start_time = time.time()
