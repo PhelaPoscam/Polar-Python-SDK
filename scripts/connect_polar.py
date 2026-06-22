@@ -8,7 +8,7 @@ sys.path.append(str(PROJECT_ROOT / "src"))
 
 try:
     from awe_polar.connector.ble_discovery import discover_polar_device
-    from awe_polar.connector.stream.polar_h10_ble import HeartRate
+    from awe_polar.connector.stream import create_polar_connector
 except ImportError as e:
     print(
         f"Error: Could not import 'awe_polar'. Make sure the 'src' directory exists. Details: {e}"
@@ -61,8 +61,8 @@ async def main():
         "Connecting... (If this is a watch, make sure you enabled SDK Sharing and are in the 'Exercise wait' view!)"
     )
 
-    # Instantiate HeartRate wrapper
-    heartrate = HeartRate(
+    # Instantiate Polar connector
+    connector = create_polar_connector(
         device,
         callback=hr_callback,
         ppi_callback=ppi_callback,
@@ -72,7 +72,7 @@ async def main():
     )
 
     try:
-        await heartrate.start_notify()
+        await connector.start_notify()
         print("\nConnected! Streaming live data. Press Ctrl+C to stop...\n")
 
         # Keep the connection active
@@ -85,7 +85,7 @@ async def main():
         print(f"\nError: {e}")
     finally:
         print("Disconnecting device...")
-        await heartrate.stop_notify()
+        await connector.stop_notify()
         print("Disconnected.")
 
 

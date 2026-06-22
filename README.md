@@ -95,7 +95,7 @@ AWE_Polar_Project/
 │   │   └── stream/            # Specialized device modules (Base, H10, VeritySense, Watch)
 │   ├── dashboard_utils.py     # Shared helpers (RMSSD, sparkline, battery, CSV logging)
 │   ├── reader/                # Real-time data reading and ML stress inference logic
-│   └── train_model.py         # ML pipeline training script
+│   └── ml/                    # Machine learning package (sample_data, train_model)
 ├── scripts/                   # Consolidated CLI Tools
 │   ├── monitor_polar_terminal.py # Premium live console dashboard with logging & hotkeys
 │   ├── connect_polar.py       # Simple streaming utility

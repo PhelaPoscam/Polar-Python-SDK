@@ -36,7 +36,7 @@ from openai import OpenAI
 from awe_polar.connector.ble_discovery import discover_polar_device
 from awe_polar.connector.exporters.queue_sink import QueueSink
 from awe_polar.connector.schemas import SignalPacket
-from awe_polar.connector.stream.polar_h10_ble import HeartRate
+from awe_polar.connector.stream import create_polar_connector
 from awe_polar.reader import StressPredictor, load_model_bundle
 from awe_polar.reader.realtime import ReaderConfig, run_reader
 
@@ -209,7 +209,7 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
     else:
 
         async def run_ble():
-            heartrate = None
+            connector = None
             try:
                 device = await discover_polar_device(timeout=20.0)
 
@@ -240,7 +240,7 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
                 def _mag_callback(data):
                     data_queue.put(("mag", data[1]))
 
-                heartrate = HeartRate(
+                connector = create_polar_connector(
                     device,
                     callback=_callback,
                     ecg_callback=_ecg_callback,
@@ -250,14 +250,14 @@ def ble_background_task(data_queue: queue.Queue, is_mock: bool):
                     gyro_callback=_gyro_callback,
                     mag_callback=_mag_callback,
                 )
-                await heartrate.start_notify()
+                await connector.start_notify()
                 while True:
                     await asyncio.sleep(1)
             except Exception as e:
                 data_queue.put(("error", str(e)))
             finally:
-                if heartrate:
-                    await heartrate.stop_notify()
+                if connector:
+                    await connector.stop_notify()
 
         asyncio.run(run_ble())
 

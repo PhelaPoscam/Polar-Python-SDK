@@ -14,7 +14,7 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import cross_val_score, train_test_split, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DATA_PATH = PROJECT_ROOT / "data" / "raw" / "all_hrv_data3.csv"
 MODEL_PATH = PROJECT_ROOT / "models"
 SCALER_PATH = PROJECT_ROOT / "models"
@@ -58,9 +58,7 @@ def load_dataset(data_path: Path) -> pd.DataFrame:
 def tune_hyperparameters(
     model_name: str, X_train: np.ndarray, y_train: np.ndarray
 ) -> dict:
-    """
-    Tune hyperparameters for the specified model using GridSearchCV.
-    """
+    """Tune hyperparameters for the specified model using GridSearchCV."""
     if model_name == "random_forest":
         param_grid = {
             "n_estimators": [100, 200, 300],

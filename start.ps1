@@ -22,7 +22,7 @@ if (-Not (Test-Path ".env")) {
 
 if (-Not (Test-Path "models\improved_stress_model.pkl")) {
     Write-Host "`nWarning: Model file not found!" -ForegroundColor Red
-    Write-Host "Please run 'python src/awe_polar/train_model.py' first to train the model" -ForegroundColor Yellow
+    Write-Host "Please run 'python src/awe_polar/ml/train_model.py' first to train the model" -ForegroundColor Yellow
     exit
 }
 

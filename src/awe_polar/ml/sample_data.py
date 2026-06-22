@@ -6,20 +6,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUTPUT = PROJECT_ROOT / "data" / "raw" / "all_hrv_data3.csv"
 
 
 def generate_sample_data(
     n_samples: int = 1000, output_file: Path | str = DEFAULT_OUTPUT
 ) -> pd.DataFrame:
-    """
-
-
-    Generate synthetic heart rate and RMSSD data for stress detection.
-
-
-    """
+    """Generate synthetic heart rate and RMSSD data for stress detection."""
 
     output_path = Path(output_file)
 
@@ -109,7 +103,7 @@ def main() -> None:
     print("Generating sample HRV data for AWE Polar Project...\n")
     generate_sample_data(n_samples=args.n_samples, output_file=args.output_file)
     print("\nSample data generation complete!")
-    print("\nYou can now run: python src/awe_polar/train_model.py")
+    print("\nYou can now run: python src/awe_polar/ml/train_model.py")
 
 
 if __name__ == "__main__":
