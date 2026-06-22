@@ -93,6 +93,7 @@ AWE_Polar_Project/
 │   ├── app_streamlit.py       # Main Streamlit Dashboard (tabbed waveforms & kinematics)
 │   ├── connector/             # BLE Device connection and data streaming layer
 │   │   └── stream/            # Specialized device modules (Base, H10, VeritySense, Watch)
+│   ├── dashboard_utils.py     # Shared helpers (RMSSD, sparkline, battery, CSV logging)
 │   ├── reader/                # Real-time data reading and ML stress inference logic
 │   └── train_model.py         # ML pipeline training script
 ├── scripts/                   # Consolidated CLI Tools
@@ -103,7 +104,7 @@ AWE_Polar_Project/
 │   ├── scan_ble.py            # BLE device discovery scanner
 │   ├── pair_watch.ps1         # Windows WinRT device pairing script
 │   └── ...                    # Helper and setup utilities
-├── tests/                     # 51 verified unit tests (pytest)
+├── tests/                     # 83 verified unit tests (pytest)
 ├── data/                      # Session log files and datasets
 ├── models/                    # Pickled ML models and scalers
 └── docs/                      # Project guides
@@ -111,12 +112,16 @@ AWE_Polar_Project/
 
 ---
 
-## 🧪 Testing
+## 🧪 Testing & Code Quality
 
-The codebase includes comprehensive unit testing.
+The codebase includes comprehensive unit testing and static type checking.
+
 ```bash
-# Test the complete test suite
+# Run the complete unit test suite
 pytest tests/ -v --cov=.
+
+# Run static type analysis checks
+mypy src/ scripts/
 ```
 
 ---
