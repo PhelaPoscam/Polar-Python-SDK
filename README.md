@@ -57,15 +57,18 @@ If you want to monitor both a Polar H10 chest strap and a Polar Verity Sense opt
 ### 1. Device Capabilities (Maximum Sampling Rates)
 Polar devices transmit sensor data at high frequencies via their PMD (Physical Measurement Device) service:
 *   **Polar H10:**
-    *   **ACC (Accelerometer):** 200 Hz
-    *   **ECG (Electrocardiogram):** 130 Hz
+    *   **ACC (Accelerometer):** 25, 50, 100, 200 Hz (Resolution: 16-bit, Range: 2, 4, 8 G)
+    *   **ECG (Electrocardiogram):** 130 Hz (Resolution: 14-bit)
     *   **Heart Rate / RR-Intervals:** Event-driven (per heartbeat, ~1 Hz)
 *   **Polar Verity Sense:**
-    *   **PPG (Photoplethysmography):** 55 Hz (can be configured up to 135 Hz)
-    *   **ACC (Accelerometer):** 52 Hz (can be configured up to 208 Hz)
-    *   **GYRO (Gyroscope):** 52 Hz (can be configured up to 208 Hz)
-    *   **MAG (Magnetometer):** 20 Hz
+    *   **PPG (Photoplethysmography):** 55 Hz (Resolution: 22-bit, Channels: 4)
+    *   **ACC (Accelerometer):** 52 Hz (Resolution: 16-bit, Range: 8 G, Channels: 3)
+    *   **GYRO (Gyroscope):** 52 Hz (Resolution: 16-bit, Range: 2000 dps, Channels: 3)
+    *   **MAG (Magnetometer):** 10, 20, 50, 100 Hz (Resolution: 16-bit, Range: 50 Gauss, Channels: 3)
     *   **HR / PPI (Pulse-to-Pulse / HRV):** Event-driven (per pulse, ~1 Hz)
+*   **Polar Smartwatches (Grit X, Vantage, etc.):**
+    *   **PPG (Photoplethysmography):** Natively configured up to 135 Hz (varies by model)
+    *   **ACC / GYRO (Kinematics):** Configurable up to 208 Hz (varies by model)
 
 ### 2. CSV Logging Rates & High-Frequency Option
 *   **Default 1 Hz Logging:** By default, the terminal dashboards (`monitor_polar_terminal.py` and `monitor_dual_polar.py`) sample and record data to CSV at **1 Hz**. This contains the latest values at each second boundary. This downsampling prevents the creation of extremely sparse CSV files that result from mixing different sampling rates (e.g. 200 Hz ACC vs 1 Hz HR).

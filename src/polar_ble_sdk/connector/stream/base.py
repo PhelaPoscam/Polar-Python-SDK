@@ -20,6 +20,7 @@ class BasePolarDevice:
         self.device = device
         self.polar_device: Any = None
         self._running = False
+        self.custom_settings = kwargs
         self.verbose = kwargs.get("verbose", True)
         self.connect_attempts = kwargs.get("connect_attempts", 3)
         self.connect_timeout = kwargs.get("connect_timeout", 20.0)
@@ -278,6 +279,10 @@ class BasePolarDevice:
                 resolved[key_str] = value
             for key, value in defaults.items():
                 resolved.setdefault(key, value)
+            for key in resolved.keys():
+                custom_key = f"{label.lower()}_{key}"
+                if custom_key in self.custom_settings and self.custom_settings[custom_key] is not None:
+                    resolved[key] = self.custom_settings[custom_key]
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)
             self._log(f"[DEBUG] {label} stream started OK")

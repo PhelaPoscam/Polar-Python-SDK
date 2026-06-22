@@ -385,6 +385,42 @@ async def main():
     parser.add_argument(
         "--no-log", action="store_true", help="Disable CSV logging completely"
     )
+    parser.add_argument(
+        "--acc-rate",
+        type=int,
+        default=None,
+        help="Custom sampling rate for Accelerometer (ACC) stream (Hz)",
+    )
+    parser.add_argument(
+        "--acc-range",
+        type=int,
+        default=None,
+        help="Custom range setting for Accelerometer (ACC) stream (G)",
+    )
+    parser.add_argument(
+        "--gyro-rate",
+        type=int,
+        default=None,
+        help="Custom sampling rate for Gyroscope (GYRO) stream (Hz)",
+    )
+    parser.add_argument(
+        "--gyro-range",
+        type=int,
+        default=None,
+        help="Custom range setting for Gyroscope (GYRO) stream",
+    )
+    parser.add_argument(
+        "--mag-rate",
+        type=int,
+        default=None,
+        help="Custom sampling rate for Magnetometer (MAG) stream (Hz)",
+    )
+    parser.add_argument(
+        "--ppg-rate",
+        type=int,
+        default=None,
+        help="Custom sampling rate for PPG stream (Hz)",
+    )
     args = parser.parse_args()
 
     # Discover devices
@@ -424,6 +460,21 @@ async def main():
         conn_sense = None
         tasks = []
 
+        # Collect dynamic rate/range configurations if specified
+        custom_kwargs = {}
+        if args.acc_rate is not None:
+            custom_kwargs["acc_sample_rate"] = args.acc_rate
+        if args.acc_range is not None:
+            custom_kwargs["acc_range"] = args.acc_range
+        if args.gyro_rate is not None:
+            custom_kwargs["gyro_sample_rate"] = args.gyro_rate
+        if args.gyro_range is not None:
+            custom_kwargs["gyro_range"] = args.gyro_range
+        if args.mag_rate is not None:
+            custom_kwargs["mag_sample_rate"] = args.mag_rate
+        if args.ppg_rate is not None:
+            custom_kwargs["ppg_sample_rate"] = args.ppg_rate
+
         # Setup H10
         if h10_dev:
             conn_h10 = create_polar_connector(
@@ -431,6 +482,7 @@ async def main():
                 callback=hr_callback_h10,
                 acc_callback=acc_callback_h10,
                 verbose=False,
+                **custom_kwargs,
             )
             tasks.append(conn_h10.start_notify())
 
@@ -445,6 +497,7 @@ async def main():
                 gyro_callback=gyro_callback_sense,
                 mag_callback=mag_callback_sense,
                 verbose=False,
+                **custom_kwargs,
             )
             tasks.append(conn_sense.start_notify())
 
