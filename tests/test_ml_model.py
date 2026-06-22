@@ -194,7 +194,7 @@ class TestFeatureImportance:
 class TestHyperparameterTuning:
     """Test hyperparameter tuning"""
 
-    @patch("polar_ble_sdk.ml.train_model.GridSearchCV")
+    @patch("sklearn.model_selection.GridSearchCV")
     def test_tune_hyperparameters_returns_dict(self, mock_grid_search_cv):
         """Test that tune_hyperparameters returns a dictionary."""
         from polar_ble_sdk.ml.train_model import tune_hyperparameters
