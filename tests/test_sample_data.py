@@ -4,7 +4,7 @@ Test suite for sample_data.py - Synthetic data generation
 
 import pandas as pd
 from pathlib import Path
-from awe_polar.ml.sample_data import generate_sample_data
+from polar_ble_sdk.ml.sample_data import generate_sample_data
 
 
 class TestDataGeneration:

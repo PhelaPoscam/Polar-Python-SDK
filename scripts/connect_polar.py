@@ -2,16 +2,16 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Dynamically add the 'src' directory to sys.path so 'awe_polar' is importable
+# Dynamically add the 'src' directory to sys.path so 'polar_ble_sdk' is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT / "src"))
 
 try:
-    from awe_polar.connector.ble_discovery import discover_polar_device
-    from awe_polar.connector.stream import create_polar_connector
+    from polar_ble_sdk.connector.ble_discovery import discover_polar_device
+    from polar_ble_sdk.connector.stream import create_polar_connector
 except ImportError as e:
     print(
-        f"Error: Could not import 'awe_polar'. Make sure the 'src' directory exists. Details: {e}"
+        f"Error: Could not import 'polar_ble_sdk'. Make sure the 'src' directory exists. Details: {e}"
     )
     sys.exit(1)
 

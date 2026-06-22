@@ -7,7 +7,7 @@ import importlib.util
 import pandas as pd
 import pytest
 
-from awe_polar.advanced_models import (
+from polar_ble_sdk.advanced_models import (
     explainability,
     features,
     tabnet_model,

@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from awe_polar.game_bridge.stress_engine import (
+from polar_ble_sdk.game_bridge.stress_engine import (
     StressEngine,
     StressSignal,
     StressState,

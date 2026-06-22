@@ -103,7 +103,7 @@ def main() -> None:
     print("Generating sample HRV data for AWE Polar Project...\n")
     generate_sample_data(n_samples=args.n_samples, output_file=args.output_file)
     print("\nSample data generation complete!")
-    print("\nYou can now run: python src/awe_polar/ml/train_model.py")
+    print("\nYou can now run: python src/polar_ble_sdk/ml/train_model.py")
 
 
 if __name__ == "__main__":

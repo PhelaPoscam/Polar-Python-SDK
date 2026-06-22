@@ -4,9 +4,9 @@ import json
 import tempfile
 from pathlib import Path
 
-from awe_polar.connector.exporters.csv_sink import CsvSink
-from awe_polar.connector.exporters.json_sink import JsonLinesSink
-from awe_polar.connector.schemas import SignalPacket
+from polar_ble_sdk.connector.exporters.csv_sink import CsvSink
+from polar_ble_sdk.connector.exporters.json_sink import JsonLinesSink
+from polar_ble_sdk.connector.schemas import SignalPacket
 
 
 class TestCsvSink:

@@ -28,9 +28,9 @@ class PolarH10(BasePolarDevice):
         if self.callback:
             try:
                 await self.polar_device.start_hr_stream(self._hr_handler)
-                print("[DEBUG] HR stream started OK")
+                self._log("[DEBUG] HR stream started OK")
             except Exception as e:
-                print(f"[DEBUG] HR stream failed: {e}")
+                self._log(f"[DEBUG] HR stream failed: {e}")
                 raise
 
         # 2. Start ECG stream

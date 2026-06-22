@@ -20,9 +20,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from awe_polar.connector.ble_discovery import discover_polar_device
-from awe_polar.connector.stream import create_polar_connector
-from awe_polar.dashboard_utils import (
+from polar_ble_sdk.connector.ble_discovery import discover_polar_device
+from polar_ble_sdk.connector.stream import create_polar_connector
+from polar_ble_sdk.dashboard_utils import (
     BATTERY_SERVICE_UUID,
     CsvLogger,
     calculate_rmssd,
@@ -460,6 +460,7 @@ async def main():
             acc_callback=acc_callback,
             gyro_callback=gyro_callback,
             mag_callback=mag_callback,
+            verbose=False,
         )
 
         state["device_type"] = conn.__class__.__name__

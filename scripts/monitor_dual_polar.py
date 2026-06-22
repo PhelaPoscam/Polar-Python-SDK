@@ -20,9 +20,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from awe_polar.connector.ble_discovery import discover_dual_polar_devices
-from awe_polar.connector.stream import create_polar_connector
-from awe_polar.dashboard_utils import (
+from polar_ble_sdk.connector.ble_discovery import discover_dual_polar_devices
+from polar_ble_sdk.connector.stream import create_polar_connector
+from polar_ble_sdk.dashboard_utils import (
     calculate_rmssd,
     draw_sparkline,
     read_battery,
@@ -430,6 +430,7 @@ async def main():
                 h10_dev,
                 callback=hr_callback_h10,
                 acc_callback=acc_callback_h10,
+                verbose=False,
             )
             tasks.append(conn_h10.start_notify())
 
@@ -443,6 +444,7 @@ async def main():
                 acc_callback=acc_callback_sense,
                 gyro_callback=gyro_callback_sense,
                 mag_callback=mag_callback_sense,
+                verbose=False,
             )
             tasks.append(conn_sense.start_notify())
 

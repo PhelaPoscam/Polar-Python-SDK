@@ -1,6 +1,6 @@
-# Quick start script for AWE Polar Project
+# Quick start script for Polar BLE Python SDK
 
-Write-Host "Starting AWE Polar Project..." -ForegroundColor Green
+Write-Host "Starting Polar BLE Python SDK..." -ForegroundColor Green
 
 # Check if virtual environment exists
 if (-Not (Test-Path ".venv")) {
@@ -22,11 +22,11 @@ if (-Not (Test-Path ".env")) {
 
 if (-Not (Test-Path "models\improved_stress_model.pkl")) {
     Write-Host "`nWarning: Model file not found!" -ForegroundColor Red
-    Write-Host "Please run 'python src/awe_polar/ml/train_model.py' first to train the model" -ForegroundColor Yellow
+    Write-Host "Please run 'python src/polar_ble_sdk/ml/train_model.py' first to train the model" -ForegroundColor Yellow
     exit
 }
 
 # Start the Streamlit app
 Write-Host "`nStarting Streamlit app..." -ForegroundColor Green
 $env:PYTHONPATH = "src"
-streamlit run src/awe_polar/app_streamlit.py
+streamlit run src/polar_ble_sdk/app_streamlit.py

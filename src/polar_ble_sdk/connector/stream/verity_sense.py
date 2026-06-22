@@ -44,12 +44,13 @@ class PolarVeritySense(BasePolarDevice):
         if self.callback:
             try:
                 await self.polar_device.start_hr_stream(self._hr_handler)
-                print("[DEBUG] HR stream started OK")
+                self._log("[DEBUG] HR stream started OK")
             except Exception as e:
-                print(f"[DEBUG] HR stream failed: {e}")
+                self._log(f"[DEBUG] HR stream failed: {e}")
                 if self._strict_hr:
                     raise
-                traceback.print_exc()
+                if self.verbose:
+                    traceback.print_exc()
 
         # 2. Start ECG stream
         await self._start_pmd_stream(
@@ -89,11 +90,12 @@ class PolarVeritySense(BasePolarDevice):
             try:
                 self._ppi_active = True
                 await self.polar_device.start_ppi_stream(self._ppi_handler)
-                print("[DEBUG] PPI stream started OK")
+                self._log("[DEBUG] PPI stream started OK")
             except Exception:
                 self._ppi_active = False
-                print("[DEBUG] PPI stream failed:")
-                traceback.print_exc()
+                self._log("[DEBUG] PPI stream failed:")
+                if self.verbose:
+                    traceback.print_exc()
 
         # 6. Start Gyro stream
         await self._start_pmd_stream(
@@ -124,7 +126,7 @@ class PolarVeritySense(BasePolarDevice):
         try:
             features = await self.polar_device.get_available_features()
             feature_names = [f.name for f in features] if features else []
-            print(f"[DEBUG] Available PMD features: {feature_names or '(none)'}")
+            self._log(f"[DEBUG] Available PMD features: {feature_names or '(none)'}")
             return features
         except Exception as e:
             err_str = str(e)
@@ -140,8 +142,9 @@ class PolarVeritySense(BasePolarDevice):
                 )
             ):
                 raise e
-            print("[DEBUG] get_available_features() failed:")
-            traceback.print_exc()
+            self._log("[DEBUG] get_available_features() failed:")
+            if self.verbose:
+                traceback.print_exc()
             return []
 
     async def stop_notify(self) -> None:

@@ -1,11 +1,11 @@
-# AWE Polar Project
+# Polar BLE Python SDK
 
 [![CI](https://github.com/PhelaPoscam/AWE_Polar_Project/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/PhelaPoscam/AWE_Polar_Project/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-A real-time stress monitoring and physiological visualization system using **Polar H10, Verity Sense, and Vantage/Grit watches**. The project offers real-time monitoring, machine-learning-based stress detection, a reactive Streamlit dashboard with live waveform charts, and a premium console terminal dashboard with event logging and hotkey markers.
+An open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches). The project offers real-time monitoring, machine-learning-based stress detection, a reactive Streamlit dashboard with live waveform charts, and a premium console terminal dashboard with event logging and hotkey markers.
 
 ---
 
@@ -25,7 +25,7 @@ Verify setup and launch the Streamlit dashboard using:
 ```powershell
 .\start.ps1
 ```
-*(Manual command: `streamlit run src/awe_polar/app_streamlit.py`)*
+*(Manual command: `streamlit run src/polar_ble_sdk/app_streamlit.py`)*
 
 ### 3. Premium Terminal Dashboard
 Launch the premium command-line dashboard with real-time event markers, battery monitoring, and 1 Hz CSV data logging:
@@ -89,7 +89,7 @@ Polar devices transmit sensor data at high frequencies via their PMD (Physical M
 AWE_Polar_Project/
 ├── setup.ps1                  # PowerShell automatic environment setup
 ├── start.ps1                  # PowerShell application launcher
-├── src/awe_polar/
+├── src/polar_ble_sdk/
 │   ├── app_streamlit.py       # Main Streamlit Dashboard (tabbed waveforms & kinematics)
 │   ├── connector/             # BLE Device connection and data streaming layer
 │   │   └── stream/            # Specialized device modules (Base, H10, VeritySense, Watch)

@@ -1,6 +1,6 @@
 """Unit tests for CognitiveAgent — SpeedyIBL-style adaptive state machine."""
 
-from awe_polar.game_bridge.cognitive_agent import (
+from polar_ble_sdk.game_bridge.cognitive_agent import (
     AdaptiveState,
     CognitiveAgent,
     CognitiveAgentConfig,

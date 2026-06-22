@@ -20,6 +20,7 @@ class BasePolarDevice:
         self.device = device
         self.polar_device: Any = None
         self._running = False
+        self.verbose = kwargs.get("verbose", True)
         self.connect_attempts = kwargs.get("connect_attempts", 3)
         self.connect_timeout = kwargs.get("connect_timeout", 20.0)
         self.retry_backoff = kwargs.get("retry_backoff", 1.5)
@@ -29,6 +30,10 @@ class BasePolarDevice:
         )
         self.pair_timeout = kwargs.get("pair_timeout", 60.0)
         self.post_pair_delay = kwargs.get("post_pair_delay", 2.0)
+
+    def _log(self, msg: str) -> None:
+        if self.verbose:
+            print(msg)
 
     async def start_notify(self) -> None:
         """Connect to device and initialize notifications."""
@@ -50,7 +55,7 @@ class BasePolarDevice:
             attempt_started = time.monotonic()
             try:
                 self.polar_device = PolarDevice(self.device)
-                print(
+                self._log(
                     f"Connecting to {device_name or 'Polar device'} "
                     f"(attempt {attempt}/{self.connect_attempts})..."
                 )
@@ -63,7 +68,7 @@ class BasePolarDevice:
                 await _subscribe_and_start()
                 stream_setup_elapsed = time.monotonic() - stream_setup_started
                 total_elapsed = time.monotonic() - attempt_started
-                print(
+                self._log(
                     "Connected and authenticated successfully "
                     f"(stream setup {stream_setup_elapsed:.1f}s, total {total_elapsed:.1f}s)."
                 )
@@ -77,24 +82,24 @@ class BasePolarDevice:
                     or "(5)" in err_str
                     or "-2147023673" in err_str
                 ):
-                    print(
+                    self._log(
                         f"Device ({device_name}) requires pairing. Initiating BLE pairing/bonding..."
                     )
                     try:
-                        print("\n" + "=" * 80)
-                        print("PAIRING PIN REQUESTED!")
-                        print(
+                        self._log("\n" + "=" * 80)
+                        self._log("PAIRING PIN REQUESTED!")
+                        self._log(
                             "Please look at your device screen and Windows notifications/popups now."
                         )
-                        print(
+                        self._log(
                             "Confirm/type the pairing PIN code on both the device and the PC."
                         )
-                        print("=" * 80 + "\n")
+                        self._log("=" * 80 + "\n")
                         await self._pair_client()
                         # pair() stores bond keys in Windows registry, but the current
                         # connection is still unauthenticated. Reconnect so Windows opens
                         # a fresh encrypted session using the new bond keys.
-                        print(
+                        self._log(
                             "Pairing accepted. Re-establishing authenticated connection..."
                         )
                         await self._disconnect_client(clear_device=False)
@@ -103,28 +108,28 @@ class BasePolarDevice:
                             self.polar_device._client.connect(),
                             timeout=self.connect_timeout,
                         )
-                        print("Retrying stream subscription...")
+                        self._log("Retrying stream subscription...")
                         stream_setup_started = time.monotonic()
                         await _subscribe_and_start()
                         stream_setup_elapsed = time.monotonic() - stream_setup_started
                         total_elapsed = time.monotonic() - attempt_started
-                        print(
+                        self._log(
                             "Connected and authenticated successfully after pairing "
                             f"(stream setup {stream_setup_elapsed:.1f}s, total {total_elapsed:.1f}s)!"
                         )
                         return
                     except Exception as pair_err:
-                        print(f"Failed to complete pairing: {pair_err}")
+                        self._log(f"Failed to complete pairing: {pair_err}")
                         last_error = pair_err
                 elif "not found" in err_str.lower() or "FB005C81" in err_str:
-                    print("\n" + "=" * 60)
-                    print(
+                    self._log("\n" + "=" * 60)
+                    self._log(
                         "SDK STREAM NOT ACTIVE: The device is not exposing the measurement service."
                     )
-                    print(
+                    self._log(
                         "Please ensure SDK Sharing is active and the device is ready."
                     )
-                    print("=" * 60 + "\n")
+                    self._log("=" * 60 + "\n")
                     await self._disconnect_client()
                     raise e
 
@@ -143,7 +148,7 @@ class BasePolarDevice:
         if not client or not hasattr(client, "pair"):
             return
 
-        print(
+        self._log(
             f"Waiting for Windows pairing approval for {device_name or 'Polar device'}..."
         )
         pair_started = time.monotonic()
@@ -154,7 +159,7 @@ class BasePolarDevice:
             if "already" not in err_str and "bond" not in err_str:
                 raise
         pair_elapsed = time.monotonic() - pair_started
-        print(
+        self._log(
             "Windows pairing completed "
             f"({pair_elapsed:.1f}s). Reconnecting before stream setup..."
         )
@@ -163,7 +168,7 @@ class BasePolarDevice:
         await asyncio.sleep(self.post_pair_delay)
         await asyncio.wait_for(client.connect(), timeout=self.connect_timeout)
         reconnect_elapsed = time.monotonic() - reconnect_started
-        print(f"Reconnected after pairing ({reconnect_elapsed:.1f}s).")
+        self._log(f"Reconnected after pairing ({reconnect_elapsed:.1f}s).")
 
     async def _reconnect_if_needed(self) -> None:
         """Open a fresh BLE session before PMD setup without forcing Windows pairing."""
@@ -175,12 +180,12 @@ class BasePolarDevice:
             return
 
         reconnect_started = time.monotonic()
-        print("Refreshing BLE connection before stream setup...")
+        self._log("Refreshing BLE connection before stream setup...")
         await self._disconnect_client(clear_device=False)
         await asyncio.sleep(self.post_pair_delay)
         await asyncio.wait_for(client.connect(), timeout=self.connect_timeout)
         reconnect_elapsed = time.monotonic() - reconnect_started
-        print(f"BLE connection refreshed ({reconnect_elapsed:.1f}s).")
+        self._log(f"BLE connection refreshed ({reconnect_elapsed:.1f}s).")
 
     async def _pair_client(self) -> None:
         client = getattr(self.polar_device, "_client", None)
@@ -228,7 +233,7 @@ class BasePolarDevice:
                     settings_dict[s.type] = s.values[0]
             return settings_dict
         except Exception as ex:
-            print(
+            self._log(
                 f"Warning: Could not fetch settings for {measurement_type.name}: {ex}"
             )
             return {}
@@ -257,20 +262,26 @@ class BasePolarDevice:
         if not callback:
             return
         if measurement_type not in features:
-            print(f"[DEBUG] {label} skipped — not in available features")
+            self._log(f"[DEBUG] {label} skipped — not in available features")
             return
         try:
             settings = await self._get_default_settings(measurement_type)
             # Normalise setting-type keys to plain strings so they can be unpacked as **kwargs.
             resolved: dict[str, object] = {}
             for key, value in settings.items():
-                key_str = key.value if hasattr(key, "value") else str(key)
+                if hasattr(key, "name"):
+                    key_str = key.name.lower()
+                elif hasattr(key, "value") and isinstance(key.value, str):
+                    key_str = key.value
+                else:
+                    key_str = str(key)
                 resolved[key_str] = value
             for key, value in defaults.items():
                 resolved.setdefault(key, value)
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)
-            print(f"[DEBUG] {label} stream started OK")
+            self._log(f"[DEBUG] {label} stream started OK")
         except Exception:
-            print(f"[DEBUG] {label} stream failed:")
-            traceback.print_exc()
+            self._log(f"[DEBUG] {label} stream failed:")
+            if self.verbose:
+                traceback.print_exc()

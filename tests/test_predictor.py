@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 from pathlib import Path
 
-from awe_polar.reader.model_loader import ModelBundle
-from awe_polar.reader.predictor import StressPredictor, Prediction
-from awe_polar.connector.schemas import SignalPacket
+from polar_ble_sdk.reader.model_loader import ModelBundle
+from polar_ble_sdk.reader.predictor import StressPredictor, Prediction
+from polar_ble_sdk.connector.schemas import SignalPacket
 
 
 @pytest.fixture

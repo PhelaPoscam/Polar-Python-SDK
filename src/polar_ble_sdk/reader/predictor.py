@@ -7,7 +7,7 @@ from typing import Any
 
 import numpy as np
 
-from awe_polar.connector.schemas import SignalPacket
+from polar_ble_sdk.connector.schemas import SignalPacket
 from .model_loader import ModelBundle
 
 

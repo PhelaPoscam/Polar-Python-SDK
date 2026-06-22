@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from awe_polar.game_bridge.cognitive_agent import AdaptiveState, CognitiveAgent
-from awe_polar.game_bridge.game_connector import DifficultyProfile, GameConnector
-from awe_polar.game_bridge.stress_engine import (
+from polar_ble_sdk.game_bridge.cognitive_agent import AdaptiveState, CognitiveAgent
+from polar_ble_sdk.game_bridge.game_connector import DifficultyProfile, GameConnector
+from polar_ble_sdk.game_bridge.stress_engine import (
     StressEngine,
     StressSignal,
     StressState,

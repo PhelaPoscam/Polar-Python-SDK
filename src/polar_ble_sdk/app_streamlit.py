@@ -33,12 +33,12 @@ else:
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from awe_polar.connector.ble_discovery import discover_polar_device
-from awe_polar.connector.exporters.queue_sink import QueueSink
-from awe_polar.connector.schemas import SignalPacket
-from awe_polar.connector.stream import create_polar_connector
-from awe_polar.reader import StressPredictor, load_model_bundle
-from awe_polar.reader.realtime import ReaderConfig, run_reader
+from polar_ble_sdk.connector.ble_discovery import discover_polar_device
+from polar_ble_sdk.connector.exporters.queue_sink import QueueSink
+from polar_ble_sdk.connector.schemas import SignalPacket
+from polar_ble_sdk.connector.stream import create_polar_connector
+from polar_ble_sdk.reader import StressPredictor, load_model_bundle
+from polar_ble_sdk.reader.realtime import ReaderConfig, run_reader
 
 # ==========================================
 # Configuration and Prompts

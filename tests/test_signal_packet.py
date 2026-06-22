@@ -2,7 +2,7 @@
 
 import json
 
-from awe_polar.connector.schemas import SignalPacket
+from polar_ble_sdk.connector.schemas import SignalPacket
 
 
 class TestSignalPacket:
