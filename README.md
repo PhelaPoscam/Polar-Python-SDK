@@ -1,6 +1,7 @@
 # Polar BLE Python SDK
 
 [![CI](https://github.com/PhelaPoscam/Polar-Python-SDK/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/PhelaPoscam/Polar-Python-SDK/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/polar-ble-sdk.svg)](https://pypi.org/project/polar-ble-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -14,7 +15,19 @@ An open-source Python SDK for connecting, monitoring, and capturing raw physiolo
 ### 1. Installation & Setup
 **Requirements:** Python 3.8+, Windows 10/11 (Bluetooth capable).
 
-You can run the automatic setup script in PowerShell to create the virtual environment and install all dependencies:
+#### Option A: Package Install from PyPI (Recommended for Library Use)
+You can install the core BLE SDK directly from PyPI:
+```bash
+pip install polar-ble-sdk
+```
+
+To install optional features (such as ML predictors or dashboards):
+* Install ML training and dependencies: `pip install polar-ble-sdk[ml]`
+* Install Streamlit dashboard dependencies: `pip install polar-ble-sdk[dashboard]`
+* Install all dependencies: `pip install polar-ble-sdk[ml,dashboard]`
+
+#### Option B: Local Repository Install (Recommended for Dashboard/CLI Apps)
+Run the automatic setup script in PowerShell to create the virtual environment and install all dependencies:
 ```powershell
 .\setup.ps1
 ```
