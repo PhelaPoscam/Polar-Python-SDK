@@ -3,7 +3,7 @@
 [![CI](https://github.com/PhelaPoscam/Polar-Python-SDK/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/PhelaPoscam/Polar-Python-SDK/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/polar-ble-sdk.svg)](https://pypi.org/project/polar-ble-sdk/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 An open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches). The project offers real-time monitoring, machine-learning-based stress detection, a reactive Streamlit dashboard with live waveform charts, and a premium console terminal dashboard with event logging and hotkey markers.
@@ -13,7 +13,7 @@ An open-source Python SDK for connecting, monitoring, and capturing raw physiolo
 ## 🚀 Quick Start
 
 ### 1. Installation & Setup
-**Requirements:** Python 3.8+, Windows 10/11 (Bluetooth capable).
+**Requirements:** Python 3.10+, Windows 10/11 (Bluetooth capable).
 
 #### Option A: Package Install from PyPI (Recommended for Library Use)
 You can install the core BLE SDK directly from PyPI:
