@@ -1,4 +1,4 @@
-"""Machine learning package for AWE Polar Project."""
+"""Machine learning package for Polar BLE Python SDK."""
 
 from __future__ import annotations
 

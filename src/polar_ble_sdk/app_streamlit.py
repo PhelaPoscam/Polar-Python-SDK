@@ -720,8 +720,8 @@ def register_session_state():
 
 def main_app():
     """Defines the main user interface."""
-    st.set_page_config(page_title="Polar AWE", page_icon="❤", layout="wide")
-    st.title("Polar AWE: Stress Monitoring with ML and LLM")
+    st.set_page_config(page_title="Polar BLE SDK", page_icon="❤", layout="wide")
+    st.title("Polar BLE SDK: Stress Monitoring with ML and LLM")
     st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
     register_session_state()

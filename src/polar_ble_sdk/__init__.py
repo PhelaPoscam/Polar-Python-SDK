@@ -1,1 +1,1 @@
-"""AWE Polar Project package."""
+"""Polar BLE Python SDK package."""

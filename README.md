@@ -1,6 +1,6 @@
 # Polar BLE Python SDK
 
-[![CI](https://github.com/PhelaPoscam/AWE_Polar_Project/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/PhelaPoscam/AWE_Polar_Project/actions/workflows/ci.yml)
+[![CI](https://github.com/PhelaPoscam/Polar-Python-SDK/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/PhelaPoscam/Polar-Python-SDK/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -89,7 +89,7 @@ Polar devices transmit sensor data at high frequencies via their PMD (Physical M
 ## 📂 Project Structure
 
 ```text
-AWE_Polar_Project/
+Polar-Python-SDK/
 ├── setup.ps1                  # PowerShell automatic environment setup
 ├── start.ps1                  # PowerShell application launcher
 ├── src/polar_ble_sdk/

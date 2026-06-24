@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "polar-ble-sdk"
 version = "0.1.0"
 authors = [
-    { name = "Your Name", email = "your.email@example.com" }
+    { name = "Aleph Campos da Silveira", email = "aleph.camposdasilveira@tuni.fi" }
 ]
 description = "An open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices."
 readme = "README.md"

@@ -84,7 +84,7 @@ def generate_sample_data(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate sample HRV data for AWE Polar Project."
+        description="Generate sample HRV data for Polar BLE Python SDK."
     )
     parser.add_argument(
         "--output-file",
@@ -100,7 +100,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print("Generating sample HRV data for AWE Polar Project...\n")
+    print("Generating sample HRV data for Polar BLE Python SDK...\n")
     generate_sample_data(n_samples=args.n_samples, output_file=args.output_file)
     print("\nSample data generation complete!")
     print("\nYou can now run: python src/polar_ble_sdk/ml/train_model.py")

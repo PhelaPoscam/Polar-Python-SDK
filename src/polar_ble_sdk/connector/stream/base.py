@@ -281,7 +281,10 @@ class BasePolarDevice:
                 resolved.setdefault(key, value)
             for key in resolved.keys():
                 custom_key = f"{label.lower()}_{key}"
-                if custom_key in self.custom_settings and self.custom_settings[custom_key] is not None:
+                if (
+                    custom_key in self.custom_settings
+                    and self.custom_settings[custom_key] is not None
+                ):
                     resolved[key] = self.custom_settings[custom_key]
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)

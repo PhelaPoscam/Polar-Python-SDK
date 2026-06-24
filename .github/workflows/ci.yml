@@ -25,11 +25,13 @@ jobs:
         pip install pytest mypy
 
     - name: Check formatting (Black)
+      if: matrix.python-version == '3.11'
       run: |
         source venv/bin/activate
         black --check src/ scripts/ tests/
 
     - name: Type check (Mypy)
+      if: matrix.python-version == '3.11'
       run: |
         source venv/bin/activate
         mypy src/ scripts/

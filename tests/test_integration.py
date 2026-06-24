@@ -1,5 +1,5 @@
 """
-Integration tests for the AWE Polar Project
+Integration tests for the Polar BLE Python SDK
 """
 
 import pytest
