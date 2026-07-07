@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """BLE discovery helpers for Polar sensors."""
+
+from __future__ import annotations
 
 import asyncio
 import time

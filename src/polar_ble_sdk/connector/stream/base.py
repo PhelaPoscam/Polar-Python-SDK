@@ -290,6 +290,6 @@ class BasePolarDevice:
             await method(handler, **resolved)
             self._log(f"[DEBUG] {label} stream started OK")
         except Exception:
-            self._log(f"[DEBUG] {label} stream failed:")
-            if self.verbose:
-                traceback.print_exc()
+            self._log(
+                f"[DEBUG] {label} stream failed: {traceback.format_exc(limit=-3)}"
+            )
