@@ -19,8 +19,10 @@ pip install polar-ble-sdk
 ```
 
 ### Local install (for CLI tools)
-```powershell
-.\setup.ps1
+```bash
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e .
 ```
 
 ### CLI Dashboard
@@ -44,7 +46,6 @@ python scripts/monitor_dual_polar.py
 
 ```text
 Polar-Python-SDK/
-├── setup.ps1                         # PowerShell environment setup script
 ├── src/polar_ble_sdk/
 │   ├── cli.py                        # Console dashboard CLI entrypoint
 │   ├── dashboard_utils.py            # Shared metrics (RMSSD, battery, sparkline, CSV logger)
