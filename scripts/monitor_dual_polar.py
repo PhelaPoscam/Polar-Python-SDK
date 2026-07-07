@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import sys
 import time
 from collections import deque
@@ -66,6 +67,8 @@ SENSE_CSV = [
 
 state_h10 = make_device_state("Polar H10")
 state_sense = make_device_state("Polar Sense")
+
+log = logging.getLogger("polar_dual")
 
 h10_acc_ts: deque[tuple[float, int]] = deque(maxlen=20)
 sense_ppg_ts: deque[tuple[float, int]] = deque(maxlen=20)
@@ -140,6 +143,17 @@ async def main() -> None:
         "--sense", type=str, default=None, help="MAC/Name of Verity Sense"
     )
     parser.add_argument("--no-log", action="store_true", help="Disable CSV logging")
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Write connection/streaming events to this file (e.g. data/session.log)",
+    )
+    parser.add_argument(
+        "--log-console",
+        action="store_true",
+        help="Also print log events to terminal (above the dashboard)",
+    )
     for opt in (
         "acc-rate",
         "acc-range",
@@ -150,6 +164,20 @@ async def main() -> None:
     ):
         parser.add_argument(f"--{opt}", type=int, default=None)
     args = parser.parse_args()
+
+    handlers: list[logging.Handler] = []
+    if args.log_file:
+        handlers.append(logging.FileHandler(args.log_file, encoding="utf-8"))
+    if args.log_console:
+        handlers.append(logging.StreamHandler())
+    if handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(name)s] %(message)s",
+            handlers=handlers,
+            force=True,
+        )
+        log.info("dual dashboard starting (h10=%s, sense=%s)", args.h10, args.sense)
 
     state_h10["status"] = "Scanning for H10..."
     state_sense["status"] = "Scanning for Sense..."
@@ -163,13 +191,17 @@ async def main() -> None:
         if h10_dev is not None:
             state_h10["address"] = h10_dev.address  # type: ignore[attr-defined]
             state_h10["status"] = "Found, connecting..."
+            log.info("H10 found: %s [%s]", h10_dev.name, h10_dev.address)  # type: ignore[attr-defined]
         else:
             state_h10["status"] = "Not found."
+            log.warning("H10 not found")
         if sense_dev is not None:
             state_sense["address"] = sense_dev.address  # type: ignore[attr-defined]
             state_sense["status"] = "Found, connecting..."
+            log.info("Sense found: %s [%s]", sense_dev.name, sense_dev.address)  # type: ignore[attr-defined]
         else:
             state_sense["status"] = "Not found."
+            log.warning("Sense not found")
 
         if h10_dev is None and sense_dev is None:
             state_h10["status"] = "No Polar devices found."
@@ -223,13 +255,20 @@ async def main() -> None:
 
         try:
             await asyncio.gather(*tasks)
+            log.info(
+                "connections established (h10=%s, sense=%s)",
+                conn_h10 is not None,
+                conn_sense is not None,
+            )
 
             if conn_h10 is not None:
                 state_h10["status"] = "Connected! Streaming data."
                 state_h10["battery"] = await read_battery(conn_h10)
+                log.info("H10 battery: %s", state_h10["battery"])
             if conn_sense is not None:
                 state_sense["status"] = "Connected! Streaming data."
                 state_sense["battery"] = await read_battery(conn_sense)
+                log.info("Sense battery: %s", state_sense["battery"])
 
             ts = time.strftime("%Y%m%d_%H%M%S")
             log_dir = PROJECT_ROOT / "data"
