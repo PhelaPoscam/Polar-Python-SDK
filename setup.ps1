@@ -21,8 +21,7 @@ pip install -r requirements.txt
 
 Write-Host "`n✓ Setup complete!" -ForegroundColor Green
 Write-Host "`nNext steps:" -ForegroundColor Cyan
-Write-Host "1. Copy .env.example to .env and add your OpenAI API key"
-Write-Host "2. Place your 'all_hrv_data3.csv' file in data/raw/"
-Write-Host "3. Run 'python src/polar_ble_sdk/ml/train_model.py' to train the model"
-Write-Host "4. Run 'streamlit run src/polar_ble_sdk/app_streamlit.py' to start the app"
-Write-Host "`nTo run tests: pytest tests/ -v --cov=." -ForegroundColor Cyan
+Write-Host "1. Run 'python -m pytest tests/' to run tests"
+Write-Host "2. Run 'monitor-polar' or 'python scripts/monitor_polar_terminal.py' for the CLI dashboard"
+Write-Host "3. Run 'python scripts/monitor_dual_polar.py' for dual-device monitoring"
+Write-Host "4. See README.md for the full API reference" -ForegroundColor Cyan

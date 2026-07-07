@@ -21,8 +21,8 @@ jobs:
       run: |
         python -m venv venv
         source venv/bin/activate
-        pip install -r requirements.txt
-        pip install pytest mypy
+        pip install bleak polar-python rich
+        pip install pytest black mypy
 
     - name: Check formatting (Black)
       if: matrix.python-version == '3.11'
