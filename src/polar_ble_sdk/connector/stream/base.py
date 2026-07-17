@@ -6,6 +6,7 @@ import sys
 import time
 import traceback
 from typing import Any
+# TODO: Replace polar_python dependency with native PMD protocol parsing and byte unpacking directly over pure bleak
 from polar_python import PolarDevice
 from polar_python.constants import (
     PmdMeasurementType,
