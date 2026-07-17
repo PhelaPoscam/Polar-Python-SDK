@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
@@ -11,7 +12,5 @@ sys.path.append(str(PROJECT_ROOT / "src"))
 from polar_ble_sdk.cli import main  # noqa: E402
 
 if __name__ == "__main__":
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass

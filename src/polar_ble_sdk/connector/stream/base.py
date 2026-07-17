@@ -6,6 +6,7 @@ import sys
 import time
 import traceback
 from typing import Any
+
 # TODO: Replace polar_python dependency with native PMD protocol parsing and byte unpacking directly over pure bleak
 from polar_python import PolarDevice
 from polar_python.constants import (
@@ -280,7 +281,7 @@ class BasePolarDevice:
                 resolved[key_str] = value
             for key, value in defaults.items():
                 resolved.setdefault(key, value)
-            for key in resolved.keys():
+            for key in resolved:
                 custom_key = f"{label.lower()}_{key}"
                 if (
                     custom_key in self.custom_settings

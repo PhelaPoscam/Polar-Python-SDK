@@ -1,8 +1,9 @@
-from typing import Callable, Optional
-
+import contextlib
 import traceback
+from collections.abc import Callable
 
 from polar_python.constants import PmdMeasurementType
+
 from .base import BasePolarDevice
 
 
@@ -12,13 +13,13 @@ class PolarVeritySense(BasePolarDevice):
     def __init__(
         self,
         device,
-        callback: Optional[Callable] = None,
-        ppi_callback: Optional[Callable] = None,
-        ppg_callback: Optional[Callable] = None,
-        acc_callback: Optional[Callable] = None,
-        gyro_callback: Optional[Callable] = None,
-        mag_callback: Optional[Callable] = None,
-        ecg_callback: Optional[Callable] = None,
+        callback: Callable | None = None,
+        ppi_callback: Callable | None = None,
+        ppg_callback: Callable | None = None,
+        acc_callback: Callable | None = None,
+        gyro_callback: Callable | None = None,
+        mag_callback: Callable | None = None,
+        ecg_callback: Callable | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("reconnect_before_streaming", True)
@@ -155,17 +156,13 @@ class PolarVeritySense(BasePolarDevice):
         if self.callback:
             if hr_data.heartrate == 0:
                 return
-            try:
+            with contextlib.suppress(Exception):
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))
-            except Exception:
-                pass
 
     def _ecg_handler(self, ecg_data) -> None:
         if self.ecg_callback:
-            try:
+            with contextlib.suppress(Exception):
                 self.ecg_callback((ecg_data.timestamp, ecg_data.data))
-            except Exception:
-                pass
 
     def _ppi_handler(self, ppi_data) -> None:
         ppi_vals = [s.ppi for s in ppi_data.samples if not s.invalid_ppi]

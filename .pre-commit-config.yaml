@@ -1,0 +1,49 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: python
+        types: [python]
+        args: [src/, scripts/]
+        pass_filenames: false
+        additional_dependencies: [mypy, bleak, polar-python, rich]
+
+      - id: vulture
+        name: vulture
+        entry: vulture
+        language: python
+        types: [python]
+        args: [src/, scripts/, --min-confidence=70]
+        pass_filenames: false
+        additional_dependencies: [vulture]
+
+      - id: radon-cc
+        name: radon cc
+        entry: radon
+        language: python
+        types: [python]
+        args: [cc, src/, scripts/, --min=B, --total-average]
+        pass_filenames: false
+        additional_dependencies: [radon]
+
+      - id: pip-audit
+        name: pip-audit
+        entry: pip-audit
+        language: python
+        pass_filenames: false
+        stages: [manual]
+        additional_dependencies: [pip-audit]

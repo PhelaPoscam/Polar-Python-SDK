@@ -15,8 +15,5 @@ class QueueSink:
         self._queue = target
 
     def send(self, packet: SignalPacket | dict[str, Any]) -> None:
-        if isinstance(packet, SignalPacket):
-            payload = packet.to_dict()
-        else:
-            payload = packet
+        payload = packet.to_dict() if isinstance(packet, SignalPacket) else packet
         self._queue.put(payload)
