@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 import time
 from collections import deque
@@ -16,21 +17,19 @@ from polar_ble_sdk.dashboard_utils import (
     CsvLogger,
     calculate_rmssd,
     device_panel,
+    feed_hr,
     header_bar,
+    make_callback,
     make_device_state,
     read_battery,
-    feed_hr,
-    make_callback,
     update_hz_for_state,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 if sys.platform == "win32":
-    try:
+    with contextlib.suppress(Exception):
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-    except Exception:
-        pass
 
 CSV_COLUMNS = [
     "Timestamp",
@@ -356,7 +355,5 @@ async def main():
 
 def _entrypoint() -> None:
     """Console-script entry point: run async main with a clean KeyboardInterrupt handler."""
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass

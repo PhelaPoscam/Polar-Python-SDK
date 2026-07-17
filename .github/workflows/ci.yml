@@ -22,7 +22,7 @@ jobs:
         python -m venv venv
         source venv/bin/activate
         pip install bleak polar-python rich
-        pip install pytest black mypy
+        pip install pytest black mypy ruff vulture radon pip-audit
 
     - name: Check formatting (Black)
       if: matrix.python-version == '3.11'
@@ -30,11 +30,35 @@ jobs:
         source venv/bin/activate
         black --check src/ scripts/ tests/
 
+    - name: Lint (Ruff)
+      if: matrix.python-version == '3.11'
+      run: |
+        source venv/bin/activate
+        ruff check src/ scripts/
+
     - name: Type check (Mypy)
       if: matrix.python-version == '3.11'
       run: |
         source venv/bin/activate
         mypy src/ scripts/
+
+    - name: Dead code (Vulture)
+      if: matrix.python-version == '3.11'
+      run: |
+        source venv/bin/activate
+        vulture src/ scripts/ --min-confidence 70
+
+    - name: Complexity (Radon)
+      if: matrix.python-version == '3.11'
+      run: |
+        source venv/bin/activate
+        radon cc src/ scripts/ --min B --total-average
+
+    - name: Security audit (pip-audit)
+      if: matrix.python-version == '3.11'
+      run: |
+        source venv/bin/activate
+        pip-audit
 
     - name: Run tests
       run: |

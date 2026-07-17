@@ -1,5 +1,8 @@
-from typing import Callable, Optional
+import contextlib
+from collections.abc import Callable
+
 from polar_python.constants import PmdMeasurementType
+
 from .base import BasePolarDevice
 
 
@@ -9,9 +12,9 @@ class PolarH10(BasePolarDevice):
     def __init__(
         self,
         device,
-        callback: Optional[Callable] = None,
-        ecg_callback: Optional[Callable] = None,
-        acc_callback: Optional[Callable] = None,
+        callback: Callable | None = None,
+        ecg_callback: Callable | None = None,
+        acc_callback: Callable | None = None,
         **kwargs,
     ) -> None:
         kwargs.setdefault("reconnect_before_streaming", True)
@@ -57,21 +60,15 @@ class PolarH10(BasePolarDevice):
 
     def _hr_handler(self, hr_data) -> None:
         if self.callback:
-            try:
+            with contextlib.suppress(Exception):
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))
-            except Exception:
-                pass
 
     def _ecg_handler(self, ecg_data) -> None:
         if self.ecg_callback:
-            try:
+            with contextlib.suppress(Exception):
                 self.ecg_callback((ecg_data.timestamp, ecg_data.data))
-            except Exception:
-                pass
 
     def _acc_handler(self, acc_data) -> None:
         if self.acc_callback:
-            try:
+            with contextlib.suppress(Exception):
                 self.acc_callback((acc_data.timestamp, acc_data.data))
-            except Exception:
-                pass

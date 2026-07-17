@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
 
 from bleak import BleakScanner
 
@@ -18,7 +17,7 @@ def _device_name(device, advertisement_data=None) -> str:
     return name or ""
 
 
-def _device_matches_target(device, name: str, target: Optional[str]) -> bool:
+def _device_matches_target(device, name: str, target: str | None) -> bool:
     if not target:
         return False
 
@@ -39,7 +38,7 @@ def _is_preferred_polar_name(name: str) -> bool:
 
 
 async def discover_polar_device(
-    target: Optional[str] = None,
+    target: str | None = None,
     *,
     timeout: float = 20.0,
     fallback_after: float = 6.0,
@@ -85,11 +84,11 @@ async def discover_polar_device(
 
 
 async def discover_dual_polar_devices(
-    h10_target: Optional[str] = None,
-    sense_target: Optional[str] = None,
+    h10_target: str | None = None,
+    sense_target: str | None = None,
     *,
     timeout: float = 10.0,
-) -> tuple[Optional[object], Optional[object]]:
+) -> tuple[object | None, object | None]:
     """Scan for both a Polar H10 and a Polar Verity Sense/OH1 simultaneously.
 
     Returns:

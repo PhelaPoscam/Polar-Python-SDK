@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
 import time
@@ -26,18 +27,16 @@ from polar_ble_sdk.dashboard_utils import (  # noqa: E402
     CsvLogger,
     calculate_rmssd,
     device_panel,
-    make_device_state,
-    read_battery,
     feed_hr,
     make_callback,
+    make_device_state,
+    read_battery,
     update_hz_for_state,
 )
 
 if sys.platform == "win32":
-    try:
+    with contextlib.suppress(Exception):
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
-    except Exception:
-        pass
 
 H10_CSV = [
     "Timestamp",
@@ -371,7 +370,5 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
