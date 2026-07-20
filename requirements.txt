@@ -1,4 +1,2 @@
 # Bluetooth Low Energy
 bleak
-# TODO: Replace polar-python with pure bleak by implementing internal PMD control point and binary data decoders
-polar-python>=1.0.0

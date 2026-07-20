@@ -20,7 +20,7 @@ repos:
         types: [python]
         args: [src/, scripts/]
         pass_filenames: false
-        additional_dependencies: [mypy, bleak, polar-python, rich]
+        additional_dependencies: [mypy, bleak, rich]
 
       - id: vulture
         name: vulture
