@@ -81,7 +81,7 @@ class _StreamFrameLogger:
         "hr": ["Timestamp_s", "HeartRate_BPM", "RR_Intervals_ms"],
         "ppi": ["Timestamp_s", "PPI_ms"],
     }
-    _WIDE_COLUMS: set[str] = {"ecg", "ppg"}
+    _WIDE_COLUMNS: set[str] = {"ecg", "ppg"}
 
     def __init__(self, path: Path, stream: str) -> None:
         self._path = path
@@ -107,7 +107,7 @@ class _StreamFrameLogger:
             hr_val, rr_list = data
             rr_str = ";".join(f"{rr:.1f}" for rr in rr_list) if rr_list else ""
             self._writer.writerow([f"{rel_s:.3f}", hr_val, rr_str])
-        elif self._stream in self._WIDE_COLUMS:
+        elif self._stream in self._WIDE_COLUMNS:
             self._writer.writerow([f"{rel_s:.3f}", *data])
         else:
             for sample in data:
