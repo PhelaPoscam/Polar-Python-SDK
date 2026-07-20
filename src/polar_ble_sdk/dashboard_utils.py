@@ -56,10 +56,16 @@ def make_device_state(name: str = "Polar Device") -> dict[str, Any]:
         "gyro_hz": 0.0,
         "gyro_last_sample": "-",
         "gyro_raw": (0.0, 0.0, 0.0),
+        "ecg_count": 0,
+        "ecg_hz": 0.0,
+        "ecg_last_sample": "-",
         "mag_count": 0,
         "mag_hz": 0.0,
         "mag_last_sample": "-",
         "mag_raw": (0.0, 0.0, 0.0),
+        "ppi_count": 0,
+        "ppi_hz": 0.0,
+        "ppi_last_sample": "-",
         "battery": "-",
         "marker_log": deque(maxlen=5),
         "last_marker": "-",
@@ -127,16 +133,36 @@ def feed_mag(data, state: dict[str, Any], ts: deque) -> None:
     )
 
 
+def feed_ecg(data, state: dict[str, Any], ts: deque) -> None:
+    """Update *state* and *ts* deque from ECG callback data."""
+    _timestamp, samples = data
+    state["ecg_count"] += len(samples)
+    ts.append((time.time(), len(samples)))
+    last_val = samples[-1]
+    state["ecg_last_sample"] = f"{last_val:+5d} µV"
+
+
+def feed_ppi(data, state: dict[str, Any], ts: deque) -> None:
+    """Update *state* and *ts* deque from PPI callback data.
+    data is a list of (timestamp_ns, ppi_ms) tuples."""
+    if data:
+        state["ppi_count"] += len(data)
+        ts.append((time.time(), len(data)))
+        state["ppi_last_sample"] = f"PPI={data[-1][1]} ms"
+
+
 def make_callback(state: dict[str, Any], ts_deque: deque, kind: str) -> Callable:
     """Return a one-arg closure that updates *state* from BLE data.
 
-    ``kind`` is one of: ppg, acc, gyro, mag.
+    ``kind`` is one of: ecg, ppg, acc, gyro, mag, ppi.
     """
     feeders = {
+        "ecg": feed_ecg,
         "ppg": feed_ppg,
         "acc": feed_acc,
         "gyro": feed_gyro,
         "mag": feed_mag,
+        "ppi": feed_ppi,
     }
     fn = feeders[kind]
 
@@ -266,11 +292,11 @@ class CsvLogger:
 def device_panel(
     state: dict[str, Any],
     is_h10: bool,
-    rmssd: float | None = None,
-    sparkline: str | None = None,
+    _rmssd: float | None = None,
+    _sparkline: str | None = None,
     marker_legend: str = "",
 ) -> Panel:
-    """Build a Rich Panel for a single device."""
+    """Build a Rich Panel for a single device — raw streamed data only."""
 
     def _hr_style(val: int) -> str:
         if val > 90:
@@ -279,92 +305,71 @@ def device_panel(
             return "bold green"
         return "red"
 
-    def _status_color(s: str) -> str:
-        lower = s.lower()
-        if "streaming" in lower or "connected" in lower:
-            return "bold green"
-        if "not found" in lower or "error" in lower:
-            return "bold red"
-        return "bold yellow"
-
-    rmssd_val = calculate_rmssd(state["rr_history"]) if rmssd is None else rmssd
-    spark = (
-        draw_sparkline(state["hr_history"], width=30)
-        if sparkline is None
-        else sparkline
-    )
-
     hr_text = Text()
     hr_text.append(f"{state['hr']:3d}", style=_hr_style(state["hr"]))
     hr_text.append(" BPM", style="dim white")
 
-    hrv_text = Text()
-    hrv_text.append(f"{rmssd_val:5.1f}", style="bold magenta")
-    hrv_text.append(" ms (RMSSD)", style="dim white")
+    rr_display = [f"{rr:.0f}" for rr in list(state.get("rr_intervals", []))[-3:]]
+    rr_text = Text()
+    rr_text.append(f"RR: {rr_display} ms", style="bold magenta")
 
     metrics = Table.grid(expand=True)
     metrics.add_column(ratio=1)
     metrics.add_column(ratio=1)
     metrics.add_row(
         Panel(hr_text, title="Heart Rate", border_style="red", expand=True),
-        Panel(hrv_text, title="HRV (RMSSD)", border_style="magenta", expand=True),
-    )
-
-    spark_panel = Panel(
-        Text(f"Trend: {spark}", style="bold red"),
-        title="Heart Rate Trend",
-        border_style="red",
-        expand=True,
+        Panel(
+            rr_text, title="RR Intervals (last 3)", border_style="magenta", expand=True
+        ),
     )
 
     streams = Table(expand=True)
     streams.add_column("Stream", style="cyan")
     streams.add_column("Status", style="magenta")
-    streams.add_column("Rate", justify="right")
     streams.add_column("Latest", style="green", ratio=2)
-
-    def safe_hz(k: str) -> str:
-        v = state.get(f"{k}_hz", 0)
-        return f"{v:.1f} Hz" if v else "—"
 
     streams.add_row(
         "HR",
         "Active" if state["hr"] > 0 else "Waiting...",
-        "~1 Hz",
-        f"HR={state['hr']} BPM, RR={list(state['rr_intervals'])[-3:]}",
+        f"HR={state['hr']} BPM, RR={rr_display}",
     )
 
     if is_h10:
         streams.add_row(
+            "ECG",
+            "Active" if state["ecg_hz"] > 0 else "Inactive",
+            state["ecg_last_sample"],
+        )
+        streams.add_row(
             "ACC",
             "Active" if state["acc_hz"] > 0 else "Inactive",
-            safe_hz("acc"),
             state["acc_last_sample"],
         )
     else:
         streams.add_row(
             "PPG",
             "Active" if state["ppg_hz"] > 0 else "Inactive",
-            safe_hz("ppg"),
             state["ppg_last_sample"],
         )
         streams.add_row(
             "ACC",
             "Active" if state["acc_hz"] > 0 else "Inactive",
-            safe_hz("acc"),
             state["acc_last_sample"],
         )
         streams.add_row(
             "GYRO",
             "Active" if state["gyro_hz"] > 0 else "Inactive",
-            safe_hz("gyro"),
             state["gyro_last_sample"],
         )
         streams.add_row(
             "MAG",
             "Active" if state["mag_hz"] > 0 else "Inactive",
-            safe_hz("mag"),
             state["mag_last_sample"],
+        )
+        streams.add_row(
+            "PPI",
+            "Active" if state["ppi_hz"] > 0 else "Inactive",
+            state["ppi_last_sample"],
         )
 
     info = Text()
@@ -373,7 +378,7 @@ def device_panel(
     if csv_rows:
         info.append(f"  |  CSV: {csv_rows} rows", style="cyan")
 
-    group = Group(metrics, spark_panel, streams, Panel(info, border_style="dim white"))
+    group = Group(metrics, streams, Panel(info, border_style="dim white"))
     border = (
         "green" if "connected" in str(state.get("status", "")).lower() else "yellow"
     )
@@ -393,6 +398,7 @@ def header_bar(
     battery: str = "",
     csv_path: str = "",
     csv_rows: int = 0,
+    ecg_log_path: str = "",
     marker_legend: str = "",
 ) -> Text:
     """Build a one-line status bar for the dashboard title."""
@@ -411,6 +417,8 @@ def header_bar(
     t.append(f"Elapsed: {elapsed:.1f}s", style="bold green")
     if csv_path and csv_path != "-":
         t.append(f"\nLog: {Path(csv_path).name} ({csv_rows} rows)", style="cyan")
+    if ecg_log_path:
+        t.append(f"\nECG: {Path(ecg_log_path).name}", style="green")
     if marker_legend:
         t.append(f"\nHotkeys: {marker_legend}", style="dim yellow")
     return t

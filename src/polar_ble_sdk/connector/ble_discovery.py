@@ -37,13 +37,48 @@ def _is_preferred_polar_name(name: str) -> bool:
     )
 
 
+async def discover_polar_devices(
+    timeout: float = 5.0,
+):
+    """Find all nearby Polar BLE devices, returning a list of (name, address) tuples."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+    found: dict[str, object] = {}
+
+    def _on_detect(device, advertisement_data):
+        name = _device_name(device, advertisement_data)
+        if _is_polar_name(name):
+            addr = getattr(device, "address", "") or ""
+            if addr and addr not in found:
+                found[addr] = device
+
+    scanner = BleakScanner(_on_detect)
+    await scanner.start()
+    try:
+        await asyncio.sleep(timeout)
+    finally:
+        await scanner.stop()
+
+    results = []
+    for addr, device in found.items():
+        name = _device_name(device, None) or addr
+        results.append((name, addr, device))
+    logger.debug("discover_polar_devices: found %d device(s)", len(results))
+    return results
+
+
 async def discover_polar_device(
     target: str | None = None,
     *,
     timeout: float = 20.0,
     fallback_after: float = 6.0,
 ):
-    """Find a Polar BLE device, returning early for exact/preferred sensor matches."""
+    """Find a Polar BLE device, returning early for exact/preferred sensor matches.
+
+    If ``target`` is None the first preferred Polar device wins immediately.
+    Pass a specific name or MAC to select a particular device.
+    """
     fallback_device = None
     selected_device = None
     selected_event = asyncio.Event()

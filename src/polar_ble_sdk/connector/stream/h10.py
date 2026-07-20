@@ -1,8 +1,7 @@
 import contextlib
 from collections.abc import Callable
 
-from polar_python.constants import PmdMeasurementType
-
+from ..._pmd.constants import PmdMeasurementType
 from .base import BasePolarDevice
 
 

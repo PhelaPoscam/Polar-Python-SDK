@@ -154,3 +154,15 @@ The terminal dashboard supports hotkey event markers (SPACE, S, B, R) and 1 Hz C
 ```bash
 pytest tests/ -v
 ```
+
+---
+
+## Acknowledgements & Disclaimer
+
+This project builds upon and draws inspiration from the following open-source resources:
+- [zHElEARN/polar-python](https://github.com/zHElEARN/polar-python)
+- [polarofficial/polar-ble-sdk](https://github.com/polarofficial/polar-ble-sdk)
+
+> [!IMPORTANT]
+> **Trademark Disclaimer:** This project is an unofficial, third-party open-source library. It is not affiliated with, endorsed by, or certified by Polar Electro Oy.
+

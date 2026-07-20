@@ -2,8 +2,7 @@ import contextlib
 import traceback
 from collections.abc import Callable
 
-from polar_python.constants import PmdMeasurementType
-
+from ..._pmd.constants import PmdMeasurementType
 from .base import BasePolarDevice
 
 
@@ -165,20 +164,14 @@ class PolarVeritySense(BasePolarDevice):
                 self.ecg_callback((ecg_data.timestamp, ecg_data.data))
 
     def _ppi_handler(self, ppi_data) -> None:
-        ppi_vals = [s.ppi for s in ppi_data.samples if not s.invalid_ppi]
-        if self.ppi_callback:
-            try:
-                if ppi_vals:
-                    self.ppi_callback((ppi_data.timestamp, ppi_vals))
-            except Exception:
-                pass
-        # Forward the computed heart rate from the PPI samples to the standard HR callback
+        ppi_vals = [(s.timestamp, s.ppi) for s in ppi_data.samples if not s.invalid_ppi]
+        if self.ppi_callback and ppi_vals:
+            with contextlib.suppress(Exception):
+                self.ppi_callback(ppi_vals)
         if self.callback and ppi_data.samples:
-            try:
+            with contextlib.suppress(Exception):
                 latest_sample = ppi_data.samples[-1]
-                self.callback((latest_sample.hr, ppi_vals))
-            except Exception:
-                pass
+                self.callback((latest_sample.hr, [v[1] for v in ppi_vals]))
 
     def _ppg_handler(self, ppg_data) -> None:
         if self.ppg_callback:
