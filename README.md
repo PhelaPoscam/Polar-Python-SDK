@@ -135,17 +135,44 @@ class SignalPacket:
 
 ---
 
-## CLI Tools
+## CLI Tools & Commands
 
-| Script | Command |
-|--------|---------|
-| Single-device dashboard | `monitor-polar` or `python scripts/monitor_polar_terminal.py` |
-| Dual-device dashboard | `python scripts/monitor_dual_polar.py` |
-| Simple stream | `python scripts/connect_polar.py` |
-| BLE scanner | `python scripts/scan_ble.py` |
-| Windows BLE pairing helper | `.\scripts\pair_watch.ps1` |
+This SDK provides several command-line tools for real-time monitoring, protocol inspection, and raw CSV data logging.
 
-The terminal dashboard supports hotkey event markers (SPACE, S, B, R) and 1 Hz CSV logging into `data/`.
+### Available Tools
+
+| Tool / Script | Command | Description |
+|---|---|---|
+| **Single-Device Dashboard** | `monitor-polar`<br>*(or `python scripts/monitor_polar_terminal.py`)* | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, sparkline trends, and hotkey markers. Logs 1 Hz summary or full raw streams to CSV. |
+| **Dual-Device Dashboard** | `python scripts/monitor_dual_polar.py` | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Shows side-by-side stream status and records synchronized 1 Hz summary or full raw CSV logs. |
+| **Low-Level PMD Utility** | `python -m polar_ble_sdk._pmd <subcommand>` | Direct protocol interaction tool. Supports subcommands:<br>• `scan`: Scan for nearby Polar devices<br>• `inspect --address <MAC>`: Query available GATT PMD features and stream settings<br>• `stream --address <MAC> -s <hr/ecg/acc/...>`: Stream raw PMD packets |
+| **BLE Scanner** | `python scripts/scan_ble.py` | Quick discovery utility to scan for all nearby Bluetooth Low Energy devices and display MAC addresses/names. |
+| **Simple Stream Tester** | `python scripts/connect_polar.py` | Minimal testing script demonstrating basic connection and raw callback stream printing. |
+| **Windows Pairing Helper** | `.\scripts\pair_watch.ps1` | PowerShell helper script to assist with Windows WinRT Bluetooth pairing for Polar watches. |
+
+---
+
+### Common Command-Line Flags
+
+#### `monitor-polar` (Single-Device Dashboard)
+| Flag | Description | Example |
+|---|---|---|
+| `--device` | Target device name substring or exact MAC address. | `monitor-polar --device "H10"` |
+| `--type` | Force device type (`h10` or `sense`) and default stream sets. | `monitor-polar --type h10` |
+| `--streams` | Comma-separated list of streams to enable (`hr,ecg,acc,ppg,ppi,gyro,mag`). | `--streams hr,ecg,acc` |
+| `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
+| `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
+| `--no-log` | Disable all CSV logging completely. | `monitor-polar --no-log` |
+| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=Event, S=Start, B=Baseline, R=Recovery`. | `--markers "SPACE=Jump,S=Sprint"` |
+| `--<sensor>-rate` | Override specific sensor sampling rate (e.g., `--ecg-rate 130`, `--acc-rate 200`). | `--ecg-rate 130` |
+
+#### `scripts/monitor_dual_polar.py` (Dual-Device Dashboard)
+| Flag | Description | Example |
+|---|---|---|
+| `--h10` | Target MAC address or name for the Polar H10. | `--h10 "Polar H10 12345678"` |
+| `--sense` | Target MAC address or name for the Verity Sense. | `--sense "Polar Sense 87654321"` |
+| `--log-full` | Enable full-resolution raw CSV logs for both H10 (`data/dual/.../h10/raw/`) and Sense (`data/dual/.../sense/raw/`). | `python scripts/monitor_dual_polar.py --log-full` |
+| `--no-log` | Disable summary and full CSV logging. | `python scripts/monitor_dual_polar.py --no-log` |
 
 ---
 
