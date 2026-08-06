@@ -28,9 +28,6 @@ logger = logging.getLogger(__name__)
 
 BATTERY_SERVICE_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
-# Sparkline block characters (dark → full).
-_SPARK_CHARS = " ▂▃▄▅▆▇█"
-
 
 # ── Device state factory ──────────────────────────────────────────────
 
@@ -71,10 +68,22 @@ def make_device_state(name: str = "Polar Device") -> dict[str, Any]:
         "last_marker": "-",
         "csv_path": "-",
         "csv_rows_written": 0,
+        # Session-level accumulators for Hz verification (survive deque rotation)
+        "_session_streams": {},
     }
 
 
 # ── Generic callbacks (feed state from BLE data) ─────────────────────
+
+
+def _track_session(state: dict[str, Any], stream: str, sample_count: int) -> None:
+    """Increment session-level accumulators for Hz verification."""
+    now = time.time()
+    acc = state["_session_streams"].setdefault(
+        stream, {"samples": 0, "first_ts": now, "last_ts": now}
+    )
+    acc["samples"] += sample_count
+    acc["last_ts"] = now
 
 
 def feed_hr(data, state: dict[str, Any]) -> None:
@@ -95,6 +104,7 @@ def feed_ppg(data, state: dict[str, Any], ts: deque) -> None:
     state["ppg_count"] += len(samples)
     ts.append((time.time(), len(samples)))
     state["ppg_last_sample"] = str(samples[-1] if samples else "")
+    _track_session(state, "ppg", len(samples))
 
 
 def feed_acc(data, state: dict[str, Any], ts: deque) -> None:
@@ -107,6 +117,7 @@ def feed_acc(data, state: dict[str, Any], ts: deque) -> None:
     state["acc_last_sample"] = (
         f"({last_val[0]:+4d}, {last_val[1]:+4d}, {last_val[2]:+4d}) mg"
     )
+    _track_session(state, "acc", len(samples))
 
 
 def feed_gyro(data, state: dict[str, Any], ts: deque) -> None:
@@ -119,6 +130,7 @@ def feed_gyro(data, state: dict[str, Any], ts: deque) -> None:
     state["gyro_last_sample"] = (
         f"({last_val[0]:+4.1f}, {last_val[1]:+4.1f}, {last_val[2]:+4.1f}) dps"
     )
+    _track_session(state, "gyro", len(samples))
 
 
 def feed_mag(data, state: dict[str, Any], ts: deque) -> None:
@@ -131,6 +143,7 @@ def feed_mag(data, state: dict[str, Any], ts: deque) -> None:
     state["mag_last_sample"] = (
         f"({last_val[0]:+3.1f}, {last_val[1]:+3.1f}, {last_val[2]:+3.1f}) uT"
     )
+    _track_session(state, "mag", len(samples))
 
 
 def feed_ecg(data, state: dict[str, Any], ts: deque) -> None:
@@ -140,6 +153,7 @@ def feed_ecg(data, state: dict[str, Any], ts: deque) -> None:
     ts.append((time.time(), len(samples)))
     last_val = samples[-1]
     state["ecg_last_sample"] = f"{last_val:+5d} µV"
+    _track_session(state, "ecg", len(samples))
 
 
 def feed_ppi(data, state: dict[str, Any], ts: deque) -> None:
@@ -149,6 +163,7 @@ def feed_ppi(data, state: dict[str, Any], ts: deque) -> None:
         state["ppi_count"] += len(data)
         ts.append((time.time(), len(data)))
         state["ppi_last_sample"] = f"PPI={data[-1][1]} ms"
+        _track_session(state, "ppi", len(data))
 
 
 def make_callback(state: dict[str, Any], ts_deque: deque, kind: str) -> Callable:
@@ -184,26 +199,6 @@ def calculate_rmssd(rr_list) -> float:
     return float(math.sqrt(sum(d * d for d in diffs) / len(diffs)))
 
 
-def draw_sparkline(history, width: int = 30) -> str:
-    """Render a single-line text sparkline from a deque of numeric values."""
-    if not history:
-        return ""
-    data = list(history)[-width:]
-    if not data:
-        return ""
-    val_min = min(data)
-    val_max = max(data)
-    val_range = val_max - val_min or 1
-
-    num_chars = len(_SPARK_CHARS)
-    spark = ""
-    for v in data:
-        idx = int((v - val_min) / val_range * (num_chars - 1))
-        idx = max(0, min(num_chars - 1, idx))
-        spark += _SPARK_CHARS[idx]
-    return spark
-
-
 # ── Hz tracking ───────────────────────────────────────────────────────
 
 
@@ -228,6 +223,37 @@ def update_hz_for_state(
         total_samples = sum(item[1] for item in recent)
         time_span = now - recent[0][0]
         state[f"{prefix}_hz"] = total_samples / time_span if time_span > 0.1 else 0.0
+
+
+# ── Session Hz summary ────────────────────────────────────────────────
+
+
+def compute_session_hz(state: dict[str, Any], stream: str) -> float:
+    """Compute average Hz over the full session from session accumulators.
+
+    Returns 0.0 if insufficient data.
+    """
+    acc = state["_session_streams"].get(stream)
+    if not acc or acc["last_ts"] <= acc["first_ts"]:
+        return 0.0
+    return acc["samples"] / (acc["last_ts"] - acc["first_ts"])
+
+
+def print_hz_summary(
+    configured: dict[str, int],
+    state: dict[str, Any],
+) -> None:
+    """Print a session-end Hz summary table comparing configured vs actual rates."""
+    print("\n" + "=" * 56)
+    print("  SESSION HZ VERIFICATION")
+    print("=" * 56)
+    print(f"  {'Stream':<8} {'Configured':>10} {'Observed':>10} {'Match':>8}")
+    print("-" * 56)
+    for name, cfg_rate in configured.items():
+        actual = compute_session_hz(state, name)
+        match = "OK" if abs(actual - cfg_rate) / max(cfg_rate, 1) < 0.05 else "X"
+        print(f"  {name:<8} {cfg_rate:>8} Hz {actual:>8.2f} Hz {match:>8}")
+    print("=" * 56 + "\n")
 
 
 # ── Battery ───────────────────────────────────────────────────────────
@@ -286,6 +312,93 @@ class CsvLogger:
             logger.warning("CSV write failed: %s", e)
 
 
+# ── Full-resolution frame CSV logger ────────────────────────────────────
+
+
+class StreamFrameLogger:
+    """Writes PMD/HR/PPI frames to a CSV file inside the session directory."""
+
+    _COLUMNS: dict[str, list[str]] = {
+        "ecg": ["Timestamp_s", "uV_Samples"],
+        "ppg": ["Timestamp_s", "Sample_Channels"],
+        "acc": ["Timestamp_s", "X_mG", "Y_mG", "Z_mG"],
+        "gyro": ["Timestamp_s", "X_dps", "Y_dps", "Z_dps"],
+        "mag": ["Timestamp_s", "X_G", "Y_G", "Z_G"],
+        "hr": ["Timestamp_s", "HeartRate_BPM", "RR_Intervals_ms"],
+        "ppi": ["Timestamp_s", "PPI_ms"],
+    }
+
+    _WIDE_COLUMNS: set[str] = {"ecg", "ppg"}
+
+    def __init__(self, path: Path, stream: str) -> None:
+        self._path = path
+        self._stream = stream
+        self._writer: Any = None
+        self._file: Any = None
+        self._first_ts_ns: int | None = None
+        self._ppi_cumulative_s: float = 0.0
+
+    def open(self) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self._path.open("w", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._file)  # type: ignore[arg-type]
+        self._writer.writerow(self._COLUMNS[self._stream])
+
+    def write_frame(self, timestamp_ns: int, data) -> None:
+        if not self._writer:
+            return
+        if self._first_ts_ns is None:
+            self._first_ts_ns = timestamp_ns
+        rel_s = (timestamp_ns - self._first_ts_ns) / 1e9
+        if self._stream == "hr":
+            hr_val, rr_list = data
+            rr_str = ";".join(f"{rr:.1f}" for rr in rr_list) if rr_list else ""
+            self._writer.writerow([f"{rel_s:.3f}", hr_val, rr_str])
+        elif self._stream in self._WIDE_COLUMNS:
+            self._writer.writerow([f"{rel_s:.3f}", *data])
+        else:
+            for sample in data:
+                self._writer.writerow([f"{rel_s:.3f}", *sample])
+
+    def write_ppi_frames(self, data) -> None:
+        if not self._writer:
+            return
+        for _ppi_ts_ns, ppi_val in data:
+            self._writer.writerow([f"{self._ppi_cumulative_s:.3f}", ppi_val])
+            self._ppi_cumulative_s += ppi_val / 1000.0
+
+    def close(self) -> None:
+        if self._file:
+            self._file.close()
+            self._file = None
+            self._writer = None
+
+    @property
+    def path_str(self) -> str:
+        return str(self._path)
+
+
+def make_frame_callback(dashboard_cb, frame_logger: StreamFrameLogger):
+    """Wrap a dashboard callback to also log full-res frames."""
+
+    def cb(data):
+        dashboard_cb(data)
+        timestamp, samples = data
+        frame_logger.write_frame(timestamp, samples)
+
+    return cb
+
+
+def make_ppi_callback(dashboard_cb, frame_logger: StreamFrameLogger):
+    """Wrap a PPI dashboard callback to also log full-res frames."""
+
+    def cb(data):
+        dashboard_cb(data)
+        frame_logger.write_ppi_frames(data)
+
+    return cb
+
+
 # ── Dashboard rendering ────────────────────────────────────────────────
 
 
@@ -293,7 +406,6 @@ def device_panel(
     state: dict[str, Any],
     is_h10: bool,
     _rmssd: float | None = None,
-    _sparkline: str | None = None,
     marker_legend: str = "",
 ) -> Panel:
     """Build a Rich Panel for a single device — raw streamed data only."""

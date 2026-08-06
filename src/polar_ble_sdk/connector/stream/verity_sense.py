@@ -52,17 +52,6 @@ class PolarVeritySense(BasePolarDevice):
                 if self.verbose:
                     traceback.print_exc()
 
-        # 2. Start ECG stream
-        await self._start_pmd_stream(
-            self.ecg_callback,
-            PmdMeasurementType.ECG,
-            "start_ecg_stream",
-            self._ecg_handler,
-            features,
-            {"sample_rate": 130, "resolution": 14},
-            "ECG",
-        )
-
         # 3. Start PPG stream
         await self._start_pmd_stream(
             self.ppg_callback,
@@ -104,7 +93,7 @@ class PolarVeritySense(BasePolarDevice):
             "start_gyro_stream",
             self._gyro_handler,
             features,
-            {"sample_rate": 52, "resolution": 16, "range": 2, "channels": 3},
+            {"sample_rate": 52, "resolution": 16, "range": 2000, "channels": 3},
             "GYRO",
         )
 
@@ -158,20 +147,11 @@ class PolarVeritySense(BasePolarDevice):
             with contextlib.suppress(Exception):
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))
 
-    def _ecg_handler(self, ecg_data) -> None:
-        if self.ecg_callback:
-            with contextlib.suppress(Exception):
-                self.ecg_callback((ecg_data.timestamp, ecg_data.data))
-
     def _ppi_handler(self, ppi_data) -> None:
         ppi_vals = [(s.timestamp, s.ppi) for s in ppi_data.samples if not s.invalid_ppi]
         if self.ppi_callback and ppi_vals:
             with contextlib.suppress(Exception):
                 self.ppi_callback(ppi_vals)
-        if self.callback and ppi_data.samples:
-            with contextlib.suppress(Exception):
-                latest_sample = ppi_data.samples[-1]
-                self.callback((latest_sample.hr, [v[1] for v in ppi_vals]))
 
     def _ppg_handler(self, ppg_data) -> None:
         if self.ppg_callback:
