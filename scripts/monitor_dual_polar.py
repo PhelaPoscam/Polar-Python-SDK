@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import csv
 import logging
 import sys
 import time
@@ -26,11 +25,15 @@ from polar_ble_sdk.connector.ble_discovery import (  # noqa: E402
 from polar_ble_sdk.connector.stream import create_polar_connector  # noqa: E402
 from polar_ble_sdk.dashboard_utils import (  # noqa: E402
     CsvLogger,
+    StreamFrameLogger,
     calculate_rmssd,
     device_panel,
     feed_hr,
     make_callback,
     make_device_state,
+    make_frame_callback,
+    make_ppi_callback,
+    print_hz_summary,
     read_battery,
     update_hz_for_state,
 )
@@ -68,87 +71,8 @@ SENSE_SUMMARY_COLS = [
     "MAG_Z",
 ]
 
-# ── Full-resolution logger ─────────────────────────────────────────────
 
-
-class _StreamFrameLogger:
-    _COLUMNS: dict[str, list[str]] = {
-        "ecg": ["Timestamp_s", "uV_Samples"],
-        "ppg": ["Timestamp_s", "Sample_Channels"],
-        "acc": ["Timestamp_s", "X_mG", "Y_mG", "Z_mG"],
-        "gyro": ["Timestamp_s", "X_dps", "Y_dps", "Z_dps"],
-        "mag": ["Timestamp_s", "X_G", "Y_G", "Z_G"],
-        "hr": ["Timestamp_s", "HeartRate_BPM", "RR_Intervals_ms"],
-        "ppi": ["Timestamp_s", "PPI_ms"],
-    }
-    _WIDE_COLUMNS: set[str] = {"ecg", "ppg"}
-
-    def __init__(self, path: Path, stream: str) -> None:
-        self._path = path
-        self._stream = stream
-        self._writer: Any = None
-        self._file: Any = None
-        self._first_ts_ns: int | None = None
-        self._ppi_cumulative_s: float = 0.0
-
-    def open(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self._path.open("w", newline="", encoding="utf-8")
-        self._writer = csv.writer(self._file)  # type: ignore[arg-type]
-        self._writer.writerow(self._COLUMNS[self._stream])
-
-    def write_frame(self, timestamp_ns: int, data) -> None:
-        if not self._writer:
-            return
-        if self._first_ts_ns is None:
-            self._first_ts_ns = timestamp_ns
-        rel_s = (timestamp_ns - self._first_ts_ns) / 1e9
-        if self._stream == "hr":
-            hr_val, rr_list = data
-            rr_str = ";".join(f"{rr:.1f}" for rr in rr_list) if rr_list else ""
-            self._writer.writerow([f"{rel_s:.3f}", hr_val, rr_str])
-        elif self._stream in self._WIDE_COLUMNS:
-            self._writer.writerow([f"{rel_s:.3f}", *data])
-        else:
-            for sample in data:
-                self._writer.writerow([f"{rel_s:.3f}", *sample])
-
-    def write_ppi_frames(self, data) -> None:
-        if not self._writer:
-            return
-        for _ppi_ts_ns, ppi_val in data:
-            self._writer.writerow([f"{self._ppi_cumulative_s:.3f}", ppi_val])
-            self._ppi_cumulative_s += ppi_val / 1000.0
-
-    def close(self) -> None:
-        if self._file:
-            self._file.close()
-            self._file = None
-            self._writer = None
-
-    @property
-    def path_str(self) -> str:
-        return str(self._path)
-
-
-def _make_frame_callback(dashboard_cb, frame_logger: _StreamFrameLogger):
-    def cb(data):
-        dashboard_cb(data)
-        timestamp, samples = data
-        frame_logger.write_frame(timestamp, samples)
-
-    return cb
-
-
-def _make_ppi_callback(dashboard_cb, frame_logger: _StreamFrameLogger):
-    def cb(data):
-        dashboard_cb(data)
-        frame_logger.write_ppi_frames(data)
-
-    return cb
-
-
-def _make_hr_logger(hr_cb, hr_logger: _StreamFrameLogger):
+def _make_hr_logger(hr_cb, hr_logger: StreamFrameLogger):
     def cb(data):
         hr_cb(data)
         hr_logger.write_frame(int(time.time() * 1e9), data)
@@ -190,9 +114,10 @@ async def _battery_loop(conn: Any, state_dict: dict) -> None:
 
 
 def _unwrap(state: dict, raw_key: str, count_key: str) -> tuple:
-    val = state.get(raw_key) if state.get(count_key, 0) > 0 else (None, None, None)
-    assert isinstance(val, tuple) and len(val) == 3
-    return val[0], val[1], val[2]
+    val = state.get(raw_key) if state.get(count_key, 0) > 0 else None
+    if isinstance(val, tuple) and len(val) == 3:
+        return val[0], val[1], val[2]
+    return None, None, None
 
 
 def _make_grid(start: float) -> Panel:
@@ -326,8 +251,8 @@ async def main() -> None:
         }
 
         # ── Build callbacks, optionally wrapping with full-res loggers ──
-        h10_loggers: dict[str, _StreamFrameLogger] = {}
-        sense_loggers: dict[str, _StreamFrameLogger] = {}
+        h10_loggers: dict[str, StreamFrameLogger] = {}
+        sense_loggers: dict[str, StreamFrameLogger] = {}
 
         h10_hr_cb = _h10_hr_cb
         h10_ecg_cb = _h10_ecg_cb
@@ -345,17 +270,17 @@ async def main() -> None:
                     ("ecg", _h10_ecg_cb),
                     ("acc", _h10_acc_cb),
                 ]:
-                    logger = _StreamFrameLogger(
+                    logger = StreamFrameLogger(
                         h10_raw / f"{stream_name}.csv", stream_name
                     )
                     logger.open()
                     h10_loggers[stream_name] = logger
                     if stream_name == "ecg":
-                        h10_ecg_cb = _make_frame_callback(bare_cb, logger)
+                        h10_ecg_cb = make_frame_callback(bare_cb, logger)
                     elif stream_name == "acc":
-                        h10_acc_cb = _make_frame_callback(bare_cb, logger)
+                        h10_acc_cb = make_frame_callback(bare_cb, logger)
                 # HR is special — use _make_hr_logger
-                logger = _StreamFrameLogger(h10_raw / "hr.csv", "hr")
+                logger = StreamFrameLogger(h10_raw / "hr.csv", "hr")
                 logger.open()
                 h10_loggers["hr"] = logger
                 h10_hr_cb = _make_hr_logger(_h10_hr_cb, logger)
@@ -372,15 +297,15 @@ async def main() -> None:
                     ("mag", _sense_mag_cb),
                     ("ppi", _sense_ppi_cb),
                 ]:
-                    logger = _StreamFrameLogger(
+                    logger = StreamFrameLogger(
                         sense_raw / f"{stream_name}.csv", stream_name
                     )
                     logger.open()
                     sense_loggers[stream_name] = logger
                     if stream_name == "ppi":
-                        sense_ppi_cb = _make_ppi_callback(bare_cb, logger)
+                        sense_ppi_cb = make_ppi_callback(bare_cb, logger)
                     else:
-                        wrapped = _make_frame_callback(bare_cb, logger)
+                        wrapped = make_frame_callback(bare_cb, logger)
                         if stream_name == "ppg":
                             sense_ppg_cb = wrapped
                         elif stream_name == "acc":
@@ -389,7 +314,7 @@ async def main() -> None:
                             sense_gyro_cb = wrapped
                         elif stream_name == "mag":
                             sense_mag_cb = wrapped
-                logger = _StreamFrameLogger(sense_raw / "hr.csv", "hr")
+                logger = StreamFrameLogger(sense_raw / "hr.csv", "hr")
                 logger.open()
                 sense_loggers["hr"] = logger
                 sense_hr_cb = _make_hr_logger(_sense_hr_cb, logger)
@@ -441,11 +366,19 @@ async def main() -> None:
             )
 
             if conn_h10 is not None:
-                state_h10["status"] = "Connected! Streaming data."
+                if conn_h10.stream_errors:
+                    failed = ", ".join(conn_h10.stream_errors.keys())
+                    state_h10["status"] = f"Connected. Failed: {failed}"
+                else:
+                    state_h10["status"] = "Connected! Streaming data."
                 state_h10["battery"] = await read_battery(conn_h10)
                 log.info("H10 battery: %s", state_h10["battery"])
             if conn_sense is not None:
-                state_sense["status"] = "Connected! Streaming data."
+                if conn_sense.stream_errors:
+                    failed = ", ".join(conn_sense.stream_errors.keys())
+                    state_sense["status"] = f"Connected. Failed: {failed}"
+                else:
+                    state_sense["status"] = "Connected! Streaming data."
                 state_sense["battery"] = await read_battery(conn_sense)
                 log.info("Sense battery: %s", state_sense["battery"])
 
@@ -540,6 +473,14 @@ async def main() -> None:
             for st in (state_h10, state_sense):
                 st["status"] = "Disconnected."
             live.update(_make_grid(start))
+
+            # Session-end Hz verification
+            if conn_h10 is not None:
+                print_hz_summary({"ecg": 130, "acc": 200}, state_h10)
+            if conn_sense is not None:
+                print_hz_summary(
+                    {"ppg": 55, "acc": 52, "gyro": 52, "mag": 20}, state_sense
+                )
             await asyncio.sleep(1)
 
 

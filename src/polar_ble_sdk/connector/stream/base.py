@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import sys
 import time
-import traceback
 from typing import Any
 
 from ..._pmd import PolarDevice
@@ -32,6 +31,7 @@ class BasePolarDevice:
         )
         self.pair_timeout = kwargs.get("pair_timeout", 60.0)
         self.post_pair_delay = kwargs.get("post_pair_delay", 2.0)
+        self.stream_errors: dict[str, str] = {}
 
     def _log(self, msg: str) -> None:
         if self.verbose:
@@ -39,6 +39,7 @@ class BasePolarDevice:
 
     async def start_notify(self) -> None:
         """Connect to device and initialize notifications."""
+        self.stream_errors = {}
         device_name = getattr(self.device, "name", "") or ""
         last_error: Any = None
 
@@ -223,16 +224,18 @@ class BasePolarDevice:
         if clear_device:
             self.polar_device = None
 
-    async def _get_default_settings(self, measurement_type: PmdMeasurementType) -> dict:
-        """Query the device for available settings and extract the first supported value."""
+    async def _get_available_settings(
+        self, measurement_type: PmdMeasurementType
+    ) -> dict:
+        """Query the device for all available settings per type."""
         try:
             settings_obj = await self.polar_device.request_stream_settings(
                 measurement_type
             )
-            settings_dict = {}
+            settings_dict: dict = {}
             for s in settings_obj.settings:
                 if s.values:
-                    settings_dict[s.type] = s.values[0]
+                    settings_dict[s.type] = list(s.values)
             return settings_dict
         except Exception as ex:
             self._log(
@@ -249,7 +252,7 @@ class BasePolarDevice:
         features: list,
         defaults: dict,
         label: str,
-    ) -> None:
+    ) -> bool:
         """Start a PMD measurement stream with standard setup, debug logging and error handling.
 
         Args:
@@ -260,26 +263,49 @@ class BasePolarDevice:
             features: List of available PMD features from ``get_available_features()``.
             defaults: Fallback kwargs keyed by string parameter name when not available in settings.
             label: Human-readable stream name for debug output.
+
+        Returns:
+            True if the stream started successfully, False otherwise.
         """
         if not callback:
-            return
+            return True
         if measurement_type not in features:
             self._log(f"[DEBUG] {label} skipped — not in available features")
-            return
+            return False
         try:
-            settings = await self._get_default_settings(measurement_type)
-            # Normalise setting-type keys to plain strings so they can be unpacked as **kwargs.
+            available = await self._get_available_settings(measurement_type)
+            # Build resolved settings: start from defaults, select closest
+            # available value from device, then apply custom overrides.
             resolved: dict[str, object] = {}
-            for key, value in settings.items():
-                if hasattr(key, "name"):
-                    key_str = key.name.lower()
-                elif hasattr(key, "value") and isinstance(key.value, str):
-                    key_str = key.value
-                else:
-                    key_str = str(key)
-                resolved[key_str] = value
-            for key, value in defaults.items():
-                resolved.setdefault(key, value)
+            for key, desired in defaults.items():
+                # Find the matching setting type from the device response
+                pmd_key = None
+                for available_key in available:
+                    if hasattr(available_key, "name"):
+                        key_str = available_key.name.lower()
+                    elif hasattr(available_key, "value") and isinstance(
+                        available_key.value, str
+                    ):
+                        key_str = available_key.value
+                    else:
+                        key_str = str(available_key)
+                    if key_str == key:
+                        pmd_key = available_key
+                        break
+
+                if pmd_key is not None and available[pmd_key]:
+                    values = available[pmd_key]
+                    if desired is None:
+                        # No preference from defaults — use device's first value
+                        # (e.g. Verity Sense ACC needs channels=3, H10 ACC won't
+                        # have CHANNELS in available so pmd_key stays None)
+                        resolved[key] = values[0]
+                    else:
+                        # Pick the value closest to the desired default
+                        resolved[key] = min(values, key=lambda v: abs(v - desired))
+                elif desired is not None:
+                    resolved[key] = desired
+
             for key in resolved:
                 custom_key = f"{label.lower()}_{key}"
                 if (
@@ -290,7 +316,9 @@ class BasePolarDevice:
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)
             self._log(f"[DEBUG] {label} stream started OK")
-        except Exception:
-            self._log(
-                f"[DEBUG] {label} stream failed: {traceback.format_exc(limit=-3)}"
-            )
+            return True
+        except Exception as exc:
+            err_msg = f"{type(exc).__name__}: {exc}"
+            self._log(f"[DEBUG] {label} stream failed: {err_msg}")
+            self.stream_errors[label] = err_msg
+            return False

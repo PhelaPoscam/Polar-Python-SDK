@@ -10,7 +10,9 @@ from .pmd_data_frame import PmdDataFrame
 from .ppg_data import PPGData
 from .ppi_data import PPIData
 
-SensorData: TypeAlias = ECGData | ACCData | PPIData | PPGData | GyroData | MAGData
+SensorData: TypeAlias = (
+    ECGData | ACCData | PPIData | PPGData | GyroData | MAGData | HRData
+)
 
 __all__ = [
     "ACCData",

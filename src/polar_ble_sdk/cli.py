@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import csv
 import sys
 import time
 from collections import deque
@@ -20,12 +19,16 @@ from polar_ble_sdk.connector.ble_discovery import (
 from polar_ble_sdk.connector.stream import create_polar_connector
 from polar_ble_sdk.dashboard_utils import (
     CsvLogger,
+    StreamFrameLogger,
     calculate_rmssd,
     device_panel,
     feed_hr,
     header_bar,
     make_callback,
     make_device_state,
+    make_frame_callback,
+    make_ppi_callback,
+    print_hz_summary,
     read_battery,
     update_hz_for_state,
 )
@@ -38,6 +41,7 @@ if sys.platform == "win32":
 
 _H10_STREAMS = ("hr", "ecg", "acc")
 _SENSE_STREAMS = ("hr", "ppg", "ppi", "acc", "gyro", "mag")
+KNOWN_STREAMS = {"ecg", "ppg", "acc", "gyro", "mag", "hr", "ppi"}
 
 state = make_device_state("Polar Device")
 
@@ -159,9 +163,10 @@ SUMMARY_CSV_COLUMNS = [
 
 
 def _unwrap_triple(raw_key: str, count_key: str) -> list:
-    val = state.get(raw_key) if state.get(count_key, 0) > 0 else (None, None, None)
-    assert isinstance(val, tuple) and len(val) == 3
-    return [val[0], val[1], val[2]]
+    val = state.get(raw_key) if state.get(count_key, 0) > 0 else None
+    if isinstance(val, tuple) and len(val) == 3:
+        return [val[0], val[1], val[2]]
+    return [None, None, None]
 
 
 def _make_row(rmssd: float, active_marker: str) -> list:
@@ -178,90 +183,7 @@ def _make_row(rmssd: float, active_marker: str) -> list:
     ]
 
 
-# ── Full-resolution frame CSV logger ────────────────────────────────────
-
-
-class _StreamFrameLogger:
-    """Writes PMD/HR/PPI frames to a CSV file inside the session directory."""
-
-    _COLUMNS: dict[str, list[str]] = {
-        "ecg": ["Timestamp_s", "uV_Samples"],
-        "ppg": ["Timestamp_s", "Sample_Channels"],
-        "acc": ["Timestamp_s", "X_mG", "Y_mG", "Z_mG"],
-        "gyro": ["Timestamp_s", "X_dps", "Y_dps", "Z_dps"],
-        "mag": ["Timestamp_s", "X_G", "Y_G", "Z_G"],
-        "hr": ["Timestamp_s", "HeartRate_BPM", "RR_Intervals_ms"],
-        "ppi": ["Timestamp_s", "PPI_ms"],
-    }
-
-    _WIDE_COLUMNS: set[str] = {"ecg", "ppg"}
-
-    def __init__(self, path: Path, stream: str) -> None:
-        self._path = path
-        self._stream = stream
-        self._writer: Any = None
-        self._file: Any = None
-        self._first_ts_ns: int | None = None
-        self._ppi_cumulative_s: float = 0.0
-
-    def open(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = self._path.open("w", newline="", encoding="utf-8")
-        self._writer = csv.writer(self._file)  # type: ignore[arg-type]
-        self._writer.writerow(self._COLUMNS[self._stream])
-
-    def write_frame(self, timestamp_ns: int, data) -> None:
-        if not self._writer:
-            return
-        if self._first_ts_ns is None:
-            self._first_ts_ns = timestamp_ns
-        rel_s = (timestamp_ns - self._first_ts_ns) / 1e9
-        if self._stream == "hr":
-            hr_val, rr_list = data
-            rr_str = ";".join(f"{rr:.1f}" for rr in rr_list) if rr_list else ""
-            self._writer.writerow([f"{rel_s:.3f}", hr_val, rr_str])
-        elif self._stream in self._WIDE_COLUMNS:
-            self._writer.writerow([f"{rel_s:.3f}", *data])
-        else:
-            for sample in data:
-                self._writer.writerow([f"{rel_s:.3f}", *sample])
-
-    def write_ppi_frames(self, data) -> None:
-        if not self._writer:
-            return
-        for _ppi_ts_ns, ppi_val in data:
-            self._writer.writerow([f"{self._ppi_cumulative_s:.3f}", ppi_val])
-            self._ppi_cumulative_s += ppi_val / 1000.0
-
-    def close(self) -> None:
-        if self._file:
-            self._file.close()
-            self._file = None
-            self._writer = None
-
-    @property
-    def path_str(self) -> str:
-        return str(self._path)
-
-
-def _make_frame_callback(dashboard_cb, frame_logger: _StreamFrameLogger):
-    def cb(data):
-        dashboard_cb(data)
-        timestamp, samples = data
-        frame_logger.write_frame(timestamp, samples)
-
-    return cb
-
-
-def _make_ppi_callback(dashboard_cb, frame_logger: _StreamFrameLogger):
-    def cb(data):
-        dashboard_cb(data)
-        frame_logger.write_ppi_frames(data)
-
-    return cb
-
-
-def _make_hr_logger(hr_logger: _StreamFrameLogger):
+def _make_hr_logger(hr_logger: StreamFrameLogger):
     def cb(data):
         _hr_cb(data)
         hr_logger.write_frame(int(time.time() * 1e9), data)
@@ -339,20 +261,12 @@ async def main():
 
     # ── Resolve device type and streams ──────────────────────────────
 
-    stream_params: dict[str, dict] = {
-        "ecg": {"sample_rate": 130, "resolution": 14},
-        "acc": {"sample_rate": 200, "resolution": 16, "range": 8},
-        "ppg": {"sample_rate": 55, "resolution": 22, "channels": 4},
-        "gyro": {"sample_rate": 52, "resolution": 16, "range": 2, "channels": 3},
-        "mag": {"sample_rate": 20, "resolution": 16, "range": 50, "channels": 3},
-    }
-
     if args.streams:
         enabled_streams = [s.strip().lower() for s in args.streams.split(",")]
         for s in enabled_streams:
-            if s not in stream_params and s not in ("hr", "ppi"):
+            if s not in KNOWN_STREAMS:
                 parser.error(f"Unknown stream: {s}")
-        _is_h10 = "ecg" in enabled_streams
+        _is_h10 = False  # determined later by device name
     elif args.type == "h10":
         enabled_streams = list(_H10_STREAMS)
         _is_h10 = True
@@ -498,7 +412,7 @@ async def main():
             "mag": _mag_cb,
             "ppi": _ppi_cb,
         }
-        frame_loggers: dict[str, _StreamFrameLogger] = {}
+        frame_loggers: dict[str, StreamFrameLogger] = {}
         ecg_cb = stream_callbacks["ecg"] if "ecg" in enabled_streams else None
         ppg_cb = stream_callbacks["ppg"] if "ppg" in enabled_streams else None
         acc_cb = stream_callbacks["acc"] if "acc" in enabled_streams else None
@@ -511,21 +425,21 @@ async def main():
             for stream in enabled_streams:
                 file_name = f"{stream}.csv"
                 if stream == "hr":
-                    hr_logger = _StreamFrameLogger(raw_dir / file_name, stream)
+                    hr_logger = StreamFrameLogger(raw_dir / file_name, stream)
                     hr_logger.open()
                     frame_loggers[stream] = hr_logger
                     hr_cb = _make_hr_logger(hr_logger)
                 elif stream not in stream_callbacks:
                     continue
                 else:
-                    logger = _StreamFrameLogger(raw_dir / file_name, stream)
+                    logger = StreamFrameLogger(raw_dir / file_name, stream)
                     logger.open()
                     frame_loggers[stream] = logger
                     if stream == "ppi":
-                        wrapped = _make_ppi_callback(stream_callbacks[stream], logger)
+                        wrapped = make_ppi_callback(stream_callbacks[stream], logger)
                         ppi_cb = wrapped
                     else:
-                        wrapped = _make_frame_callback(stream_callbacks[stream], logger)
+                        wrapped = make_frame_callback(stream_callbacks[stream], logger)
                         if stream == "ecg":
                             ecg_cb = wrapped
                         elif stream == "ppg":
@@ -589,7 +503,12 @@ async def main():
 
         try:
             await conn.start_notify()
-            state["status"] = "Connected! Streaming live data."
+            if conn.stream_errors:
+                failed = ", ".join(conn.stream_errors.keys())
+                state["status"] = f"Connected. Failed: {failed}"
+                state["stream_errors"] = conn.stream_errors
+            else:
+                state["status"] = "Connected! Streaming live data."
             state["battery"] = await read_battery(conn)
 
             csv_logger = None
@@ -636,6 +555,21 @@ async def main():
                 logger.close()
             state["status"] = "Disconnected."
             live.update(build())
+
+            # Session-end Hz verification
+            configured_rates: dict[str, int] = {}
+            if "ecg" in enabled_streams:
+                configured_rates["ecg"] = 130
+            if "acc" in enabled_streams:
+                configured_rates["acc"] = 200 if _is_h10 else 52
+            if "ppg" in enabled_streams:
+                configured_rates["ppg"] = 135 if _is_h10 else 55
+            if "gyro" in enabled_streams:
+                configured_rates["gyro"] = 52
+            if "mag" in enabled_streams:
+                configured_rates["mag"] = 20
+            if configured_rates:
+                print_hz_summary(configured_rates, state)
             await asyncio.sleep(1)
 
 

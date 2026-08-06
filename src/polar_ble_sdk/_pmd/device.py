@@ -10,6 +10,7 @@ from bleak.backends.device import BLEDevice
 from . import exceptions, parsers
 from .constants import (
     PmdControlOperationCode,
+    PmdControlPointErrorCode,
     PmdMeasurementType,
     PmdSettingType,
     PolarCharacteristic,
@@ -153,6 +154,13 @@ class PolarDevice:
             PolarCharacteristic.PMD_CONTROL_POINT.value, settings.to_bytes()
         )
         response = MeasurementSettings.from_bytes(await self._queue_pmd_control.get())
+        if (
+            response.error_code is not None
+            and response.error_code != PmdControlPointErrorCode.SUCCESS
+        ):
+            raise exceptions.ControlPointResponseError(
+                f"Device rejected stream: {response.error_code.name}"
+            )
         for setting in response.settings:
             if setting.type == PmdSettingType.FACTOR and setting.values:
                 raw_int_factor = setting.values[0]
@@ -341,14 +349,14 @@ class PolarDevice:
             - Polar Verity Sense:
                 - Supported `sample_rate`: 52
                 - Supported `resolution`: 16
-                - Supported `range`: 2
+                - Supported `range`: 2000
                 - Supported `channels`: 3
 
         Args:
             gyro_callback: A function to be called whenever new Gyro data arrives.
             sample_rate: The desired sampling rate for the Gyro stream.
             resolution: The data resolution setting.
-            range: The measurement range of the gyroscope.
+            range: The measurement range of the gyroscope in deg/sec.
             channels: The number of channels to use.
         """
         self._gyro_callback = gyro_callback
@@ -462,7 +470,10 @@ class PolarDevice:
         self, _: BleakGATTCharacteristic | int, data: bytearray
     ) -> None:
         """Parses raw PMD data and dispatches it to the appropriate registered callback."""
-        parsed_data = parsers.parse_polar_data(data, self._factors.get)
+        try:
+            parsed_data = parsers.parse_polar_data(data, self._factors.get)
+        except (ValueError, IndexError, KeyError):
+            return  # Skip malformed frames
 
         if parsed_data is None:
             return
@@ -486,6 +497,9 @@ class PolarDevice:
         self, _: BleakGATTCharacteristic | int, data: bytearray
     ) -> None:
         """Parses raw heart rate data and dispatches it to the registered callback."""
-        parsed_data = parsers.parse_hr_data(data)
+        try:
+            parsed_data = parsers.parse_hr_data(data)
+        except (ValueError, IndexError):
+            return  # Skip malformed HR frames
         if self._hr_callback:
             self._hr_callback(parsed_data)
