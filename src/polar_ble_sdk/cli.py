@@ -9,6 +9,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 
@@ -19,17 +20,22 @@ from polar_ble_sdk.connector.ble_discovery import (
 from polar_ble_sdk.connector.stream import create_polar_connector
 from polar_ble_sdk.dashboard_utils import (
     CsvLogger,
+    FrameCountLogger,
+    LogPanel,
     StreamFrameLogger,
     calculate_rmssd,
     device_panel,
     feed_hr,
     header_bar,
+    info_bar,
+    log_event,
     make_callback,
     make_device_state,
     make_frame_callback,
     make_ppi_callback,
     print_hz_summary,
     read_battery,
+    rssi_loop,
     update_hz_for_state,
 )
 
@@ -120,6 +126,8 @@ def _parse_marker_specs(specs_str: str) -> dict:
         if "=" in part:
             k, v = part.split("=", 1)
             k, v = k.strip().upper(), v.strip()
+            if k == "L":
+                raise ValueError("'L' is reserved for the log-level toggle.")
             if k and v:
                 hotkeys[k] = v
     return hotkeys
@@ -247,6 +255,13 @@ async def main():
         default=None,
         help="Comma-separated streams (hr,ecg,acc,ppg,ppi,gyro,mag).",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["minimal", "moderate", "verbose"],
+        default="moderate",
+        help="Terminal log verbosity: minimal, moderate (default), verbose.",
+    )
     for opt in (
         "acc-rate",
         "acc-range",
@@ -277,9 +292,20 @@ async def main():
         enabled_streams = ["hr"]
         _is_h10 = False
 
-    hotkeys = _parse_marker_specs(args.markers)
-    marker_legend = _format_marker_legend(hotkeys)
+    try:
+        hotkeys = _parse_marker_specs(args.markers)
+    except ValueError as e:
+        parser.error(str(e))
+    hotkeys["L"] = "__toggle_log__"
+    marker_legend = _format_marker_legend(
+        {k: v for k, v in hotkeys.items() if v != "__toggle_log__"}
+    )
     reader = _NonBlockingLineReader(hotkeys)
+
+    # ── Log infrastructure ────────────────────────────────────────────
+    log_panel = LogPanel()
+    log_panel.set_level(args.log_level)
+    log_file = None  # opened after session_dir is created below
 
     # ── Phase 1: find device ────────────────────────────────────────
 
@@ -363,6 +389,13 @@ async def main():
     raw_dir.mkdir(parents=True, exist_ok=True)
     pp_dir.mkdir(parents=True, exist_ok=True)
 
+    # Open event log file
+    log_path = session_dir / f"monitor_{session_ts}.log"
+    try:
+        log_file = log_path.open("w", encoding="utf-8")
+    except OSError:
+        log_file = None
+
     state["device_name"] = device.name or ""
     state["device_address"] = device.address
     state["status"] = "Connecting..."
@@ -375,17 +408,47 @@ async def main():
         print("Full-resolution logs: enabled")
 
     start = time.time()
-    with Live(
-        Panel(
-            device_panel(state, is_h10=_is_h10, marker_legend=marker_legend),
-            title="Polar Device Live Terminal Dashboard",
-            subtitle=header_bar(
-                0.0, status=state["status"], marker_legend=marker_legend
-            ),
+
+    def build():
+        elapsed = time.time() - start
+        hz_streams: list = []
+        stream_ts_map = {
+            "ecg": ("ecg", _ecg_ts),
+            "ppg": ("ppg", _ppg_ts),
+            "acc": ("acc", _acc_ts),
+            "gyro": ("gyro", _gyro_ts),
+            "mag": ("mag", _mag_ts),
+            "ppi": ("ppi", _ppi_ts),
+        }
+        for s in enabled_streams:
+            if s in stream_ts_map:
+                hz_streams.append(stream_ts_map[s])
+        if hz_streams:
+            update_hz_for_state(state, *hz_streams)
+
+        header = header_bar(
+            device_name=state["device_name"],
+            device_addr=state["device_address"],
+            status=state["status"],
+        )
+        info = info_bar(
+            elapsed,
+            battery=state["battery"],
+            csv_path=state.get("csv_path", ""),
+            csv_rows=state.get("csv_rows_written", 0),
+            marker_legend=marker_legend,
+            log_level=log_panel.level,
+        )
+        parts: list = [device_panel(state, is_h10=_is_h10), info]
+        if log_panel.level != "minimal":
+            parts.append(log_panel.render())
+        return Panel(
+            Group(*parts),
+            title=header,
             border_style="cyan",
-        ),
-        refresh_per_second=10,
-    ) as live:
+        )
+
+    with Live(build(), refresh_per_second=10) as live:
         custom_kwargs = {}
         if "ecg" in enabled_streams and args.ecg_rate:
             custom_kwargs["ecg_sample_rate"] = args.ecg_rate
@@ -461,55 +524,50 @@ async def main():
             gyro_callback=gyro_cb,
             mag_callback=mag_cb,
             verbose=False,
+            log_callback=lambda msg, sev="info": log_event(
+                log_panel, msg, sev, device=device.name or "", log_file=log_file
+            ),
             **custom_kwargs,
         )
 
-        last_log = start
-        battery_task = None
+        frame_count_logger = FrameCountLogger(
+            log_panel, device=device.name or "", log_file=log_file
+        )
 
-        def build():
-            elapsed = time.time() - start
-            hz_streams: list = []
-            stream_ts_map = {
-                "ecg": ("ecg", _ecg_ts),
-                "ppg": ("ppg", _ppg_ts),
-                "acc": ("acc", _acc_ts),
-                "gyro": ("gyro", _gyro_ts),
-                "mag": ("mag", _mag_ts),
-                "ppi": ("ppi", _ppi_ts),
-            }
-            for s in enabled_streams:
-                if s in stream_ts_map:
-                    hz_streams.append(stream_ts_map[s])
-            if hz_streams:
-                update_hz_for_state(state, *hz_streams)
-            ecg_path = frame_loggers["ecg"].path_str if "ecg" in frame_loggers else ""
-            return Panel(
-                device_panel(state, is_h10=_is_h10, marker_legend=marker_legend),
-                title="Polar Device Live Terminal Dashboard",
-                subtitle=header_bar(
-                    elapsed,
-                    device_name=state["device_name"],
-                    device_addr=state["device_address"],
-                    status=state["status"],
-                    battery=state["battery"],
-                    csv_path=state.get("csv_path", ""),
-                    csv_rows=state.get("csv_rows_written", 0),
-                    ecg_log_path=ecg_path,
-                    marker_legend=marker_legend,
-                ),
-                border_style="cyan",
-            )
+        last_log = start
+        last_frame_log = start
+        battery_task = None
+        rssi_task = None
 
         try:
+            log_event(
+                log_panel,
+                "Starting connection...",
+                device=device.name or "",
+                log_file=log_file,
+            )
             await conn.start_notify()
             if conn.stream_errors:
                 failed = ", ".join(conn.stream_errors.keys())
                 state["status"] = f"Connected. Failed: {failed}"
                 state["stream_errors"] = conn.stream_errors
+                log_event(
+                    log_panel,
+                    f"Streams failed: {failed}",
+                    "warning",
+                    device=device.name or "",
+                    log_file=log_file,
+                )
             else:
                 state["status"] = "Connected! Streaming live data."
             state["battery"] = await read_battery(conn)
+            log_event(
+                log_panel,
+                f"Battery: {state['battery']}",
+                "info",
+                device=device.name or "",
+                log_file=log_file,
+            )
 
             csv_logger = None
             if not args.no_log:
@@ -519,14 +577,39 @@ async def main():
                 state["csv_path"] = csv_logger.path_str
 
             battery_task = asyncio.create_task(_battery_loop(conn))
+            rssi_task = asyncio.create_task(
+                rssi_loop(
+                    conn,
+                    log_panel,
+                    device=device.name or "",
+                    log_file=log_file,
+                )
+            )
 
             while True:
                 active_marker = ""
                 for m in reader.poll_markers():
+                    if m == "__toggle_log__":
+                        new_level = log_panel.cycle_level()
+                        log_event(
+                            log_panel,
+                            f"Log level: {new_level}",
+                            "info",
+                            device=device.name or "",
+                            log_file=log_file,
+                        )
+                        continue
                     ts = time.strftime("%H:%M:%S")
                     state["marker_log"].append(f"{ts} - {m}")
                     state["last_marker"] = m
                     active_marker = m
+                    log_event(
+                        log_panel,
+                        f"Marker: {m}",
+                        "info",
+                        device=device.name or "",
+                        log_file=log_file,
+                    )
 
                 now = time.time()
                 if csv_logger and (now - last_log) >= 1.0:
@@ -535,6 +618,11 @@ async def main():
                         _make_row(calculate_rmssd(state["rr_history"]), active_marker)
                     )
                     state["csv_rows_written"] = csv_logger.rows_written
+
+                # Verbose: log frame count deltas every second
+                if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
+                    last_frame_log = now
+                    frame_count_logger.check(state, enabled_streams)
 
                 live.update(build())
                 await asyncio.sleep(0.1)
@@ -547,14 +635,31 @@ async def main():
             await asyncio.sleep(3)
         finally:
             state["status"] = "Disconnecting..."
+            log_event(
+                log_panel,
+                "Disconnecting...",
+                device=device.name or "",
+                log_file=log_file,
+            )
             live.update(build())
             if battery_task:
                 battery_task.cancel()
+            if rssi_task:
+                rssi_task.cancel()
             await conn.stop_notify()
+            log_event(
+                log_panel,
+                "Disconnected",
+                "success",
+                device=device.name or "",
+                log_file=log_file,
+            )
             for logger in frame_loggers.values():
                 logger.close()
             state["status"] = "Disconnected."
             live.update(build())
+            if log_file:
+                log_file.close()
 
             # Session-end Hz verification
             configured_rates: dict[str, int] = {}
