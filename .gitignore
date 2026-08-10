@@ -48,6 +48,7 @@ ENV/
 *.csv
 *.xlsx
 datasets/
+data/
 Papers/
 
 # Jupyter Notebooks

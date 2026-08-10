@@ -15,6 +15,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(PROJECT_ROOT / "src"))
 
+from rich.console import Group  # noqa: E402
 from rich.live import Live  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 from rich.table import Table  # noqa: E402
@@ -25,16 +26,22 @@ from polar_ble_sdk.connector.ble_discovery import (  # noqa: E402
 from polar_ble_sdk.connector.stream import create_polar_connector  # noqa: E402
 from polar_ble_sdk.dashboard_utils import (  # noqa: E402
     CsvLogger,
+    FrameCountLogger,
+    LogPanel,
     StreamFrameLogger,
     calculate_rmssd,
     device_panel,
     feed_hr,
+    header_bar,
+    info_bar,
+    log_event,
     make_callback,
     make_device_state,
     make_frame_callback,
     make_ppi_callback,
     print_hz_summary,
     read_battery,
+    rssi_loop,
     update_hz_for_state,
 )
 
@@ -120,8 +127,9 @@ def _unwrap(state: dict, raw_key: str, count_key: str) -> tuple:
     return None, None, None
 
 
-def _make_grid(start: float) -> Panel:
+def _make_grid(start: float, log_panel: LogPanel | None = None) -> Panel:
     now = time.time()
+    elapsed = now - start
     update_hz_for_state(state_h10, ("acc", h10_acc_ts), ("ecg", h10_ecg_ts), now=now)
     update_hz_for_state(
         state_sense,
@@ -137,21 +145,61 @@ def _make_grid(start: float) -> Panel:
         border = "green" if "connected" in st.get("status", "").lower() else "yellow"
         return Panel(
             device_panel(st, is_h10=is_h10),
-            title=f"{name}  |  Battery: {st.get('battery', '-')}  |  CSV: {st.get('csv_rows_written', 0)}",
             border_style=border,
             expand=True,
         )
+
+    def _info(st: dict, name: str) -> Panel:
+        return info_bar(
+            elapsed,
+            battery=st.get("battery", "-"),
+            csv_path=st.get("csv_path", ""),
+            csv_rows=st.get("csv_rows_written", 0),
+            log_level=log_panel.level if log_panel else "moderate",
+        )
+
+    h10_header = header_bar(
+        device_name="H10",
+        device_addr=state_h10.get("address", ""),
+        status=state_h10.get("status", ""),
+    )
+    sense_header = header_bar(
+        device_name="Sense",
+        device_addr=state_sense.get("address", ""),
+        status=state_sense.get("status", ""),
+    )
 
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1)
     grid.add_column(ratio=1)
     grid.add_row(
-        _styled_panel(state_h10, True, "H10"),
-        _styled_panel(state_sense, False, "Sense"),
+        Panel(
+            Group(
+                h10_header,
+                _styled_panel(state_h10, True, "H10"),
+                _info(state_h10, "H10"),
+            ),
+            border_style="cyan",
+            expand=True,
+        ),
+        Panel(
+            Group(
+                sense_header,
+                _styled_panel(state_sense, False, "Sense"),
+                _info(state_sense, "Sense"),
+            ),
+            border_style="cyan",
+            expand=True,
+        ),
     )
+
+    parts: list[Any] = [grid]
+    if log_panel and log_panel.level != "minimal":
+        parts.append(log_panel.render())
+
     return Panel(
-        grid,
-        title=f"Dual Polar Dashboard  |  Elapsed: {now - start:.1f}s",
+        Group(*parts),
+        title="Dual Polar Dashboard",
         border_style="cyan",
     )
 
@@ -170,6 +218,13 @@ async def main() -> None:
     )
     parser.add_argument("--log-file", type=str, default=None)
     parser.add_argument("--log-console", action="store_true")
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["minimal", "moderate", "verbose"],
+        default="moderate",
+        help="Terminal log verbosity: minimal, moderate (default), verbose.",
+    )
     for opt in (
         "acc-rate",
         "acc-range",
@@ -198,8 +253,27 @@ async def main() -> None:
     state_h10["status"] = "Scanning for H10..."
     state_sense["status"] = "Scanning for Sense..."
 
+    # ── Log infrastructure ────────────────────────────────────────────
+    log_panel = LogPanel()
+    log_panel.set_level(args.log_level)
+    log_file = None
+
+    # ── Keyboard reader (L key toggle) ───────────────────────────────
+    _win_msvcrt = None
+    if sys.platform == "win32":
+        import msvcrt as _msvcrt
+
+        _win_msvcrt = _msvcrt
+
+    def _poll_key() -> str | None:
+        if _win_msvcrt is not None and _win_msvcrt.kbhit():
+            ch = _win_msvcrt.getwch()
+            if ch.upper() == "L":
+                return "L"
+        return None
+
     start = time.time()
-    with Live(_make_grid(start), refresh_per_second=10) as live:
+    with Live(_make_grid(start, log_panel), refresh_per_second=10) as live:
         h10_dev, sense_dev = await discover_dual_polar_devices(
             args.h10, args.sense, timeout=10.0
         )
@@ -222,7 +296,7 @@ async def main() -> None:
         if h10_dev is None and sense_dev is None:
             state_h10["status"] = "No Polar devices found."
             state_sense["status"] = "No Polar devices found."
-            live.update(_make_grid(start))
+            live.update(_make_grid(start, log_panel))
             await asyncio.sleep(3)
             return
 
@@ -236,6 +310,13 @@ async def main() -> None:
         for d in (h10_raw, h10_pp, sense_raw, sense_pp):
             if d:
                 d.mkdir(parents=True, exist_ok=True)
+
+        # Open event log file
+        log_path = session_dir / f"dual_{session_ts}.log"
+        try:
+            log_file = log_path.open("w", encoding="utf-8")
+        except OSError:
+            log_file = None
 
         custom_kwargs = {
             k: v
@@ -328,6 +409,13 @@ async def main() -> None:
 
         conn_h10 = conn_sense = None
         tasks = []
+        rssi_tasks: list[asyncio.Task[None]] = []
+
+        def _h10_log(msg, sev="info"):
+            log_event(log_panel, msg, sev, device="H10", log_file=log_file)
+
+        def _sense_log(msg, sev="info"):
+            log_event(log_panel, msg, sev, device="Sense", log_file=log_file)
 
         if h10_dev is not None:
             conn_h10 = create_polar_connector(
@@ -336,6 +424,7 @@ async def main() -> None:
                 ecg_callback=h10_ecg_cb,
                 acc_callback=h10_acc_cb,
                 verbose=False,
+                log_callback=_h10_log,
                 **custom_kwargs,
             )
             tasks.append(conn_h10.start_notify())
@@ -349,6 +438,7 @@ async def main() -> None:
                 gyro_callback=sense_gyro_cb,
                 mag_callback=sense_mag_cb,
                 verbose=False,
+                log_callback=_sense_log,
                 **custom_kwargs,
             )
             tasks.append(conn_sense.start_notify())
@@ -356,8 +446,14 @@ async def main() -> None:
         batt_tasks: list[asyncio.Task[None]] = []
         csv_h10 = csv_sense = None
         last_log = start
+        last_frame_log = start
+        h10_frame_counter = FrameCountLogger(log_panel, device="H10", log_file=log_file)
+        sense_frame_counter = FrameCountLogger(
+            log_panel, device="Sense", log_file=log_file
+        )
 
         try:
+            log_event(log_panel, "Starting connections...")
             await asyncio.gather(*tasks)
             log.info(
                 "connections established (h10=%s, sense=%s)",
@@ -369,18 +465,54 @@ async def main() -> None:
                 if conn_h10.stream_errors:
                     failed = ", ".join(conn_h10.stream_errors.keys())
                     state_h10["status"] = f"Connected. Failed: {failed}"
+                    log_event(
+                        log_panel,
+                        f"H10 streams failed: {failed}",
+                        "warning",
+                        device="H10",
+                        log_file=log_file,
+                    )
                 else:
                     state_h10["status"] = "Connected! Streaming data."
                 state_h10["battery"] = await read_battery(conn_h10)
-                log.info("H10 battery: %s", state_h10["battery"])
+                log_event(
+                    log_panel,
+                    f"H10 battery: {state_h10['battery']}",
+                    device="H10",
+                    log_file=log_file,
+                )
+                rssi_tasks.append(
+                    asyncio.create_task(
+                        rssi_loop(conn_h10, log_panel, device="H10", log_file=log_file)
+                    )
+                )
             if conn_sense is not None:
                 if conn_sense.stream_errors:
                     failed = ", ".join(conn_sense.stream_errors.keys())
                     state_sense["status"] = f"Connected. Failed: {failed}"
+                    log_event(
+                        log_panel,
+                        f"Sense streams failed: {failed}",
+                        "warning",
+                        device="Sense",
+                        log_file=log_file,
+                    )
                 else:
                     state_sense["status"] = "Connected! Streaming data."
                 state_sense["battery"] = await read_battery(conn_sense)
-                log.info("Sense battery: %s", state_sense["battery"])
+                log_event(
+                    log_panel,
+                    f"Sense battery: {state_sense['battery']}",
+                    device="Sense",
+                    log_file=log_file,
+                )
+                rssi_tasks.append(
+                    asyncio.create_task(
+                        rssi_loop(
+                            conn_sense, log_panel, device="Sense", log_file=log_file
+                        )
+                    )
+                )
 
             if not args.no_log:
                 if conn_h10 is not None and h10_pp:
@@ -402,6 +534,12 @@ async def main() -> None:
                 )
 
             while True:
+                # Poll L key
+                key = _poll_key()
+                if key == "L":
+                    new_level = log_panel.cycle_level()
+                    log_event(log_panel, f"Log level: {new_level}", log_file=log_file)
+
                 now = time.time()
                 if (now - last_log) >= 1.0:
                     last_log = now
@@ -447,7 +585,17 @@ async def main() -> None:
                         )
                         state_sense["csv_rows_written"] = csv_sense.rows_written
 
-                live.update(_make_grid(start))
+                # Verbose: log frame count deltas every second
+                if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
+                    last_frame_log = now
+                    if conn_h10 is not None:
+                        h10_frame_counter.check(state_h10, ["ecg", "acc"])
+                    if conn_sense is not None:
+                        sense_frame_counter.check(
+                            state_sense, ["ppg", "acc", "gyro", "mag", "ppi"]
+                        )
+
+                live.update(_make_grid(start, log_panel))
                 await asyncio.sleep(0.1)
 
         except asyncio.CancelledError:
@@ -457,14 +605,17 @@ async def main() -> None:
                 state_h10["status"] = f"Error: {e}"
             if conn_sense:
                 state_sense["status"] = f"Error: {e}"
-            live.update(_make_grid(start))
+            log_event(log_panel, f"Error: {e}", "error", log_file=log_file)
+            live.update(_make_grid(start, log_panel))
             await asyncio.sleep(3)
         finally:
             for st in (state_h10, state_sense):
                 st["status"] = "Disconnecting..."
-            live.update(_make_grid(start))
+            live.update(_make_grid(start, log_panel))
             for bt in batt_tasks:
                 bt.cancel()
+            for rt in rssi_tasks:
+                rt.cancel()
             await asyncio.gather(
                 *(c.stop_notify() for c in (conn_h10, conn_sense) if c)
             )
@@ -472,7 +623,9 @@ async def main() -> None:
                 logger.close()
             for st in (state_h10, state_sense):
                 st["status"] = "Disconnected."
-            live.update(_make_grid(start))
+            live.update(_make_grid(start, log_panel))
+            if log_file:
+                log_file.close()
 
             # Session-end Hz verification
             if conn_h10 is not None:

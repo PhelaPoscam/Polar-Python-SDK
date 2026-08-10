@@ -150,8 +150,8 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 
 | Tool / Script | Command | Description |
 |---|---|---|
-| **Single-Device Dashboard** | `monitor-polar`<br>*(or `python scripts/monitor_polar_terminal.py`)* | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Logs 1 Hz summary or full raw streams to CSV. Prints a session-end Hz verification table and reports failed streams in the status line. |
-| **Dual-Device Dashboard** | `python scripts/monitor_dual_polar.py` | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Shows side-by-side stream status and records synchronized 1 Hz summary or full raw CSV logs. |
+| **Single-Device Dashboard** | `monitor-polar`<br>*(or `python scripts/monitor_polar_terminal.py`)* | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Slim identity header, compact info bar, and a rolling event log showing connection/stream/RSSI events. Logs 1 Hz summary or full raw streams to CSV plus a session event log file. Prints a session-end Hz verification table and reports failed streams in the status line. |
+| **Dual-Device Dashboard** | `python scripts/monitor_dual_polar.py` | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Side-by-side stream panels with a shared rolling event log (device-prefixed `[H10]`/`[Sense]`). Records synchronized 1 Hz summary or full raw CSV logs plus a session event log file. |
 | **Session Hz Verifier** | `python scripts/analyze_hz.py <session_dir>` | Real-world verification that a recorded session collected at the configured rates — reports actual average Hz, sample count, and standard deviation per stream from the raw CSVs. Works on single-device (`.../raw/`) and dual-device (`.../h10/raw/`, `.../sense/raw/`) layouts. |
 | **Low-Level PMD Utility** | `python -m polar_ble_sdk._pmd <subcommand>` | Direct protocol interaction tool. Supports subcommands:<br>• `scan`: Scan for nearby Polar devices<br>• `inspect --address <MAC>`: Query available GATT PMD features and stream settings<br>• `stream --address <MAC> -s <hr/ecg/acc/...>`: Stream raw PMD packets |
 | **BLE Scanner** | `python scripts/scan_ble.py` | Quick discovery utility to scan for all nearby Bluetooth Low Energy devices and display MAC addresses/names. |
@@ -171,7 +171,8 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
 | `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
 | `--no-log` | Disable all CSV logging completely. | `monitor-polar --no-log` |
-| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=Event, S=Start, B=Baseline, R=Recovery`. | `--markers "SPACE=Jump,S=Sprint"` |
+| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=Event, S=Start, B=Baseline, R=Recovery`. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
+| `--log-level` | Terminal log verbosity: `minimal` (errors only), `moderate` (default, connection + stream events + RSSI), `verbose` (adds per-frame counts, frequent RSSI). Press **L** during monitoring to toggle at runtime. | `monitor-polar --log-level verbose` |
 | `--<sensor>-rate` | Override specific sensor sampling rate (e.g., `--ecg-rate 130`, `--acc-rate 200`). | `--ecg-rate 130` |
 
 #### `scripts/monitor_dual_polar.py` (Dual-Device Dashboard)
@@ -181,6 +182,7 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--sense` | Target MAC address or name for the Verity Sense. | `--sense "Polar Sense 87654321"` |
 | `--log-full` | Enable full-resolution raw CSV logs for both H10 (`data/dual/.../h10/raw/`) and Sense (`data/dual/.../sense/raw/`). | `python scripts/monitor_dual_polar.py --log-full` |
 | `--no-log` | Disable summary and full CSV logging. | `python scripts/monitor_dual_polar.py --no-log` |
+| `--log-level` | Terminal log verbosity: `minimal`, `moderate` (default), `verbose`. Press **L** during monitoring to toggle at runtime. | `--log-level verbose` |
 
 ---
 
@@ -188,12 +190,35 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 
 ### Output Layout
 
-Both dashboards write session data under `data/`, with full-resolution raw CSVs and a 1 Hz summary:
+Both dashboards write session data under `data/`, with full-resolution raw CSVs, a 1 Hz summary, and an event log:
 
-| Dashboard | Session dir | Raw streams | Post-processed |
-|---|---|---|---|
-| `monitor-polar` | `data/{h10\|sense}/{timestamp}/` | `raw/<stream>.csv` | `post-processed/summary.csv` |
-| `monitor_dual_polar.py` | `data/dual/{timestamp}/` | `h10/raw/<stream>.csv`, `sense/raw/<stream>.csv` | `h10/post-processed/summary.csv`, `sense/post-processed/summary.csv` |
+| Dashboard | Session dir | Raw streams | Post-processed | Event log |
+|---|---|---|---|---|
+| `monitor-polar` | `data/{h10\|sense}/{timestamp}/` | `raw/<stream>.csv` | `post-processed/summary.csv` | `monitor_<timestamp>.log` |
+| `monitor_dual_polar.py` | `data/dual/{timestamp}/` | `h10/raw/<stream>.csv`, `sense/raw/<stream>.csv` | `h10/post-processed/summary.csv`, `sense/post-processed/summary.csv` | `dual_<timestamp>.log` |
+
+The event log file records every terminal log event (connection, stream start/stop, RSSI, errors, markers) as plain text, one line per event. Useful for post-session debugging.
+
+### Terminal Layout
+
+Both dashboards use a Rich Live display with four sections:
+
+```
+┌─ Device Name (AA:BB:CC)  ● connected ────────────┐  ← Slim identity header
+│  [HR: 72 BPM]  [RR: 420 380 ms]                  │  ← Data panels
+│  Stream    Status    Latest                        │
+│  ECG       Active    +1234 µV                     │
+│  ...                                               │
+│  🔋 85%  ⏱ 142s  📄 1420 rows  ⌨ H:C:L:Q       │  ← Info bar
+│ ┌─ Log ────────────────────────────────────────┐   │
+│ │ 12:34:01 ● Connected (0.8s setup, 7.4s total)│   │  ← Rolling event log
+│ │ 12:34:01 ● ECG stream started                 │   │
+│ │ 12:34:02 📡 RSSI: -52 dBm                    │   │
+│ └───────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────┘
+```
+
+The log panel fills remaining vertical space. Events are color-coded by severity: green (success), yellow (warning), red (error), dim (info). Press **L** at runtime to toggle between moderate and verbose detail.
 
 Raw stream files are per-stream CSVs with session-relative timestamps (seconds since the first frame), e.g. `ecg.csv` (`Timestamp_s, uV_Samples`), `acc.csv` (`Timestamp_s, X_mG, Y_mG, Z_mG`), `hr.csv` (`Timestamp_s, HeartRate_BPM, RR_Intervals_ms`).
 

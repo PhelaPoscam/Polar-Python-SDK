@@ -24,6 +24,93 @@ from rich.text import Text
 
 logger = logging.getLogger(__name__)
 
+# ── Logging constants ─────────────────────────────────────────────────
+
+SEVERITY_ICONS = {
+    "info": "·",
+    "success": "●",
+    "warning": "▲",
+    "error": "✖",
+}
+
+SEVERITY_STYLES = {
+    "info": "dim white",
+    "success": "green",
+    "warning": "yellow",
+    "error": "bold red",
+}
+
+
+def log_event(
+    log_panel: LogPanel,
+    msg: str,
+    severity: str = "info",
+    *,
+    device: str = "",
+    log_file: Any = None,
+) -> None:
+    """Format a log line and push it to the LogPanel (and optionally a file)."""
+    ts = time.strftime("%H:%M:%S")
+    icon = SEVERITY_ICONS.get(severity, "·")
+    prefix = f"[{device}] " if device else ""
+    styled = Text.assemble(
+        (f"{ts} ", "dim"),
+        (f"{icon} ", SEVERITY_STYLES.get(severity, "dim white")),
+        (f"{prefix}{msg}", SEVERITY_STYLES.get(severity, "dim white")),
+    )
+    log_panel.push(styled)
+    if log_file:
+        try:
+            log_file.write(f"{ts} [{severity.upper()}] {prefix}{msg}\n")
+            log_file.flush()
+        except OSError:
+            pass
+
+
+# ── Rolling log panel ────────────────────────────────────────────────
+
+
+class LogPanel:
+    """Rolling tail of styled log lines with severity filtering."""
+
+    def __init__(self, max_lines: int = 200) -> None:
+        self._lines: deque[Text] = deque(maxlen=max_lines)
+        self._level: str = "moderate"
+
+    @property
+    def level(self) -> str:
+        return self._level
+
+    def set_level(self, level: str) -> None:
+        self._level = level
+
+    def cycle_level(self) -> str:
+        """Toggle between moderate and verbose. Returns the new level."""
+        self._level = "verbose" if self._level == "moderate" else "moderate"
+        return self._level
+
+    def push(self, styled_line: Text) -> None:
+        self._lines.append(styled_line)
+
+    def _visible(self) -> list[Text]:
+        if self._level == "minimal":
+            return [ln for ln in self._lines if not ln.plain.startswith("· ")]
+        return list(self._lines)
+
+    def render(self, height: int | None = None) -> Panel:
+        visible = self._visible()
+        if height is not None:
+            visible = visible[-height:] if len(visible) > height else visible
+        if not visible:
+            visible = [Text("  waiting for events...", style="dim")]
+        return Panel(
+            Group(*visible),
+            title="Log",
+            border_style="dim white",
+            expand=True,
+        )
+
+
 # ── Constants ─────────────────────────────────────────────────────────
 
 BATTERY_SERVICE_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
@@ -406,7 +493,6 @@ def device_panel(
     state: dict[str, Any],
     is_h10: bool,
     _rmssd: float | None = None,
-    marker_legend: str = "",
 ) -> Panel:
     """Build a Rich Panel for a single device — raw streamed data only."""
 
@@ -484,13 +570,7 @@ def device_panel(
             state["ppi_last_sample"],
         )
 
-    info = Text()
-    info.append(f"Battery: {state.get('battery', '-')}", style="green")
-    csv_rows = state.get("csv_rows_written", 0)
-    if csv_rows:
-        info.append(f"  |  CSV: {csv_rows} rows", style="cyan")
-
-    group = Group(metrics, streams, Panel(info, border_style="dim white"))
+    group = Group(metrics, streams)
     border = (
         "green" if "connected" in str(state.get("status", "")).lower() else "yellow"
     )
@@ -503,34 +583,155 @@ def device_panel(
 
 
 def header_bar(
-    elapsed: float,
     device_name: str = "",
     device_addr: str = "",
     status: str = "",
+) -> Text:
+    """Build a slim identity strip: name, address, connection status."""
+    t = Text()
+    if device_name:
+        t.append(device_name, style="bold cyan")
+    if device_addr:
+        t.append(f" ({device_addr})", style="dim cyan")
+    if status:
+        dot = "●" if "connected" in status.lower() else "○"
+        style = "bold green" if "connected" in status.lower() else "bold yellow"
+        t.append(f"  {dot} {status}", style=style)
+    return t
+
+
+def info_bar(
+    elapsed: float,
     battery: str = "",
     csv_path: str = "",
     csv_rows: int = 0,
-    ecg_log_path: str = "",
     marker_legend: str = "",
-) -> Text:
-    """Build a one-line status bar for the dashboard title."""
+    log_level: str = "moderate",
+) -> Panel:
+    """Build a compact status footer: battery, elapsed, CSV stats, hotkeys."""
     t = Text()
-    if device_name:
-        t.append(f"Device: {device_name} ", style="bold cyan")
-    if device_addr:
-        t.append(f"[{device_addr}]  ", style="dim cyan")
     if battery and battery != "-":
-        t.append(f"Battery: {battery}  ", style="green")
-    if status:
-        t.append(
-            f"Status: {status}  ",
-            style="bold green" if "connected" in status.lower() else "bold yellow",
-        )
-    t.append(f"Elapsed: {elapsed:.1f}s", style="bold green")
+        t.append(f"🔋 {battery}", style="green")
+    t.append(f"  ⏱ {elapsed:.1f}s", style="bold green")
     if csv_path and csv_path != "-":
-        t.append(f"\nLog: {Path(csv_path).name} ({csv_rows} rows)", style="cyan")
-    if ecg_log_path:
-        t.append(f"\nECG: {Path(ecg_log_path).name}", style="green")
+        t.append(f"  📄 {Path(csv_path).name} ({csv_rows} rows)", style="cyan")
     if marker_legend:
-        t.append(f"\nHotkeys: {marker_legend}", style="dim yellow")
-    return t
+        t.append(f"  ⌨ {marker_legend}", style="dim yellow")
+    t.append(f"  L:Log({log_level[0].upper()})", style="dim yellow")
+    return Panel(t, border_style="dim white", expand=True)
+
+
+# ── RSSI polling loop ─────────────────────────────────────────────────
+
+
+async def _read_rssi(client) -> int | None:
+    """Read RSSI from a BleakClient, trying public API then WinRT backend."""
+    # bleak 3.x removed get_rssi() from the public API
+    if hasattr(client, "get_rssi"):
+        return await client.get_rssi()
+    # WinRT backend stores RSSI on the BLEDevice object
+    backend = getattr(client, "_backend", None)
+    if backend and hasattr(backend, "_notification_callbacks"):
+        # Try the device's RSSI property via the WinRT BLEDevice
+        ble_device = getattr(client, "_device", None)
+        if ble_device and hasattr(ble_device, "rssi"):
+            return ble_device.rssi
+    return None
+
+
+async def rssi_loop(
+    conn,
+    log_panel: LogPanel,
+    *,
+    device: str = "",
+    log_file: Any = None,
+) -> None:
+    """Periodically read RSSI and log it. Interval adapts to verbosity."""
+    # One-time probe to check if RSSI is available
+    client = getattr(conn.polar_device, "_client", None) if conn.polar_device else None
+    if not client:
+        return
+    rssi = await _read_rssi(client)
+    if rssi is None:
+        log_event(
+            log_panel,
+            "RSSI not available (bleak 3.x — get_rssi removed)",
+            "warning",
+            device=device,
+            log_file=log_file,
+        )
+        return
+
+    log_event(
+        log_panel,
+        f"RSSI: {rssi} dBm",
+        "info",
+        device=device,
+        log_file=log_file,
+    )
+    while True:
+        interval = 5.0 if log_panel.level == "verbose" else 30.0
+        await asyncio.sleep(interval)
+        try:
+            rssi = await _read_rssi(client)
+            if rssi is not None:
+                log_event(
+                    log_panel,
+                    f"RSSI: {rssi} dBm",
+                    "info",
+                    device=device,
+                    log_file=log_file,
+                )
+        except Exception:
+            pass
+
+
+# ── Frame count logger (verbose only) ─────────────────────────────────
+
+
+class FrameCountLogger:
+    """Tracks per-stream frame counts and emits verbose log events on delta."""
+
+    def __init__(
+        self,
+        log_panel: LogPanel,
+        *,
+        device: str = "",
+        log_file: Any = None,
+    ) -> None:
+        self._log_panel = log_panel
+        self._device = device
+        self._log_file = log_file
+        self._prev: dict[str, int] = {}
+
+    def check(self, state: dict[str, Any], enabled_streams: list[str]) -> None:
+        """Compare current counts to previous, log deltas for active streams."""
+        stream_count_keys = {
+            "ecg": "ecg_count",
+            "ppg": "ppg_count",
+            "acc": "acc_count",
+            "gyro": "gyro_count",
+            "mag": "mag_count",
+            "ppi": "ppi_count",
+            "hr": None,  # HR doesn't have a count key in state
+        }
+        for stream in enabled_streams:
+            key = stream_count_keys.get(stream)
+            if key is None:
+                continue
+            current = state.get(key, 0)
+            if stream not in self._prev:
+                # Prime the baseline so the first delta is not a huge burst.
+                self._prev[stream] = current
+                continue
+            prev = self._prev[stream]
+            delta = current - prev
+            if delta > 0:
+                log_event(
+                    self._log_panel,
+                    f"{stream.upper()} +{delta} frames",
+                    "info",
+                    device=self._device,
+                    log_file=self._log_file,
+                )
+            self._prev[stream] = current

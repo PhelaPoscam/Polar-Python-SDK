@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 
 from ..._pmd import PolarDevice
@@ -32,10 +33,19 @@ class BasePolarDevice:
         self.pair_timeout = kwargs.get("pair_timeout", 60.0)
         self.post_pair_delay = kwargs.get("post_pair_delay", 2.0)
         self.stream_errors: dict[str, str] = {}
+        # log_callback is a simple callable(msg, severity) — no event bus needed.
+        self.log_callback: Callable[[str, str], None] | None = kwargs.get(
+            "log_callback"
+        )
 
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(msg)
+
+    def _emit(self, msg: str, severity: str = "info") -> None:
+        """Emit a structured log event if a callback is registered."""
+        if self.log_callback:
+            self.log_callback(msg, severity)
 
     async def start_notify(self) -> None:
         """Connect to device and initialize notifications."""
@@ -62,6 +72,10 @@ class BasePolarDevice:
                     f"Connecting to {device_name or 'Polar device'} "
                     f"(attempt {attempt}/{self.connect_attempts})..."
                 )
+                self._emit(
+                    f"Connecting to {device_name or 'device'} "
+                    f"(attempt {attempt}/{self.connect_attempts})..."
+                )
                 await asyncio.wait_for(
                     self.polar_device._client.connect(), timeout=self.connect_timeout
                 )
@@ -74,6 +88,10 @@ class BasePolarDevice:
                 self._log(
                     "Connected and authenticated successfully "
                     f"(stream setup {stream_setup_elapsed:.1f}s, total {total_elapsed:.1f}s)."
+                )
+                self._emit(
+                    f"Connected ({stream_setup_elapsed:.1f}s setup, {total_elapsed:.1f}s total)",
+                    "success",
                 )
                 return
             except Exception as e:
@@ -88,6 +106,7 @@ class BasePolarDevice:
                     self._log(
                         f"Device ({device_name}) requires pairing. Initiating BLE pairing/bonding..."
                     )
+                    self._emit("Pairing required, waiting for PIN...", "warning")
                     try:
                         self._log("\n" + "=" * 80)
                         self._log("PAIRING PIN REQUESTED!")
@@ -120,9 +139,14 @@ class BasePolarDevice:
                             "Connected and authenticated successfully after pairing "
                             f"(stream setup {stream_setup_elapsed:.1f}s, total {total_elapsed:.1f}s)!"
                         )
+                        self._emit(
+                            f"Connected after pairing ({total_elapsed:.1f}s total)",
+                            "success",
+                        )
                         return
                     except Exception as pair_err:
                         self._log(f"Failed to complete pairing: {pair_err}")
+                        self._emit(f"Pairing failed: {pair_err}", "error")
                         last_error = pair_err
                 elif "not found" in err_str.lower() or "FB005C81" in err_str:
                     self._log("\n" + "=" * 60)
@@ -133,6 +157,7 @@ class BasePolarDevice:
                         "Please ensure SDK Sharing is active and the device is ready."
                     )
                     self._log("=" * 60 + "\n")
+                    self._emit("SDK stream not active — enable SDK Sharing", "error")
                     await self._disconnect_client()
                     raise e
 
@@ -213,6 +238,8 @@ class BasePolarDevice:
             self._running = False
             return
 
+        self._emit("Disconnecting...")
+
         client = getattr(self.polar_device, "_client", None)
         with contextlib.suppress(Exception):
             await self.polar_device.disconnect()
@@ -223,6 +250,7 @@ class BasePolarDevice:
         self._running = False
         if clear_device:
             self.polar_device = None
+            self._emit("Disconnected", "success")
 
     async def _get_available_settings(
         self, measurement_type: PmdMeasurementType
@@ -316,9 +344,11 @@ class BasePolarDevice:
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)
             self._log(f"[DEBUG] {label} stream started OK")
+            self._emit(f"{label} stream started", "success")
             return True
         except Exception as exc:
             err_msg = f"{type(exc).__name__}: {exc}"
             self._log(f"[DEBUG] {label} stream failed: {err_msg}")
             self.stream_errors[label] = err_msg
+            self._emit(f"{label} stream failed: {err_msg}", "error")
             return False
