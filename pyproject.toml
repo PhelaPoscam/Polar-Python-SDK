@@ -52,6 +52,9 @@ dev = [
     "pip-audit",
     "vulture",
     "radon",
+    "numpy",
+    "pandas",
+    "scipy",
 ]
 
 [tool.ruff]
