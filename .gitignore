@@ -52,6 +52,9 @@ data/
 analysis/
 Papers/
 
+# Local lock files
+skills-lock.json
+
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
