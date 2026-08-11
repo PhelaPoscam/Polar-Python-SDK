@@ -7,10 +7,9 @@ import sys
 
 import pytest
 
-# Add src/ and analysis/ to Python path so tests can import SDK and analysis modules
+# Add src/ to Python path so tests can import polar_ble_sdk
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(project_root, "src"))
-sys.path.insert(0, os.path.join(project_root, "analysis"))
 
 
 @pytest.fixture(scope="session")
