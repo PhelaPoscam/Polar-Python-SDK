@@ -212,6 +212,24 @@ async def main() -> None:
     )
     parser.add_argument("--no-log", action="store_true", help="Disable all CSV logging")
     parser.add_argument(
+        "--no-ppi",
+        action="store_true",
+        help="Only relevant with --no-sdk-mode. Disable the Sense PPI stream "
+        "(PPI is unavailable in SDK mode; SDK mode disables HR/PPI).",
+    )
+    parser.add_argument(
+        "--sdk-mode",
+        action="store_true",
+        help="Enable SDK mode on the Sense (required for PPG > 55 Hz, e.g. 135/176 Hz). "
+        "Now the default; use --no-sdk-mode to disable.",
+    )
+    parser.add_argument(
+        "--no-sdk-mode",
+        action="store_true",
+        help="Disable SDK mode on the Sense: PPG falls back to 55 Hz and the Sense's "
+        "own HR + PPI streams become available.",
+    )
+    parser.add_argument(
         "--no-log-full",
         action="store_true",
         help="Disable full-resolution CSV logs for all streams (default: full-res logging ON).",
@@ -327,6 +345,9 @@ async def main() -> None:
                 "gyro_range": args.gyro_range,
                 "mag_sample_rate": args.mag_rate,
                 "ppg_sample_rate": args.ppg_rate,
+                # SDK mode ON by default for the Sense (135 Hz PPG);
+                # --no-sdk-mode disables it.
+                "sdk_mode": not args.no_sdk_mode,
             }.items()
             if v is not None
         }
@@ -338,12 +359,15 @@ async def main() -> None:
         h10_hr_cb = _h10_hr_cb
         h10_ecg_cb = _h10_ecg_cb
         h10_acc_cb = _h10_acc_cb
-        sense_hr_cb = _sense_hr_cb
         sense_ppg_cb = _sense_ppg_cb
         sense_acc_cb = _sense_acc_cb
         sense_gyro_cb = _sense_gyro_cb
         sense_mag_cb = _sense_mag_cb
-        sense_ppi_cb = _sense_ppi_cb
+        # SDK mode (default) disables the Sense's HR + PPI streams; only start
+        # them when SDK mode is off (--no-sdk-mode) and PPI not disabled.
+        sdk_off = args.no_sdk_mode
+        sense_hr_cb = _sense_hr_cb if sdk_off else None
+        sense_ppi_cb = _sense_ppi_cb if (sdk_off and not args.no_ppi) else None
 
         # Full-resolution logging is ON by default; --no-log-full or --no-log disables it.
         if not args.no_log_full and not args.no_log:
@@ -377,7 +401,7 @@ async def main() -> None:
                     ("acc", _sense_acc_cb),
                     ("gyro", _sense_gyro_cb),
                     ("mag", _sense_mag_cb),
-                    ("ppi", _sense_ppi_cb),
+                    *([] if (args.no_ppi or not sdk_off) else [("ppi", _sense_ppi_cb)]),
                 ]:
                     logger = StreamFrameLogger(
                         sense_raw / f"{stream_name}.csv", stream_name
@@ -396,10 +420,11 @@ async def main() -> None:
                             sense_gyro_cb = wrapped
                         elif stream_name == "mag":
                             sense_mag_cb = wrapped
-                logger = StreamFrameLogger(sense_raw / "hr.csv", "hr")
-                logger.open()
-                sense_loggers["hr"] = logger
-                sense_hr_cb = _make_hr_logger(_sense_hr_cb, logger)
+                if sdk_off:
+                    logger = StreamFrameLogger(sense_raw / "hr.csv", "hr")
+                    logger.open()
+                    sense_loggers["hr"] = logger
+                    sense_hr_cb = _make_hr_logger(_sense_hr_cb, logger)
             else:
                 sense_hr_cb = _sense_hr_cb
                 sense_ppg_cb = _sense_ppg_cb
@@ -592,9 +617,10 @@ async def main() -> None:
                     if conn_h10 is not None:
                         h10_frame_counter.check(state_h10, ["ecg", "acc"])
                     if conn_sense is not None:
-                        sense_frame_counter.check(
-                            state_sense, ["ppg", "acc", "gyro", "mag", "ppi"]
-                        )
+                        sense_streams = ["ppg", "acc", "gyro", "mag"]
+                        if sdk_off and not args.no_ppi:
+                            sense_streams.append("ppi")
+                        sense_frame_counter.check(state_sense, sense_streams)
 
                 live.update(_make_grid(start, log_panel))
                 await asyncio.sleep(0.1)
@@ -632,8 +658,11 @@ async def main() -> None:
             if conn_h10 is not None:
                 print_hz_summary({"ecg": 130, "acc": 200}, state_h10)
             if conn_sense is not None:
+                extra = ["ppi"] if sdk_off and not args.no_ppi else []
                 print_hz_summary(
-                    {"ppg": 55, "acc": 52, "gyro": 52, "mag": 20}, state_sense
+                    {"ppg": 55, "acc": 52, "gyro": 52, "mag": 20},
+                    state_sense,
+                    extra_streams=extra,
                 )
             await asyncio.sleep(1)
 

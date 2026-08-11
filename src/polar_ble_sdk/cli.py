@@ -46,8 +46,26 @@ if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
 
 _H10_STREAMS = ("hr", "ecg", "acc")
-_SENSE_STREAMS = ("hr", "ppg", "ppi", "acc", "gyro", "mag")
+# Sense defaults: 135 Hz PPG via SDK mode (SDK mode disables the Sense's own
+# HR/PPI streams, so they are NOT in the default set — our own PPG->HR
+# pipeline replaces them). Use --no-sdk-mode to fall back to 55 Hz PPG with
+# the Sense's HR/PPI streams.
+_SENSE_STREAMS = ("ppg", "acc", "gyro", "mag")
 KNOWN_STREAMS = {"ecg", "ppg", "acc", "gyro", "mag", "hr", "ppi"}
+
+
+def _sense_streams(no_sdk_mode: bool) -> list[str]:
+    """Default Sense stream set.
+
+    With SDK mode (default) the Sense's own HR/PPI are disabled, so the set is
+    the raw PPG + IMU (our own PPG->HR pipeline covers HR). Without SDK mode,
+    add the Sense's HR + PPI streams.
+    """
+    streams = list(_SENSE_STREAMS)
+    if no_sdk_mode:
+        streams.extend(["hr", "ppi"])
+    return streams
+
 
 state = make_device_state("Polar Device")
 
@@ -256,6 +274,24 @@ async def main():
         help="Comma-separated streams (hr,ecg,acc,ppg,ppi,gyro,mag).",
     )
     parser.add_argument(
+        "--ppi",
+        action="store_true",
+        help="Enable the PPI stream on the Sense (opt-in; requires --no-sdk-mode; "
+        "SDK mode disables HR/PPI).",
+    )
+    parser.add_argument(
+        "--sdk-mode",
+        action="store_true",
+        help="Enable SDK mode on the Sense (required for PPG > 55 Hz, e.g. 135/176 Hz). "
+        "Now the default; use --no-sdk-mode to disable.",
+    )
+    parser.add_argument(
+        "--no-sdk-mode",
+        action="store_true",
+        help="Disable SDK mode on the Sense: PPG falls back to 55 Hz and the Sense's "
+        "own HR + PPI streams become available.",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         choices=["minimal", "moderate", "verbose"],
@@ -283,10 +319,20 @@ async def main():
                 parser.error(f"Unknown stream: {s}")
         _is_h10 = False  # determined later by device name
     elif args.type == "h10":
+        if args.ppi:
+            parser.error("--ppi is only supported on Verity Sense devices.")
         enabled_streams = list(_H10_STREAMS)
         _is_h10 = True
     elif args.type == "sense":
-        enabled_streams = list(_SENSE_STREAMS)
+        enabled_streams = _sense_streams(args.no_sdk_mode)
+        if args.ppi:
+            # only valid without SDK mode
+            if args.no_sdk_mode:
+                enabled_streams.append("ppi")
+            else:
+                parser.error(
+                    "--ppi is unavailable in SDK mode (SDK mode disables HR/PPI). Use --no-sdk-mode."
+                )
         _is_h10 = False
     else:
         enabled_streams = ["hr"]
@@ -329,7 +375,14 @@ async def main():
             elif senses:
                 devices = senses
                 _is_h10 = False
-                enabled_streams = list(_SENSE_STREAMS)
+                enabled_streams = _sense_streams(args.no_sdk_mode)
+                if args.ppi:
+                    if args.no_sdk_mode:
+                        enabled_streams.append("ppi")
+                    else:
+                        parser.error(
+                            "--ppi requires --no-sdk-mode (SDK mode disables HR/PPI)"
+                        )
 
         if args.type:
             filtered = [
@@ -348,7 +401,16 @@ async def main():
             name = devices[0][0]
             if not args.streams and not args.type:
                 _is_h10 = "h10" in name.lower()
-                enabled_streams = list(_H10_STREAMS if _is_h10 else _SENSE_STREAMS)
+                enabled_streams = (
+                    list(_H10_STREAMS) if _is_h10 else _sense_streams(args.no_sdk_mode)
+                )
+                if not _is_h10 and args.ppi:
+                    if args.no_sdk_mode:
+                        enabled_streams.append("ppi")
+                    else:
+                        parser.error(
+                            "--ppi requires --no-sdk-mode (SDK mode disables HR/PPI)"
+                        )
             kind = "H10" if _is_h10 else "Sense/OH1"
             print(f"Found: {name} — {kind}")
         else:
@@ -372,7 +434,16 @@ async def main():
             name = devices[idx][0]
             if not args.streams and not args.type:
                 _is_h10 = "h10" in name.lower()
-                enabled_streams = list(_H10_STREAMS if _is_h10 else _SENSE_STREAMS)
+                enabled_streams = (
+                    list(_H10_STREAMS) if _is_h10 else _sense_streams(args.no_sdk_mode)
+                )
+                if not _is_h10 and args.ppi:
+                    if args.no_sdk_mode:
+                        enabled_streams.append("ppi")
+                    else:
+                        parser.error(
+                            "--ppi requires --no-sdk-mode (SDK mode disables HR/PPI)"
+                        )
 
     if not device:
         print("No Polar device found.")
@@ -466,6 +537,9 @@ async def main():
             custom_kwargs["mag_sample_rate"] = args.mag_rate
         if "ppg" in enabled_streams and args.ppg_rate:
             custom_kwargs["ppg_sample_rate"] = args.ppg_rate
+        # SDK mode is ON by default for the Sense; --no-sdk-mode disables it.
+        if not _is_h10:
+            custom_kwargs["sdk_mode"] = not args.no_sdk_mode
 
         stream_callbacks: dict[str, Any] = {
             "ecg": _ecg_cb,
@@ -674,7 +748,8 @@ async def main():
             if "mag" in enabled_streams:
                 configured_rates["mag"] = 20
             if configured_rates:
-                print_hz_summary(configured_rates, state)
+                extra = ["ppi"] if "ppi" in enabled_streams else None
+                print_hz_summary(configured_rates, state, extra_streams=extra)
             await asyncio.sleep(1)
 
 

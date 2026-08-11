@@ -34,11 +34,29 @@ class PolarVeritySense(BasePolarDevice):
         # Configurable defaults for subclasses (Watch overrides some).
         self._strict_hr = False
         self._catch_auth_on_features = True
-        self._ppg_default_rate = 55
+        # 135 Hz PPG is the default: at 55 Hz the raw optical signal is
+        # dominated by a fixed ~104 BPM beat artifact and the cardiac pulse is
+        # not recoverable; at 135 Hz the pulse is clearly present (validated:
+        # zero-crossing HR within ~2.6 BPM of the H10 ECG). 135 Hz requires
+        # SDK mode, which disables the Sense's own HR/PPI streams.
+        self._ppg_default_rate = 135
 
     async def start_streams(self) -> None:
         """Start the Verity Sense (and compatible) streams."""
         features = await self._fetch_available_features()
+
+        # SDK mode unlocks higher PPG rates (135/176 Hz) and is now the default.
+        # A user can disable it via custom_settings["sdk_mode"]=False.
+        custom = getattr(self, "custom_settings", {}) or {}
+        want_sdk = custom.get("sdk_mode", True)  # SDK mode ON by default
+        if want_sdk:
+            try:
+                # Enable unconditionally (idempotent); the status pre-check can
+                # fail if the response format differs, so don't gate on it.
+                await self.polar_device.enable_sdk_mode()
+                self._log("[DEBUG] SDK mode enabled")
+            except Exception as e:
+                self._log(f"[DEBUG] SDK mode enable failed: {e}")
 
         # 1. Start standard Heart Rate stream
         if self.callback:
@@ -148,7 +166,20 @@ class PolarVeritySense(BasePolarDevice):
                 self.callback((hr_data.heartrate, hr_data.rr_intervals))
 
     def _ppi_handler(self, ppi_data) -> None:
-        ppi_vals = [(s.timestamp, s.ppi) for s in ppi_data.samples if not s.invalid_ppi]
+        ppi_vals = []
+        for s in ppi_data.samples:
+            if s.invalid_ppi:
+                continue
+            ppi_vals.append(
+                (
+                    s.timestamp,
+                    s.ppi,
+                    s.error_estimate,
+                    s.hr,
+                    s.skin_contact_status,
+                    s.skin_contact_supported,
+                )
+            )
         if self.ppi_callback and ppi_vals:
             with contextlib.suppress(Exception):
                 self.ppi_callback(ppi_vals)

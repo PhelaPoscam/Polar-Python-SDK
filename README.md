@@ -134,7 +134,7 @@ class SignalPacket:
 |--------|--------|----------|
 | H10 | ECG | 130 Hz |
 | H10 | ACC | 25–200 Hz |
-| Verity Sense | PPG | 55 Hz |
+| Verity Sense | PPG | **135 Hz** (default, SDK mode; 55 Hz without SDK mode) |
 | Verity Sense | ACC/GYRO | 52 Hz |
 | Verity Sense | MAG | 10–100 Hz |
 | Watches | PPG | up to 135 Hz |
@@ -168,6 +168,9 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--device` | Target device name substring or exact MAC address. | `monitor-polar --device "H10"` |
 | `--type` | Force device type (`h10` or `sense`) and default stream sets. | `monitor-polar --type h10` |
 | `--streams` | Comma-separated list of streams to enable (`hr,ecg,acc,ppg,ppi,gyro,mag`). | `--streams hr,ecg,acc` |
+| `--no-sdk-mode` | **Disable** SDK mode (now the default): PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-polar --no-sdk-mode` |
+| `--sdk-mode` | Explicitly enable SDK mode (already the default). Required for PPG > 55 Hz. | `monitor-polar --sdk-mode --ppg-rate 135` |
+| `--ppi` | Enable the Sense PPI stream (only valid with `--no-sdk-mode`; SDK mode disables HR/PPI). | `monitor-polar --no-sdk-mode --ppi` |
 | `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
 | `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
 | `--no-log` | Disable all CSV logging completely. | `monitor-polar --no-log` |
@@ -182,6 +185,9 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--sense` | Target MAC address or name for the Verity Sense. | `--sense "Polar Sense 87654321"` |
 | `--log-full` | Enable full-resolution raw CSV logs for both H10 (`data/dual/.../h10/raw/`) and Sense (`data/dual/.../sense/raw/`). | `python scripts/monitor_dual_polar.py --log-full` |
 | `--no-log` | Disable summary and full CSV logging. | `python scripts/monitor_dual_polar.py --no-log` |
+| `--no-ppi` | Disable the Sense PPI stream (only relevant with `--no-sdk-mode`; SDK mode disables PPI anyway). | `python scripts/monitor_dual_polar.py --no-ppi` |
+| `--no-sdk-mode` | Disable SDK mode (now the default): PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `python scripts/monitor_dual_polar.py --no-sdk-mode` |
+| `--sdk-mode` | Explicitly enable SDK mode (already the default). Required for PPG > 55 Hz. | `python scripts/monitor_dual_polar.py --sdk-mode --ppg-rate 135` |
 | `--log-level` | Terminal log verbosity: `minimal`, `moderate` (default), `verbose`. Press **L** during monitoring to toggle at runtime. | `--log-level verbose` |
 
 ---
@@ -220,7 +226,7 @@ Both dashboards use a Rich Live display with four sections:
 
 The log panel fills remaining vertical space. Events are color-coded by severity: green (success), yellow (warning), red (error), dim (info). Press **L** at runtime to toggle between moderate and verbose detail.
 
-Raw stream files are per-stream CSVs with session-relative timestamps (seconds since the first frame), e.g. `ecg.csv` (`Timestamp_s, uV_Samples`), `acc.csv` (`Timestamp_s, X_mG, Y_mG, Z_mG`), `hr.csv` (`Timestamp_s, HeartRate_BPM, RR_Intervals_ms`).
+Raw stream files are per-stream CSVs with session-relative timestamps (seconds since the first frame), e.g. `ecg.csv` (`Timestamp_s, uV_Samples`), `acc.csv` (`Timestamp_s, X_mG, Y_mG, Z_mG`), `hr.csv` (`Timestamp_s, HeartRate_BPM, RR_Intervals_ms`). The `ppi.csv` file carries the device's raw PPI quality flags (`Timestamp_s, PPI_ms, ErrEst_ms, HR_BPM, SkinContact, SkinContactSupported`) so analysis can flag the documented "HR fixed to last reliable value when movement detected" mode.
 
 ### Stream Status & Failures
 
@@ -260,41 +266,39 @@ python scripts/analyze_hz.py data/dual/20260806_120000
 
 ## Known Issues & TODO
 
-### TODO — Offline PPG-derived HR/RMSSD analysis (paused)
+### TODO — Offline PPG-derived HR/RMSSD analysis (**VALIDATED at 135 Hz**)
 
-**Status: paused mid-implementation.** We started building a pipeline
-(`analysis/ppg_analysis.py`) to derive HR and RMSSD from the raw Verity Sense
-PPG signal (bypassing the Sense's internal, occasionally-faulty optical HR
-algorithm) and cross-validate against the Polar H10.
+**Status: WORKING for HR.** The pipeline (`analysis/ppg_analysis.py`) derives HR
+from the raw Verity Sense PPG signal and cross-validates against the Polar H10.
 
-**Why it paused:** the raw PPG in the two recorded sessions is too contaminated
-to support reliable beat detection. Signal-quality assessment found:
-- Non-stationary baseline: 5 s-block std swings ~200× (1,779 → 388,439)
-- Poor pulse SNR (~3.9 amplitude/std, clean PPG is typically >10)
-- ACC is stable (mean 1537, std 161), so it's likely contact/pressure variation
-  on the armband sensor rather than body motion
+**Key finding — 55 Hz sampling was the root cause of earlier failures.** At
+55 Hz (the non-SDK-mode default), the raw PPG is dominated by a fixed ~104 BPM
+(1.73 Hz) beat artifact and the cardiac pulse is not recoverable — every
+estimator (FFT, zero-crossing, autocorrelation, peak detection) failed to track
+the H10. At **135 Hz** (requires SDK mode) the artifact disappears and the pulse
+is clearly present: **zero-crossing HR matches the H10 ECG to MAE 2.46 BPM,
+MAPE 3.57%, bias −0.73 BPM** (session `20260811_150741`, n=29 epochs).
 
-Every estimator tried (adaptive peak detection, zero-crossing, FFT
-fundamental-picking, autocorrelation) failed to recover the H10's HR from these
-sessions — a strong signal that the raw optical data itself is poor, not that
-the estimators are wrong.
+**SDK-mode trade-off (Polar-documented):** 135 Hz PPG requires SDK mode, which
+**disables the Sense's own HR and PPI streams**. SDK mode is now the default for
+Sense monitoring; use `--no-sdk-mode` to fall back to 55 Hz PPG + the Sense's
+HR/PPI (needed for RR-interval/RMSSD from the device).
 
-**To resume:**
-1. Record a fresh session with **good armband contact/placement** (the existing
-   sessions' PPG is unusable).
-2. Re-run `analysis/ppg_analysis.py` on the new session and validate the beat
-   detector against the H10.
-3. If it works, the payoff: distinguish "raw optical signal good but firmware
-   locks" (our-PPG-HR tracks H10 while Sense-reported HR deviates) from "signal
-   itself bad" (both deviate).
+**Remaining work:**
+1. Validate on a session with **HR variation** (light activity) to confirm the
+   zero-crossing estimator tracks changing HR, not just rest.
+2. Improve the PPG-derived RMSSD (peak-based; currently MAE ~26 BPM vs H10).
+3. Distinguish "raw optical signal good but firmware locks" (our-PPG-HR tracks
+   H10 while Sense-reported HR deviates) from "signal itself bad" (both deviate)
+   using the 135 Hz raw PPG — now that the signal is decodable.
 
 **Related state:**
 - `analysis/run_analysis.py` (cross-validation metrics + artifact detector) is
   complete and tested; the artifact detector catches the Sense's half-rate
-  lock (exact-constant and staircase variants).
+  lock (exact-constant and staircase variants). It also has a raw-PPG-vs-ECG
+  section (FFT/ZC/AC estimators) that flagged the 55 Hz failure.
 - The Sense PPI→RMSSD fix (`dashboard_utils.py`) is in place and verified.
-- `--no-log-full` now defaults full-resolution raw logging **on**; use it for
-  any new session so the raw PPG/ECG/PPI streams are captured.
+- Default Sense monitoring now: **135 Hz PPG + ACC/GYRO/MAG via SDK mode**.
 
 ---
 

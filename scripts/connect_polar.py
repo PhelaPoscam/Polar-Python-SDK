@@ -24,9 +24,10 @@ def hr_callback(data):
 
 
 def ppi_callback(data):
-    # data is (timestamp, ppi_values)
-    timestamp, ppi_vals = data
-    print(f"\n[PPI] Pulse-to-Pulse Intervals: {ppi_vals} ms")
+    # data is a list of (timestamp_ns, ppi_ms, ...) PPI samples
+    for _ts, ppi_ms, *_rest in data:
+        print(f"\n[PPI] Pulse-to-Pulse Interval: {ppi_ms} ms", end="", flush=True)
+    print()
 
 
 def ppg_callback(data):

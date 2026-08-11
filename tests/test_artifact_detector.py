@@ -142,3 +142,44 @@ class TestArtifactMetrics:
         m = ra.compute_metrics(df)
         assert m["artifact_rate"] == 0.0
         assert m["artifact_runs"] == []
+
+    def test_ppi_quality_layer_no_columns_noop(self):
+        # Without the raw PPI columns, the new layer must not flag anything.
+        n = 120
+        df = make_second_frame(n)
+        out = ra.detect_sense_artifacts(df)
+        assert "PPI_SkinContact" not in out.columns
+        assert out["artifact"].sum() == 0
+
+    def test_ppi_quality_layer_flags_lost_contact(self):
+        # Device reports no skin contact for >=15 s -> freeze-flag as ppi_quality.
+        n = 120
+        df = make_second_frame(n)
+        df["PPI_SkinContact"] = 1
+        df["PPI_ErrEst_ms"] = 10
+        df.loc[40:69, "PPI_SkinContact"] = 0  # 30 s without contact
+        out = ra.detect_sense_artifacts(df)
+        flagged = sorted(np.where(out["artifact"])[0].tolist())
+        assert 45 in flagged and 65 in flagged
+        assert (out.loc[flagged, "artifact_layer"] == "ppi_quality").all()
+
+    def test_ppi_quality_layer_flags_high_error(self):
+        # Large PPI error estimates sustained -> freeze-flag.
+        n = 120
+        df = make_second_frame(n)
+        df["PPI_SkinContact"] = 1
+        df["PPI_ErrEst_ms"] = 10
+        df.loc[60:99, "PPI_ErrEst_ms"] = 500  # 40 s of high error
+        out = ra.detect_sense_artifacts(df)
+        flagged = sorted(np.where(out["artifact"])[0].tolist())
+        assert 70 in flagged and 90 in flagged
+        assert (out.loc[flagged, "artifact_layer"] == "ppi_quality").all()
+
+    def test_ppi_quality_short_run_not_flagged(self):
+        # Short (<15 s) quality loss should not be flagged.
+        n = 120
+        df = make_second_frame(n)
+        df["PPI_SkinContact"] = 1
+        df.loc[40:49, "PPI_SkinContact"] = 0  # 10 s
+        out = ra.detect_sense_artifacts(df)
+        assert out["artifact"].sum() == 0
