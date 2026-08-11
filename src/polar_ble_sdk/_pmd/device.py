@@ -180,6 +180,44 @@ class PolarDevice:
         )
         self._factors.pop(measurement_type, None)
 
+    # ── SDK mode (enables higher sample rates, e.g. PPG 135/176 Hz) ──────
+
+    async def enable_sdk_mode(self) -> None:
+        """Enables SDK mode on the device.
+
+        SDK mode unlocks additional PMD settings (e.g. PPG at 135/176 Hz on the
+        Verity Sense). Protocol: REQUEST_MEASUREMENT_START with the SDK_MODE
+        measurement type (0x09), per the official Polar BLE SDK (which also
+        sends the command without reading a response).
+        """
+        await self._client.write_gatt_char(
+            PolarCharacteristic.PMD_CONTROL_POINT.value,
+            bytearray([PmdControlOperationCode.START, 0x09]),
+        )
+
+    async def disable_sdk_mode(self) -> None:
+        """Disables SDK mode on the device (STOP_MEASUREMENT, type 0x09)."""
+        await self._client.write_gatt_char(
+            PolarCharacteristic.PMD_CONTROL_POINT.value,
+            bytearray([PmdControlOperationCode.STOP, 0x09]),
+        )
+
+    async def sdk_mode_enabled(self) -> bool:
+        """Returns True if SDK mode is currently enabled (GET_SDK_MODE_STATUS).
+
+        Request:  [0x06] (GET_SDK_MODE_STATUS)
+        Response: [0xF0, 0x06, 0x09, status, more, sdk_mode_status]
+        SDK-mode status is the first parameter byte (index 5); non-zero = enabled.
+        """
+        await self._client.write_gatt_char(
+            PolarCharacteristic.PMD_CONTROL_POINT.value,
+            bytearray([0x06]),  # GET_SDK_MODE_STATUS
+        )
+        response = await asyncio.wait_for(self._queue_pmd_control.get(), timeout=3.0)
+        # response[0]=0xF0, response[1]=op(6), response[2]=type(9),
+        # response[3]=status(0=OK), response[4]=more, response[5]=sdk_mode_status
+        return len(response) > 5 and response[5] != 0
+
     async def start_ecg_stream(
         self, ecg_callback: ECGCallback, sample_rate: int, resolution: int
     ) -> None:
@@ -457,9 +495,10 @@ class PolarDevice:
     ) -> None:
         """Queue only PMD control point responses.
 
-        On BlueZ, reading the PMD control point while notifications are enabled can
-        also surface the feature packet as a notification. Those packets start with
-        ``0x0F`` and must not be mixed into the control point response queue.
+        All control-point responses start with 0xF0 (the response code). On
+        BlueZ, reading the PMD control point while notifications are enabled can
+        also surface the feature packet as a notification; those start with
+        0x0F and must not be mixed into the response queue.
         """
         if not data or data[0] != 0xF0:
             return

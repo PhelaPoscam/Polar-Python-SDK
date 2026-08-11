@@ -150,6 +150,8 @@ def make_device_state(name: str = "Polar Device") -> dict[str, Any]:
         "ppi_count": 0,
         "ppi_hz": 0.0,
         "ppi_last_sample": "-",
+        "ppi_err_est": 0,
+        "ppi_contact_pct": 100,
         "battery": "-",
         "marker_log": deque(maxlen=5),
         "last_marker": "-",
@@ -246,21 +248,44 @@ def feed_ecg(data, state: dict[str, Any], ts: deque) -> None:
 def feed_ppi(data, state: dict[str, Any], ts: deque) -> None:
     """Update *state* and *ts* deque from PPI callback data.
 
-    data is a list of (timestamp_ns, ppi_ms) tuples.
+    data is a list of PPI samples. Each sample is either a
+    (timestamp_ns, ppi_ms) tuple or a richer
+    (timestamp_ns, ppi_ms, error_estimate, hr, skin_contact_status,
+     skin_contact_supported) tuple carrying the device's PPI quality flags.
 
     The PPI stream is the Verity Sense's source of pulse-to-pulse intervals
     (the HR stream carries an empty RR list), so feed the RR deques too —
     this is what populates RMSSD and the dashboard RR display.
     """
-    if data:
-        state["ppi_count"] += len(data)
-        ts.append((time.time(), len(data)))
-        state["ppi_last_sample"] = f"PPI={data[-1][1]} ms"
-        _track_session(state, "ppi", len(data))
-        ppi_ms = [float(ppi) for _ts, ppi in data if ppi is not None and ppi > 0]
-        if ppi_ms:
-            state["rr_intervals"] = ppi_ms
-            state["rr_history"].extend(ppi_ms)
+    if not data:
+        return
+    state["ppi_count"] += len(data)
+    ts.append((time.time(), len(data)))
+    last = data[-1]
+    if len(last) >= 3:
+        # richer sample — record the raw quality flags (no decisions here)
+        last_ppi, last_err, last_hr = last[1], last[2], last[3]
+        last_contact = last[4] if len(last) >= 5 else None
+        state["ppi_last_sample"] = (
+            f"PPI={last_ppi} ms (err~{last_err}, hr={last_hr}"
+            f"{', no-contact' if last_contact is False else ''})"
+        )
+        # aggregate counts for dashboard info (raw signal quality only)
+        errs = [s[2] for s in data if len(s) >= 3]
+        contacts = [s[4] for s in data if len(s) >= 5]
+        if errs:
+            state["ppi_err_est"] = int(sum(errs) / len(errs))
+        if contacts:
+            state["ppi_contact_pct"] = int(
+                100.0 * sum(bool(c) for c in contacts) / len(contacts)
+            )
+    else:
+        state["ppi_last_sample"] = f"PPI={last[1]} ms"
+    _track_session(state, "ppi", len(data))
+    ppi_ms = [float(s[1]) for s in data if s[1] is not None and s[1] > 0]
+    if ppi_ms:
+        state["rr_intervals"] = ppi_ms
+        state["rr_history"].extend(ppi_ms)
 
 
 def make_callback(state: dict[str, Any], ts_deque: deque, kind: str) -> Callable:
@@ -339,8 +364,14 @@ def compute_session_hz(state: dict[str, Any], stream: str) -> float:
 def print_hz_summary(
     configured: dict[str, int],
     state: dict[str, Any],
+    *,
+    extra_streams: list[str] | None = None,
 ) -> None:
-    """Print a session-end Hz summary table comparing configured vs actual rates."""
+    """Print a session-end Hz summary table comparing configured vs actual rates.
+
+    *extra_streams* are printed with observed Hz only (no configured rate or
+    match column) — useful for heart-rate-dependent streams like PPI.
+    """
     print("\n" + "=" * 56)
     print("  SESSION HZ VERIFICATION")
     print("=" * 56)
@@ -350,6 +381,9 @@ def print_hz_summary(
         actual = compute_session_hz(state, name)
         match = "OK" if abs(actual - cfg_rate) / max(cfg_rate, 1) < 0.05 else "X"
         print(f"  {name:<8} {cfg_rate:>8} Hz {actual:>8.2f} Hz {match:>8}")
+    for name in extra_streams or []:
+        actual = compute_session_hz(state, name)
+        print(f"  {name:<8} {'—':>10} {actual:>8.2f} Hz {'—':>8}")
     print("=" * 56 + "\n")
 
 
@@ -422,7 +456,14 @@ class StreamFrameLogger:
         "gyro": ["Timestamp_s", "X_dps", "Y_dps", "Z_dps"],
         "mag": ["Timestamp_s", "X_G", "Y_G", "Z_G"],
         "hr": ["Timestamp_s", "HeartRate_BPM", "RR_Intervals_ms"],
-        "ppi": ["Timestamp_s", "PPI_ms"],
+        "ppi": [
+            "Timestamp_s",
+            "PPI_ms",
+            "ErrEst_ms",
+            "HR_BPM",
+            "SkinContact",
+            "SkinContactSupported",
+        ],
     }
 
     _WIDE_COLUMNS: set[str] = {"ecg", "ppg"}
@@ -460,9 +501,29 @@ class StreamFrameLogger:
     def write_ppi_frames(self, data) -> None:
         if not self._writer:
             return
-        for _ppi_ts_ns, ppi_val in data:
-            self._writer.writerow([f"{self._ppi_cumulative_s:.3f}", ppi_val])
-            self._ppi_cumulative_s += ppi_val / 1000.0
+        for sample in data:
+            if len(sample) >= 3:
+                ppi, err_est, hr, contact, contact_sup = (
+                    sample[1],
+                    sample[2],
+                    sample[3],
+                    sample[4] if len(sample) >= 5 else None,
+                    sample[5] if len(sample) >= 6 else None,
+                )
+            else:
+                ppi = sample[1]
+                err_est = hr = contact = contact_sup = None
+            self._writer.writerow(
+                [
+                    f"{self._ppi_cumulative_s:.3f}",
+                    ppi,
+                    "" if err_est is None else err_est,
+                    "" if hr is None else hr,
+                    "" if contact is None else int(contact),
+                    "" if contact_sup is None else int(contact_sup),
+                ]
+            )
+            self._ppi_cumulative_s += float(ppi) / 1000.0
 
     def close(self) -> None:
         if self._file:
