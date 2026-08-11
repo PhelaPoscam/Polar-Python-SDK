@@ -8,7 +8,9 @@ import pandas as pd
 import pytest
 
 # Make analysis/ importable (conftest adds src/ for the SDK; add analysis/ too)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "analysis"))
+sys.path.insert(
+    0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "analysis"))
+)
 
 import run_analysis as ra  # noqa: E402
 
