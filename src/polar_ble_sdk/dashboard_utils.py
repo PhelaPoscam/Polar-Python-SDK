@@ -245,12 +245,22 @@ def feed_ecg(data, state: dict[str, Any], ts: deque) -> None:
 
 def feed_ppi(data, state: dict[str, Any], ts: deque) -> None:
     """Update *state* and *ts* deque from PPI callback data.
-    data is a list of (timestamp_ns, ppi_ms) tuples."""
+
+    data is a list of (timestamp_ns, ppi_ms) tuples.
+
+    The PPI stream is the Verity Sense's source of pulse-to-pulse intervals
+    (the HR stream carries an empty RR list), so feed the RR deques too —
+    this is what populates RMSSD and the dashboard RR display.
+    """
     if data:
         state["ppi_count"] += len(data)
         ts.append((time.time(), len(data)))
         state["ppi_last_sample"] = f"PPI={data[-1][1]} ms"
         _track_session(state, "ppi", len(data))
+        ppi_ms = [float(ppi) for _ts, ppi in data if ppi is not None and ppi > 0]
+        if ppi_ms:
+            state["rr_intervals"] = ppi_ms
+            state["rr_history"].extend(ppi_ms)
 
 
 def make_callback(state: dict[str, Any], ts_deque: deque, kind: str) -> Callable:

@@ -1,8 +1,17 @@
 """Unit tests for SignalPacket — the central data contract."""
 
 import json
+from collections import deque
+
+import pytest
 
 from polar_ble_sdk.connector.schemas import SignalPacket
+from polar_ble_sdk.dashboard_utils import (
+    calculate_rmssd,
+    feed_hr,
+    feed_ppi,
+    make_device_state,
+)
 
 
 class TestSignalPacket:
@@ -50,3 +59,44 @@ class TestSignalPacket:
         p = SignalPacket()
         assert isinstance(p.timestamp, float)
         assert p.timestamp > 0
+
+
+class TestFeedPpiFeedsRrHistory:
+    """The Sense HR stream carries empty RR lists; PPI is the RR source."""
+
+    def _make_state(self):
+        return make_device_state("test"), deque(maxlen=20)
+
+    def test_ppi_populates_rr_history_and_intervals(self):
+        st, ts = self._make_state()
+        feed_ppi(
+            [(1_000_000_000, 850.0), (1_000_850_000, 860.0), (1_001_710_000, 870.0)],
+            st,
+            ts,
+        )
+        assert st["ppi_count"] == 3
+        assert len(st["rr_history"]) == 3
+        assert st["rr_intervals"][-1] == 870.0
+
+    def test_ppi_feeds_rmssd(self):
+        st, ts = self._make_state()
+        feed_ppi(
+            [(1_000_000_000, 850.0), (1_000_850_000, 860.0), (1_001_710_000, 870.0)],
+            st,
+            ts,
+        )
+        # RMSSD of 850/860/870 ms: sqrt(mean((10)^2+(10)^2)) = 10 ms
+        assert calculate_rmssd(st["rr_history"]) == pytest.approx(10.0, abs=0.01)
+
+    def test_ppi_ignores_invalid_zero_intervals(self):
+        st, ts = self._make_state()
+        feed_ppi([(1_000_000_000, 0.0), (1_000_850_000, 850.0)], st, ts)
+        assert len(st["rr_history"]) == 1
+        assert st["rr_history"][0] == 850.0
+
+    def test_hr_stream_with_empty_rr_leaves_rmssd_zero(self):
+        """Regression: the Sense sends HR with empty RR — RMSSD must be 0."""
+        st, ts = self._make_state()
+        feed_hr((73, []), st)
+        assert len(st["rr_history"]) == 0
+        assert calculate_rmssd(st["rr_history"]) == 0.0
