@@ -258,6 +258,46 @@ python scripts/analyze_hz.py data/dual/20260806_120000
 
 ---
 
+## Known Issues & TODO
+
+### TODO — Offline PPG-derived HR/RMSSD analysis (paused)
+
+**Status: paused mid-implementation.** We started building a pipeline
+(`analysis/ppg_analysis.py`) to derive HR and RMSSD from the raw Verity Sense
+PPG signal (bypassing the Sense's internal, occasionally-faulty optical HR
+algorithm) and cross-validate against the Polar H10.
+
+**Why it paused:** the raw PPG in the two recorded sessions is too contaminated
+to support reliable beat detection. Signal-quality assessment found:
+- Non-stationary baseline: 5 s-block std swings ~200× (1,779 → 388,439)
+- Poor pulse SNR (~3.9 amplitude/std, clean PPG is typically >10)
+- ACC is stable (mean 1537, std 161), so it's likely contact/pressure variation
+  on the armband sensor rather than body motion
+
+Every estimator tried (adaptive peak detection, zero-crossing, FFT
+fundamental-picking, autocorrelation) failed to recover the H10's HR from these
+sessions — a strong signal that the raw optical data itself is poor, not that
+the estimators are wrong.
+
+**To resume:**
+1. Record a fresh session with **good armband contact/placement** (the existing
+   sessions' PPG is unusable).
+2. Re-run `analysis/ppg_analysis.py` on the new session and validate the beat
+   detector against the H10.
+3. If it works, the payoff: distinguish "raw optical signal good but firmware
+   locks" (our-PPG-HR tracks H10 while Sense-reported HR deviates) from "signal
+   itself bad" (both deviate).
+
+**Related state:**
+- `analysis/run_analysis.py` (cross-validation metrics + artifact detector) is
+  complete and tested; the artifact detector catches the Sense's half-rate
+  lock (exact-constant and staircase variants).
+- The Sense PPI→RMSSD fix (`dashboard_utils.py`) is in place and verified.
+- `--no-log-full` now defaults full-resolution raw logging **on**; use it for
+  any new session so the raw PPG/ECG/PPI streams are captured.
+
+---
+
 ## Testing
 
 ```bash

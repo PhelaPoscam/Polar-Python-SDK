@@ -212,9 +212,9 @@ async def main() -> None:
     )
     parser.add_argument("--no-log", action="store_true", help="Disable all CSV logging")
     parser.add_argument(
-        "--log-full",
+        "--no-log-full",
         action="store_true",
-        help="Enable full-resolution CSV logs for all streams on both devices.",
+        help="Disable full-resolution CSV logs for all streams (default: full-res logging ON).",
     )
     parser.add_argument("--log-file", type=str, default=None)
     parser.add_argument("--log-console", action="store_true")
@@ -345,7 +345,8 @@ async def main() -> None:
         sense_mag_cb = _sense_mag_cb
         sense_ppi_cb = _sense_ppi_cb
 
-        if args.log_full:
+        # Full-resolution logging is ON by default; --no-log-full or --no-log disables it.
+        if not args.no_log_full and not args.no_log:
             if h10_raw:
                 for stream_name, bare_cb in [
                     ("ecg", _h10_ecg_cb),
