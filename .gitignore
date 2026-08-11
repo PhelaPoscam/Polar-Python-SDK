@@ -49,8 +49,7 @@ ENV/
 *.xlsx
 datasets/
 data/
-analysis/results/
-analysis/plots/
+analysis/
 Papers/
 
 # Local lock files

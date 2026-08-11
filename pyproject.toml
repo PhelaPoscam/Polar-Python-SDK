@@ -55,6 +55,7 @@ dev = [
     "numpy",
     "pandas",
     "scipy",
+    "matplotlib",
 ]
 
 [tool.ruff]
@@ -87,7 +88,7 @@ warn_unused_configs = true
 check_untyped_defs = true
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "analysis"]
+pythonpath = ["src"]
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 norecursedirs = [".venv", "reference"]
