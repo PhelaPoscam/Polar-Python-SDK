@@ -47,25 +47,51 @@ python scripts/monitor_dual_polar.py
 ```text
 Polar-Python-SDK/
 ├── src/polar_ble_sdk/
+│   ├── __init__.py                   # Public SDK exports (Connection, Metrics, Research)
 │   ├── cli.py                        # Console dashboard CLI entrypoint
-│   ├── dashboard_utils.py            # Shared dashboard utils (state, Hz tracking, frame CSV logger)
-│   └── connector/
-│       ├── ble_discovery.py          # BLE scanner and device resolution
-│       ├── schemas.py                # SignalPacket data model
-│       ├── stream/                   # Device modules (Base, H10, VeritySense, Watch)
-│       └── exporters/                # Async queue sink and data exporters
+│   ├── dashboard_utils.py            # Backward-compatibility façade
+│   ├── _pmd/                         # Low-level Polar Measurement Data protocol
+│   │   ├── device.py                 # PolarDevice Bleak client wrapper
+│   │   ├── constants/                # PMD opcodes, error codes, UUIDs, epoch offsets
+│   │   ├── models/                   # Strongly typed dataclasses (ECG, PPG, ACC, etc.)
+│   │   └── parsers/                  # Bit-level delta compression & SIG HR decoders
+│   ├── connector/                    # Device Abstraction Layer
+│   │   ├── ble_discovery.py          # Fast BLE scanner & device matcher
+│   │   ├── schemas.py                # SignalPacket data contract
+│   │   ├── stream/                   # Device modules (Base, H10, VeritySense, Watch)
+│   │   └── exporters/                # Async QueueSink and streaming interfaces
+│   ├── session/                      # Session Lifecycle & Metadata Management
+│   │   ├── session.py                # SessionManager & SessionMetadata (writes session_meta.json)
+│   │   └── state.py                  # Thread-safe in-memory device state containers
+│   ├── storage/                      # High-Speed Data Logging
+│   │   ├── frame_logger.py           # StreamFrameLogger: full-resolution raw CSV logs
+│   │   └── summary_logger.py         # CsvLogger: 1 Hz post-processed summary CSV logs
+│   ├── metrics/                      # Physiological Signal & Rate Processing
+│   │   ├── hrv.py                    # Pure-Python RMSSD, SDNN, pNN50 algorithms
+│   │   └── rate_tracker.py           # Real-time sliding-window & session Hz estimators
+│   ├── diagnostics/                  # Hardware Telemetry
+│   │   ├── battery.py                # Battery reading & periodic update loop
+│   │   └── rssi.py                   # BLE RSSI telemetry & frame delta loggers
+│   ├── input/                        # User & Experiment Interaction
+│   │   └── keyboard.py               # Cross-platform non-blocking hotkey & marker reader
+│   ├── ui/                           # Rich Terminal Presentation
+│   │   ├── components.py             # Device panels, header strips, and footer info bars
+│   │   └── log_panel.py              # Rolling LogPanel & structured severity loggers
+│   └── research/                     # Research & Data Science Tools
+│       ├── loader.py                 # load_session(): auto-load CSVs + metadata into pandas DataFrames
+│       └── audit.py                  # verify_session_integrity(): dropouts, jitter, rate verification
 ├── scripts/
 │   ├── monitor_dual_polar.py         # Dual-device live terminal dashboard
 │   ├── monitor_polar_terminal.py     # CLI dashboard wrapper
-│   ├── analyze_hz.py                 # Post-session Hz verification from raw CSVs
+│   ├── analyze_hz.py                 # Post-session Hz & signal integrity verifier
 │   ├── connect_polar.py              # Simple stream testing script
 │   ├── scan_ble.py                   # BLE device scanner
 │   └── pair_watch.ps1                # Windows WinRT BLE pairing helper
 ├── data/                             # Session logs (written by dashboards)
-│   └── {device_type}/{session_ts}/   # e.g. h10/20260806_120000 or dual/...
-│       ├── raw/                      # Full-resolution per-stream CSVs
-│       │   ├── ecg.csv               #   (hr.csv, ppg.csv, acc.csv, ...)
-│       │   └── ...
+│   └── {device_type}/{session_ts}/   # e.g. h10/20260818_120000 or dual/...
+│       ├── session_meta.json         # Standardized session provenance manifest
+│       ├── monitor_{ts}.log          # Timestamped plain-text session event log
+│       ├── raw/                      # Full-resolution per-stream CSVs (ecg.csv, ppg.csv, ...)
 │       └── post-processed/           # 1 Hz summary.csv
 └── tests/                            # Verified unit test suite (pytest)
 ```
@@ -73,6 +99,8 @@ Polar-Python-SDK/
 ---
 
 ## SDK Usage
+
+### Live Streaming
 
 ```python
 import asyncio
@@ -95,6 +123,30 @@ async def main():
 asyncio.run(main())
 ```
 
+### Research & Data Analysis
+
+Load an entire recorded session (metadata, 1 Hz summary, and raw high-frequency sensor streams) with one line:
+
+```python
+from polar_ble_sdk import load_session, verify_session_integrity
+
+# 1. Load session into structured pandas DataFrames
+session = load_session("data/h10/20260818_120000")
+print(f"Session: {session.session_id} (Duration: {session.metadata.get('duration_s', 0):.1f}s)")
+
+# 2. Access raw high-frequency streams
+ecg_df = session.get_stream("ecg")  # 130 Hz ECG in µV
+acc_df = session.get_stream("acc")  # 200 Hz 3-axis Accelerometer + computed ACC_Mag_mG
+
+# 3. Access 1 Hz consolidated summary & markers
+summary_df = session.summary
+markers = session.markers
+
+# 4. Audit signal integrity and calculate timestamp jitter
+audit_report = verify_session_integrity("data/h10/20260818_120000")
+print(audit_report)
+```
+
 ---
 
 ## API Reference
@@ -102,17 +154,29 @@ asyncio.run(main())
 ### Discovery
 
 | Function | Description |
-|----------|-------------|
+|---|---|
 | `discover_polar_device(target=None, timeout=20.0)` | Find a Polar BLE device. Returns early for known Polar sensors. |
 | `discover_dual_polar_devices(h10_target=None, sense_target=None, timeout=10.0)` | Scan for H10 + Verity Sense simultaneously. |
+| `discover_polar_devices(timeout=5.0)` | List all nearby Polar BLE devices with (name, MAC, device). |
 
-### Connector
+### Connector & Streaming
 
 | Function | Description |
-|----------|-------------|
-| `create_polar_connector(device, **callbacks)` | Create the right connector class based on device name. |
+|---|---|
+| `create_polar_connector(device, **callbacks)` | Instantiate the right connector (`PolarH10`, `PolarVeritySense`, `PolarWatch`). |
 
-Callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_callback`, `gyro_callback`, `mag_callback`, `ppi_callback`.
+Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_callback`, `gyro_callback`, `mag_callback`, `ppi_callback`.
+
+### Research & Metrics
+
+| Class / Function | Description |
+|---|---|
+| `load_session(path)` | Load single or dual recording sessions into a `PolarSessionData` container with pandas DataFrames. |
+| `verify_session_integrity(path)` | Audit sampling rates, inter-sample standard deviation (jitter), and packet gap statistics. |
+| `calculate_rmssd(rr_intervals)` | Calculate Root Mean Square of Successive Differences (in ms) from RR/PPI intervals. |
+| `calculate_sdnn(rr_intervals)` | Calculate Standard Deviation of NN intervals (in ms). |
+| `calculate_pnn50(rr_intervals)` | Calculate percentage of successive intervals differing by > 50 ms. |
+| `SessionManager` | Orchestrate session storage, raw frame logging, and audit manifest (`session_meta.json`) serialization. |
 
 ### Data Model
 
@@ -268,7 +332,7 @@ python scripts/analyze_hz.py data/dual/20260806_120000
 
 ### TODO — Offline PPG-derived HR/RMSSD analysis (**VALIDATED at 135 Hz**)
 
-**Status: WORKING for HR.** The pipeline (`analysis/ppg_analysis.py`) derives HR
+**Status: WORKING for HR.** The research pipeline (`polar_ble_sdk.research.ppg` and `scripts/run_analysis.py`) derives HR
 from the raw Verity Sense PPG signal and cross-validates against the Polar H10.
 
 **Key finding — 55 Hz sampling was the root cause of earlier failures.** At
@@ -293,11 +357,11 @@ HR/PPI (needed for RR-interval/RMSSD from the device).
    using the 135 Hz raw PPG — now that the signal is decodable.
 
 **Related state:**
-- `analysis/run_analysis.py` (cross-validation metrics + artifact detector) is
-  complete and tested; the artifact detector catches the Sense's half-rate
+- `scripts/run_analysis.py` (powered by `polar_ble_sdk.research`) performs
+  cross-validation metrics + artifact detection; the artifact detector catches the Sense's half-rate
   lock (exact-constant and staircase variants). It also has a raw-PPG-vs-ECG
-  section (FFT/ZC/AC estimators) that flagged the 55 Hz failure.
-- The Sense PPI→RMSSD fix (`dashboard_utils.py`) is in place and verified.
+  section (FFT/ZC estimators) that flagged the 55 Hz failure.
+- The Sense PPI→RMSSD fix is in place and verified.
 - Default Sense monitoring now: **135 Hz PPG + ACC/GYRO/MAG via SDK mode**.
 
 ---
