@@ -1,65 +1,21 @@
-"""Post-session Hz analysis: reads full-res CSV files and reports actual Hz per stream.
+"""Post-session Hz and signal integrity analysis: reads full-res CSV files and reports metrics.
 
 Usage:
     python scripts/analyze_hz.py <session_dir>
     python scripts/analyze_hz.py data/dual/20260806_120000
-
-For H10 sessions, pass the session dir containing raw/h10/.
-For dual sessions, pass the session dir containing raw/h10/ and raw/sense/.
+    python scripts/analyze_hz.py data/h10/20260818_120000
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(PROJECT_ROOT / "src"))
 
-def compute_hz_from_csv(csv_path: Path) -> tuple[float, int, float]:
-    """Read timestamps from a full-res CSV and compute Hz.
-
-    Returns (avg_hz, sample_count, std_dev_hz).
-    """
-    timestamps: list[float] = []
-    with csv_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader, None)
-        if not header:
-            return 0.0, 0, 0.0
-
-        for row in reader:
-            if not row:
-                continue
-            try:
-                ts = float(row[0])
-                timestamps.append(ts)
-            except (ValueError, IndexError):
-                continue
-
-    if len(timestamps) < 2:
-        return 0.0, len(timestamps), 0.0
-
-    time_span = timestamps[-1] - timestamps[0]
-    if time_span <= 0:
-        return 0.0, len(timestamps), 0.0
-
-    avg_hz = len(timestamps) / time_span
-
-    # Compute inter-sample Hz for standard deviation
-    if len(timestamps) > 2:
-        diffs = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)]
-        hz_values = [1.0 / d for d in diffs if d > 0]
-        if hz_values:
-            mean_hz = sum(hz_values) / len(hz_values)
-            variance = sum((h - mean_hz) ** 2 for h in hz_values) / len(hz_values)
-            std_dev = variance**0.5
-        else:
-            std_dev = 0.0
-    else:
-        std_dev = 0.0
-
-    return avg_hz, len(timestamps), std_dev
+from polar_ble_sdk.research.audit import audit_csv_stream  # noqa: E402
 
 
 def analyze_directory(raw_dir: Path, label: str) -> None:
@@ -71,22 +27,22 @@ def analyze_directory(raw_dir: Path, label: str) -> None:
 
     print(f"\n  {label}")
     print(
-        f"  {'Stream':<8} {'Samples':>10} {'Avg Hz':>10} {'Std Dev':>10} {'Duration':>10}"
+        f"  {'Stream':<8} {'Samples':>10} {'Avg Hz':>10} {'Std Dev':>10} {'Duration':>10} {'Gaps (>2x)':>11}"
     )
-    print("  " + "-" * 52)
+    print("  " + "-" * 65)
 
     for csv_path in csv_files:
-        stream_name = csv_path.stem
-        avg_hz, count, std_dev = compute_hz_from_csv(csv_path)
-        duration = count / avg_hz if avg_hz > 0 else 0.0
+        audit = audit_csv_stream(csv_path)
         print(
-            f"  {stream_name:<8} {count:>10d} {avg_hz:>10.2f} Hz "
-            f"{std_dev:>10.2f} Hz {duration:>9.1f} s"
+            f"  {audit.stream:<8} {audit.sample_count:>10d} {audit.average_hz:>10.2f} Hz "
+            f"{audit.std_dev_hz:>10.2f} Hz {audit.duration_s:>9.1f} s {audit.gap_count:>11d}"
         )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Post-session Hz analysis")
+    parser = argparse.ArgumentParser(
+        description="Post-session Hz and signal integrity analysis"
+    )
     parser.add_argument("session_dir", type=str, help="Path to session directory")
     args = parser.parse_args()
 
@@ -96,13 +52,11 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Analyzing session: {session_dir}")
-    print("=" * 56)
+    print("=" * 68)
 
     # Check for dual-device layout
     h10_raw = session_dir / "h10" / "raw"
     sense_raw = session_dir / "sense" / "raw"
-
-    # Check for single-device layout
     raw_dir = session_dir / "raw"
 
     if h10_raw.exists():
@@ -110,7 +64,7 @@ def main() -> None:
     if sense_raw.exists():
         analyze_directory(sense_raw, "Verity Sense (Raw)")
     if raw_dir.exists() and not h10_raw.exists():
-        analyze_directory(raw_dir, "Raw")
+        analyze_directory(raw_dir, "Raw Streams")
 
     print()
 

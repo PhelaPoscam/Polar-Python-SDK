@@ -57,6 +57,13 @@ class PolarVeritySense(BasePolarDevice):
                 self._log("[DEBUG] SDK mode enabled")
             except Exception as e:
                 self._log(f"[DEBUG] SDK mode enable failed: {e}")
+        else:
+            try:
+                await self.polar_device.disable_sdk_mode()
+                self._log("[DEBUG] SDK mode disabled")
+            except Exception as e:
+                self._log(f"[DEBUG] SDK mode disable failed: {e}")
+            self._ppg_default_rate = 55
 
         # 1. Start standard Heart Rate stream
         if self.callback:
