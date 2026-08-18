@@ -79,10 +79,14 @@ Polar-Python-SDK/
 │   │   └── log_panel.py              # Rolling LogPanel & structured severity loggers
 │   └── research/                     # Research & Data Science Tools
 │       ├── loader.py                 # load_session(): auto-load CSVs + metadata into pandas DataFrames
-│       └── audit.py                  # verify_session_integrity(): dropouts, jitter, rate verification
+│       ├── audit.py                  # verify_session_integrity(): dropouts, jitter, rate verification
+│       ├── validation.py             # compute_validation_metrics(): Lin's CCC, ICC(2,1), Bland-Altman LoA, WSCV
+│       ├── ppg.py                    # Optical PPG filtering, zero-crossing, Welch FFT, and adaptive beat detection
+│       └── report.py                 # Automated Markdown cross-validation report and diagnostic Matplotlib figures
 ├── scripts/
-│   ├── monitor_dual_polar.py         # Dual-device live terminal dashboard
-│   ├── monitor_polar_terminal.py     # CLI dashboard wrapper
+│   ├── monitor_dual_polar.py         # Dual-device live terminal dashboard (H10 + Verity Sense)
+│   ├── run_analysis.py               # Cross-device validation & optical waveform analysis CLI
+│   ├── monitor_polar_terminal.py     # Single-device CLI dashboard wrapper
 │   ├── analyze_hz.py                 # Post-session Hz & signal integrity verifier
 │   ├── connect_polar.py              # Simple stream testing script
 │   ├── scan_ble.py                   # BLE device scanner
@@ -247,11 +251,12 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 |---|---|---|
 | `--h10` | Target MAC address or name for the Polar H10. | `--h10 "Polar H10 12345678"` |
 | `--sense` | Target MAC address or name for the Verity Sense. | `--sense "Polar Sense 87654321"` |
+| `--duration` | Set recording duration in seconds; automatically disconnects and closes cleanly. | `--duration 180` |
 | `--log-full` | Enable full-resolution raw CSV logs for both H10 (`data/dual/.../h10/raw/`) and Sense (`data/dual/.../sense/raw/`). | `python scripts/monitor_dual_polar.py --log-full` |
 | `--no-log` | Disable summary and full CSV logging. | `python scripts/monitor_dual_polar.py --no-log` |
 | `--no-ppi` | Disable the Sense PPI stream (only relevant with `--no-sdk-mode`; SDK mode disables PPI anyway). | `python scripts/monitor_dual_polar.py --no-ppi` |
-| `--no-sdk-mode` | Disable SDK mode (now the default): PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `python scripts/monitor_dual_polar.py --no-sdk-mode` |
-| `--sdk-mode` | Explicitly enable SDK mode (already the default). Required for PPG > 55 Hz. | `python scripts/monitor_dual_polar.py --sdk-mode --ppg-rate 135` |
+| `--no-sdk-mode` | Disable SDK mode: PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `python scripts/monitor_dual_polar.py --no-sdk-mode` |
+| `--sdk-mode` | Explicitly enable SDK mode (default). Required for 135 Hz raw 4-channel optical PPG. | `python scripts/monitor_dual_polar.py --sdk-mode --ppg-rate 135` |
 | `--log-level` | Terminal log verbosity: `minimal`, `moderate` (default), `verbose`. Press **L** during monitoring to toggle at runtime. | `--log-level verbose` |
 
 ---
@@ -314,16 +319,35 @@ When a session ends (Ctrl+C), both dashboards print a **Hz verification table** 
 
 Configured rates come from the device's actual settings (e.g. H10 ECG 130 Hz, H10 ACC 200 Hz; Sense PPG 55 Hz, Sense ACC/GYRO 52 Hz, MAG 20 Hz). A mismatch (`X`) flags a stream that did not deliver its configured rate.
 
-### Post-Session Analysis
+### Post-Session Analysis & Cross-Validation
 
-For a deeper look (average Hz, sample count, standard deviation), run the offline analyzer on a recorded session:
+#### 1. Cross-Device Agreement & Statistical Validation (`run_analysis.py`)
+Run the unified research validation CLI to audit packet integrity, compute clinical validation metrics (Lin's CCC, ICC(2,1), Bland-Altman LoA, WSCV, MAE, MAPE), extract optical pulse beats, and generate visual markdown reports + diagnostic figures:
+
+```bash
+# Auto-detect latest dual session
+python scripts/run_analysis.py
+
+# Analyze a specific session
+python scripts/run_analysis.py data/dual/20260818_132922
+```
+
+Outputs are automatically saved to `data/dual/<session_id>/reports/`:
+- `validation_report.md` (Executive summary, limits of agreement, device distribution)
+- `bland_altman.png` (95% Bland-Altman Limits of Agreement)
+- `time_series_hr.png` (Time-synchronized ECG vs PPG tracking)
+- `scatter_correlation.png` (Identity line scatter correlation)
+
+#### 2. Sampling Rate & Frame Integrity Audit (`analyze_hz.py`)
+For a fast summary of packet intervals, mean frequencies, and frame gaps:
 
 ```bash
 # Single-device session
 python scripts/analyze_hz.py data/h10/20260806_120000
 
 # Dual-device session
-python scripts/analyze_hz.py data/dual/20260806_120000
+python scripts/analyze_hz.py data/dual/20260818_132922
+```
 ```
 
 ---
