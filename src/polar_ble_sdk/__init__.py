@@ -6,6 +6,7 @@ and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches).
 
 from __future__ import annotations
 
+from polar_ble_sdk.connector.adapter import PolarAdapter
 from polar_ble_sdk.connector.ble_discovery import (
     discover_dual_polar_devices,
     discover_polar_device,
@@ -13,6 +14,7 @@ from polar_ble_sdk.connector.ble_discovery import (
 )
 from polar_ble_sdk.connector.schemas import SignalPacket
 from polar_ble_sdk.connector.stream import create_polar_connector
+from polar_ble_sdk.lsl.bridge import PolarLSLBridge
 from polar_ble_sdk.metrics.hrv import (
     calculate_pnn50,
     calculate_rmssd,
@@ -32,6 +34,8 @@ __all__ = [
     "discover_dual_polar_devices",
     "discover_polar_devices",
     "create_polar_connector",
+    "PolarAdapter",
+    "PolarLSLBridge",
     # Data Models
     "SignalPacket",
     "DeviceMetadata",

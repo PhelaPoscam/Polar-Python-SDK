@@ -42,6 +42,9 @@ extend-exclude = '''
 '''
 
 [project.optional-dependencies]
+lsl = [
+    "pylsl>=1.16.0",
+]
 dev = [
     "pytest>=7",
     "pytest-asyncio",
@@ -56,6 +59,7 @@ dev = [
     "pandas",
     "scipy",
     "matplotlib",
+    "pylsl>=1.16.0",
 ]
 
 [tool.ruff]

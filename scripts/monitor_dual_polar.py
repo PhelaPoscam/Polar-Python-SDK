@@ -20,10 +20,10 @@ from rich.live import Live  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 from rich.table import Table  # noqa: E402
 
+from polar_ble_sdk.connector import PolarAdapter  # noqa: E402
 from polar_ble_sdk.connector.ble_discovery import (  # noqa: E402
     discover_dual_polar_devices,
 )
-from polar_ble_sdk.connector.stream import create_polar_connector  # noqa: E402
 from polar_ble_sdk.diagnostics.battery import (  # noqa: E402
     read_battery,
     update_battery_loop,
@@ -36,6 +36,7 @@ from polar_ble_sdk.input.keyboard import (  # noqa: E402
     NonBlockingKeyboardReader,
     parse_marker_specs,
 )
+from polar_ble_sdk.lsl.bridge import HAS_PYLSL, PolarLSLBridge  # noqa: E402
 from polar_ble_sdk.metrics.hrv import calculate_rmssd  # noqa: E402
 from polar_ble_sdk.metrics.rate_tracker import (  # noqa: E402
     RateTracker,
@@ -109,6 +110,7 @@ def _make_grid(
     h10_ts: tuple[deque, deque],
     sense_ts: tuple[deque, deque, deque, deque, deque],
     log_panel: LogPanel | None = None,
+    lsl_active: bool = False,
 ) -> Panel:
     now = time.time()
     elapsed = now - start
@@ -179,9 +181,12 @@ def _make_grid(
     if log_panel and log_panel.level != "minimal":
         parts.append(log_panel.render())
 
+    title = (
+        "Dual Polar Dashboard (LSL Active)" if lsl_active else "Dual Polar Dashboard"
+    )
     return Panel(
         Group(*parts),
-        title="Dual Polar Dashboard",
+        title=title,
         border_style="cyan",
     )
 
@@ -232,6 +237,48 @@ async def main() -> None:
         default="moderate",
         help="Terminal log verbosity: minimal, moderate (default), verbose.",
     )
+    parser.add_argument(
+        "--watchdog",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable link watchdog and auto-reconnect on freeze or disconnection (default: ON).",
+    )
+    parser.add_argument(
+        "--freeze-timeout",
+        type=float,
+        default=8.0,
+        help="Watchdog silent freeze timeout in seconds (default: 8.0).",
+    )
+    parser.add_argument(
+        "--watchdog-interval",
+        type=float,
+        default=3.0,
+        help="Watchdog poll interval in seconds (default: 3.0).",
+    )
+    parser.add_argument(
+        "--scan-timeout",
+        type=float,
+        default=15.0,
+        help="Device discovery scan timeout in seconds (default: 15.0).",
+    )
+    parser.add_argument(
+        "--sense-gyro",
+        action="store_true",
+        default=False,
+        help="Enable Polar Verity Sense Gyroscope stream (52 Hz). Note: on Verity Sense, Gyro shares the IMU FIFO and will disable/override ACC.",
+    )
+    parser.add_argument(
+        "--sense-mag",
+        action="store_true",
+        default=False,
+        help="Enable Polar Verity Sense Magnetometer stream (20 Hz). Default: OFF.",
+    )
+    parser.add_argument(
+        "--lsl",
+        action="store_true",
+        default=False,
+        help="Broadcast all active sensor streams and markers over Lab Streaming Layer (LSL).",
+    )
     for opt in (
         "acc-rate",
         "acc-range",
@@ -265,7 +312,7 @@ async def main() -> None:
     h10_dev, sense_dev = await discover_dual_polar_devices(
         h10_target=args.h10,
         sense_target=args.sense,
-        timeout=10.0,
+        timeout=args.scan_timeout,
     )
 
     if not h10_dev or not sense_dev:
@@ -320,8 +367,12 @@ async def main() -> None:
     _sense_hr_cb: Callable[[Any], None] = _raw_sense_hr_cb
     _sense_ppg_cb = make_callback(state_sense, sense_ppg_ts, "ppg")
     _sense_acc_cb = make_callback(state_sense, sense_acc_ts, "acc")
-    _sense_gyro_cb = make_callback(state_sense, sense_gyro_ts, "gyro")
-    _sense_mag_cb = make_callback(state_sense, sense_mag_ts, "mag")
+    _sense_gyro_cb: Callable[[Any], None] | None = (
+        make_callback(state_sense, sense_gyro_ts, "gyro") if args.sense_gyro else None
+    )
+    _sense_mag_cb: Callable[[Any], None] | None = (
+        make_callback(state_sense, sense_mag_ts, "mag") if args.sense_mag else None
+    )
     _sense_ppi_cb = make_callback(state_sense, sense_ppi_ts, "ppi")
 
     if not args.no_log_full and not args.no_log:
@@ -335,13 +386,16 @@ async def main() -> None:
 
         fl_sense_ppg = session_mgr.create_frame_logger("ppg", sub_device="sense")
         fl_sense_acc = session_mgr.create_frame_logger("acc", sub_device="sense")
-        fl_sense_gyro = session_mgr.create_frame_logger("gyro", sub_device="sense")
-        fl_sense_mag = session_mgr.create_frame_logger("mag", sub_device="sense")
-
         _sense_ppg_cb = make_frame_callback(_sense_ppg_cb, fl_sense_ppg)
         _sense_acc_cb = make_frame_callback(_sense_acc_cb, fl_sense_acc)
-        _sense_gyro_cb = make_frame_callback(_sense_gyro_cb, fl_sense_gyro)
-        _sense_mag_cb = make_frame_callback(_sense_mag_cb, fl_sense_mag)
+
+        if args.sense_gyro and _sense_gyro_cb is not None:
+            fl_sense_gyro = session_mgr.create_frame_logger("gyro", sub_device="sense")
+            _sense_gyro_cb = make_frame_callback(_sense_gyro_cb, fl_sense_gyro)
+
+        if args.sense_mag and _sense_mag_cb is not None:
+            fl_sense_mag = session_mgr.create_frame_logger("mag", sub_device="sense")
+            _sense_mag_cb = make_frame_callback(_sense_mag_cb, fl_sense_mag)
 
         if args.no_sdk_mode and not args.no_ppi:
             fl_sense_hr = session_mgr.create_frame_logger("hr", sub_device="sense")
@@ -349,35 +403,121 @@ async def main() -> None:
             _sense_hr_cb = make_hr_callback(_sense_hr_cb, fl_sense_hr)
             _sense_ppi_cb = make_ppi_callback(_sense_ppi_cb, fl_sense_ppi)
 
-    conn_h10 = create_polar_connector(
-        h10_dev,
-        callback=_h10_hr_cb,
-        ecg_callback=_h10_ecg_cb,
-        acc_callback=_h10_acc_cb,
-        verbose=False,
-        log_callback=lambda msg, sev="info": log_event(
-            log_panel, msg, sev, device="H10", log_file=session_mgr.log_file
-        ),
-    )
+    h10_kwargs: dict[str, Any] = {}
+    if args.acc_rate:
+        h10_kwargs["acc_sample_rate"] = args.acc_rate
+    if args.acc_range:
+        h10_kwargs["acc_range"] = args.acc_range
+    if args.ecg_rate:
+        h10_kwargs["ecg_sample_rate"] = args.ecg_rate
 
     sense_kwargs: dict[str, Any] = {"sdk_mode": not args.no_sdk_mode}
     if args.ppg_rate:
         sense_kwargs["ppg_sample_rate"] = args.ppg_rate
+    if args.acc_rate:
+        sense_kwargs["acc_sample_rate"] = args.acc_rate
+    if args.acc_range:
+        sense_kwargs["acc_range"] = args.acc_range
+    if args.gyro_rate:
+        sense_kwargs["gyro_sample_rate"] = args.gyro_rate
+    if args.gyro_range:
+        sense_kwargs["gyro_range"] = args.gyro_range
+    if args.mag_rate:
+        sense_kwargs["mag_sample_rate"] = args.mag_rate
 
-    conn_sense = create_polar_connector(
-        sense_dev,
-        callback=_sense_hr_cb if args.no_sdk_mode else None,
-        ppi_callback=_sense_ppi_cb if (args.no_sdk_mode and not args.no_ppi) else None,
-        ppg_callback=_sense_ppg_cb,
-        acc_callback=_sense_acc_cb,
-        gyro_callback=_sense_gyro_cb,
-        mag_callback=_sense_mag_cb,
-        verbose=False,
-        log_callback=lambda msg, sev="info": log_event(
-            log_panel, msg, sev, device="Sense", log_file=session_mgr.log_file
-        ),
-        **sense_kwargs,
+    def polar_status_callback(dev_label: str, msg: str) -> None:
+        sev = (
+            "warning"
+            if ("Reconnecting" in msg or "failed" in msg or "stalled" in msg)
+            else ("success" if "Connected" in msg else "info")
+        )
+        log_event(log_panel, msg, sev, device=dev_label, log_file=session_mgr.log_file)
+        if dev_label == "H10":
+            state_h10["status"] = msg
+        elif dev_label == "Sense":
+            state_sense["status"] = msg
+
+    lsl_bridge: PolarLSLBridge | None = None
+    if args.lsl:
+        if not HAS_PYLSL:
+            log_event(
+                log_panel,
+                "pylsl not installed. Run 'pip install pylsl' to enable LSL.",
+                "warning",
+                log_file=session_mgr.log_file,
+            )
+        else:
+            try:
+                ppg_rate_val = 55.0 if args.no_sdk_mode else 135.0
+                lsl_bridge = PolarLSLBridge(
+                    h10_id=args.h10 or "H10",
+                    sense_id=args.sense or "Sense",
+                    enable_sense_gyro=args.sense_gyro,
+                    enable_sense_mag=args.sense_mag,
+                    ppg_rate=ppg_rate_val,
+                )
+                _h10_hr_cb = lsl_bridge.wrap_callback("h10_hr", _h10_hr_cb)
+                _h10_ecg_cb = lsl_bridge.wrap_callback("h10_ecg", _h10_ecg_cb)
+                _h10_acc_cb = lsl_bridge.wrap_callback("h10_acc", _h10_acc_cb)
+                _sense_ppg_cb = lsl_bridge.wrap_callback("sense_ppg", _sense_ppg_cb)
+                _sense_acc_cb = lsl_bridge.wrap_callback("sense_acc", _sense_acc_cb)
+                if _sense_gyro_cb is not None:
+                    _sense_gyro_cb = lsl_bridge.wrap_callback(
+                        "sense_gyro", _sense_gyro_cb
+                    )
+                if _sense_mag_cb is not None:
+                    _sense_mag_cb = lsl_bridge.wrap_callback("sense_mag", _sense_mag_cb)
+                log_event(
+                    log_panel,
+                    "LSL outlets active and broadcasting.",
+                    "success",
+                    log_file=session_mgr.log_file,
+                )
+            except Exception as exc:
+                log_event(
+                    log_panel,
+                    f"LSL initialization error: {exc}",
+                    "error",
+                    log_file=session_mgr.log_file,
+                )
+
+    adapter = PolarAdapter(
+        h10_target=args.h10,
+        sense_target=args.sense,
+        enable_sense_gyro=args.sense_gyro,
+        enable_sense_mag=args.sense_mag,
+        h10_callbacks={
+            "hr": _h10_hr_cb,
+            "ecg": _h10_ecg_cb,
+            "acc": _h10_acc_cb,
+        },
+        sense_callbacks={
+            "hr": _sense_hr_cb if args.no_sdk_mode else None,
+            "ppi": _sense_ppi_cb if (args.no_sdk_mode and not args.no_ppi) else None,
+            "ppg": _sense_ppg_cb,
+            "acc": _sense_acc_cb,
+            "gyro": _sense_gyro_cb,
+            "mag": _sense_mag_cb,
+        },
+        status_callback=polar_status_callback,
+        enable_watchdog=args.watchdog,
+        watchdog_interval=args.watchdog_interval,
+        freeze_timeout=args.freeze_timeout,
+        h10_kwargs={
+            "log_callback": lambda msg, sev="info": log_event(
+                log_panel, msg, sev, device="H10", log_file=session_mgr.log_file
+            ),
+            **h10_kwargs,
+        },
+        sense_kwargs={
+            "log_callback": lambda msg, sev="info": log_event(
+                log_panel, msg, sev, device="Sense", log_file=session_mgr.log_file
+            ),
+            **sense_kwargs,
+        },
     )
+    adapter.h10_dev = h10_dev
+    adapter.sense_dev = sense_dev
 
     start = time.time()
 
@@ -387,111 +527,113 @@ async def main() -> None:
             (h10_acc_ts, h10_ecg_ts),
             (sense_ppg_ts, sense_acc_ts, sense_gyro_ts, sense_mag_ts, sense_ppi_ts),
             log_panel=log_panel,
+            lsl_active=bool(lsl_bridge),
         )
 
-    with Live(build(), refresh_per_second=10) as live:
-        last_log = start
-        last_frame_log = start
-        csv_h10 = None
-        csv_sense = None
+    last_log = start
+    last_frame_log = start
+    csv_h10 = None
+    csv_sense = None
 
-        if not args.no_log:
-            pp_h10 = session_mgr.get_post_processed_dir("h10")
-            pp_sense = session_mgr.get_post_processed_dir("sense")
-            csv_h10 = CsvLogger(pp_h10 / "summary.csv", H10_SUMMARY_COLS)
-            csv_h10.write_header()
-            csv_sense = CsvLogger(pp_sense / "summary.csv", SENSE_SUMMARY_COLS)
-            csv_sense.write_header()
-            state_h10["csv_path"] = csv_h10.path_str
-            state_sense["csv_path"] = csv_sense.path_str
+    if not args.no_log:
+        pp_h10 = session_mgr.get_post_processed_dir("h10")
+        pp_sense = session_mgr.get_post_processed_dir("sense")
+        csv_h10 = CsvLogger(pp_h10 / "summary.csv", H10_SUMMARY_COLS)
+        csv_h10.write_header()
+        csv_sense = CsvLogger(pp_sense / "summary.csv", SENSE_SUMMARY_COLS)
+        csv_sense.write_header()
+        state_h10["csv_path"] = csv_h10.path_str
+        state_sense["csv_path"] = csv_sense.path_str
 
-        batt_h10_task = None
-        batt_sense_task = None
-        rssi_h10_task = None
-        rssi_sense_task = None
+    batt_h10_task = None
+    batt_sense_task = None
+    rssi_h10_task = None
+    rssi_sense_task = None
 
-        h10_frame_counter = FrameCountLogger(
-            log_panel, device="H10", log_file=session_mgr.log_file
+    h10_frame_counter = FrameCountLogger(
+        log_panel, device="H10", log_file=session_mgr.log_file
+    )
+    sense_frame_counter = FrameCountLogger(
+        log_panel, device="Sense", log_file=session_mgr.log_file
+    )
+
+    try:
+        log_event(
+            log_panel,
+            "Connecting devices...",
+            log_file=session_mgr.log_file,
         )
-        sense_frame_counter = FrameCountLogger(
-            log_panel, device="Sense", log_file=session_mgr.log_file
-        )
+        h10_ok, sense_ok = await adapter.connect_and_start_streams()
 
-        try:
+        if adapter.conn_h10 and adapter.conn_h10.stream_errors:
+            failed = ", ".join(adapter.conn_h10.stream_errors.keys())
+            state_h10["status"] = f"Connected. Failed: {failed}"
             log_event(
                 log_panel,
-                "Connecting H10...",
+                f"H10 streams failed: {failed}",
+                "warning",
                 device="H10",
                 log_file=session_mgr.log_file,
             )
-            await conn_h10.start_notify()
-            if conn_h10.stream_errors:
-                failed = ", ".join(conn_h10.stream_errors.keys())
-                state_h10["status"] = f"Connected. Failed: {failed}"
-                log_event(
-                    log_panel,
-                    f"H10 streams failed: {failed}",
-                    "warning",
-                    device="H10",
-                    log_file=session_mgr.log_file,
-                )
-            else:
-                state_h10["status"] = "Connected! Streaming."
-            state_h10["battery"] = await read_battery(conn_h10)
+        elif h10_ok:
+            state_h10["status"] = "Connected! Streaming."
+
+        if adapter.conn_sense and adapter.conn_sense.stream_errors:
+            failed = ", ".join(adapter.conn_sense.stream_errors.keys())
+            state_sense["status"] = f"Connected. Failed: {failed}"
             log_event(
                 log_panel,
-                f"H10 battery: {state_h10['battery']}",
-                "info",
+                f"Sense streams failed: {failed}",
+                "warning",
+                device="Sense",
+                log_file=session_mgr.log_file,
+            )
+        elif sense_ok:
+            state_sense["status"] = "Connected! Streaming."
+
+        state_h10["battery"] = await read_battery(adapter.proxy_h10)
+        log_event(
+            log_panel,
+            f"H10 battery: {state_h10['battery']}",
+            "info",
+            device="H10",
+            log_file=session_mgr.log_file,
+        )
+
+        state_sense["battery"] = await read_battery(adapter.proxy_sense)
+        log_event(
+            log_panel,
+            f"Sense battery: {state_sense['battery']}",
+            "info",
+            device="Sense",
+            log_file=session_mgr.log_file,
+        )
+
+        batt_h10_task = asyncio.create_task(
+            update_battery_loop(adapter.proxy_h10, state_h10)
+        )
+        batt_sense_task = asyncio.create_task(
+            update_battery_loop(adapter.proxy_sense, state_sense)
+        )
+
+        rssi_h10_task = asyncio.create_task(
+            rssi_loop(
+                adapter.proxy_h10,
+                log_panel,
                 device="H10",
                 log_file=session_mgr.log_file,
             )
-
-            log_event(
+        )
+        rssi_sense_task = asyncio.create_task(
+            rssi_loop(
+                adapter.proxy_sense,
                 log_panel,
-                "Connecting Sense...",
                 device="Sense",
                 log_file=session_mgr.log_file,
             )
-            await conn_sense.start_notify()
-            if conn_sense.stream_errors:
-                failed = ", ".join(conn_sense.stream_errors.keys())
-                state_sense["status"] = f"Connected. Failed: {failed}"
-                log_event(
-                    log_panel,
-                    f"Sense streams failed: {failed}",
-                    "warning",
-                    device="Sense",
-                    log_file=session_mgr.log_file,
-                )
-            else:
-                state_sense["status"] = "Connected! Streaming."
-            state_sense["battery"] = await read_battery(conn_sense)
-            log_event(
-                log_panel,
-                f"Sense battery: {state_sense['battery']}",
-                "info",
-                device="Sense",
-                log_file=session_mgr.log_file,
-            )
+        )
 
-            batt_h10_task = asyncio.create_task(
-                update_battery_loop(conn_h10, state_h10)
-            )
-            batt_sense_task = asyncio.create_task(
-                update_battery_loop(conn_sense, state_sense)
-            )
-
-            rssi_h10_task = asyncio.create_task(
-                rssi_loop(
-                    conn_h10, log_panel, device="H10", log_file=session_mgr.log_file
-                )
-            )
-            rssi_sense_task = asyncio.create_task(
-                rssi_loop(
-                    conn_sense, log_panel, device="Sense", log_file=session_mgr.log_file
-                )
-            )
-
+        with Live(build(), refresh_per_second=10) as live:
             while True:
                 for m in reader.poll_markers():
                     if m == "__toggle_log__":
@@ -504,6 +646,8 @@ async def main() -> None:
                         )
                         continue
                     session_mgr.register_marker(m)
+                    if lsl_bridge:
+                        lsl_bridge.push_marker(m)
                     log_event(
                         log_panel, f"Marker: {m}", "info", log_file=session_mgr.log_file
                     )
@@ -561,7 +705,11 @@ async def main() -> None:
                 if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
                     last_frame_log = now
                     h10_frame_counter.check(state_h10, ["ecg", "acc"])
-                    sense_streams = ["ppg", "acc", "gyro", "mag"]
+                    sense_streams = ["ppg", "acc"]
+                    if args.sense_gyro:
+                        sense_streams.append("gyro")
+                    if args.sense_mag:
+                        sense_streams.append("mag")
                     if args.no_sdk_mode and not args.no_ppi:
                         sense_streams.append("ppi")
                     sense_frame_counter.check(state_sense, sense_streams)
@@ -578,64 +726,71 @@ async def main() -> None:
                 live.update(build())
                 await asyncio.sleep(0.1)
 
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            state_h10["status"] = f"Error: {e}"
-            state_sense["status"] = f"Error: {e}"
-            live.update(build())
-            await asyncio.sleep(3)
-        finally:
-            if batt_h10_task:
-                batt_h10_task.cancel()
-            if batt_sense_task:
-                batt_sense_task.cancel()
-            if rssi_h10_task:
-                rssi_h10_task.cancel()
-            if rssi_sense_task:
-                rssi_sense_task.cancel()
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        log_event(log_panel, f"Error: {e}", "error", log_file=session_mgr.log_file)
+    finally:
+        if batt_h10_task:
+            batt_h10_task.cancel()
+        if batt_sense_task:
+            batt_sense_task.cancel()
+        if rssi_h10_task:
+            rssi_h10_task.cancel()
+        if rssi_sense_task:
+            rssi_sense_task.cancel()
 
-            await conn_h10.stop_notify()
-            await conn_sense.stop_notify()
+        if lsl_bridge:
+            lsl_bridge.close()
 
-            rate_tracker = RateTracker()
+        await adapter.disconnect()
 
-            def _accumulate(st: dict[str, Any], prefix: str) -> None:
-                for s_name, s_acc in st.get("_session_streams", {}).items():
-                    key = f"{prefix}_{s_name}"
-                    rate_tracker.track(
-                        key, s_acc["samples"], timestamp=s_acc["last_ts"]
-                    )
-                    if key in rate_tracker.accumulators:
-                        rate_tracker.accumulators[key].first_ts = s_acc["first_ts"]
+        rate_tracker = RateTracker()
 
-            _accumulate(state_h10, "h10")
-            _accumulate(state_sense, "sense")
+        def _accumulate(st: dict[str, Any], prefix: str) -> None:
+            for s_name, s_acc in st.get("_session_streams", {}).items():
+                key = f"{prefix}_{s_name}"
+                rate_tracker.track(key, s_acc["samples"], timestamp=s_acc["last_ts"])
+                if key in rate_tracker.accumulators:
+                    rate_tracker.accumulators[key].first_ts = s_acc["first_ts"]
 
-            session_mgr.close_all(
-                rate_tracker=rate_tracker,
-                configured_rates={
-                    "h10_ecg": 130,
-                    "h10_acc": 200,
-                    "sense_ppg": 55,
-                    "sense_acc": 52,
-                    "sense_gyro": 52,
-                    "sense_mag": 20,
-                },
-            )
+        _accumulate(state_h10, "h10")
+        _accumulate(state_sense, "sense")
 
-            print_hz_summary({"ecg": 130, "acc": 200}, state_h10)
-            print_hz_summary(
-                {"ppg": 55, "acc": 52, "gyro": 52, "mag": 20},
-                state_sense,
-                extra_streams=(
-                    ["ppi"] if (args.no_sdk_mode and not args.no_ppi) else None
-                ),
-            )
-            state_h10["status"] = "Disconnected."
-            state_sense["status"] = "Disconnected."
-            live.update(build())
-            await asyncio.sleep(1)
+        ppg_expected_rate = 55 if args.no_sdk_mode else 135
+        configured_rates: dict[str, int] = {
+            "h10_ecg": 130,
+            "h10_acc": 200,
+            "sense_ppg": ppg_expected_rate,
+            "sense_acc": 52,
+        }
+        if args.sense_gyro:
+            configured_rates["sense_gyro"] = 52
+        if args.sense_mag:
+            configured_rates["sense_mag"] = 20
+
+        session_mgr.close_all(
+            rate_tracker=rate_tracker,
+            configured_rates=configured_rates,
+        )
+
+        print_hz_summary({"ecg": 130, "acc": 200}, state_h10)
+        sense_hz_check: dict[str, int] = {
+            "ppg": ppg_expected_rate,
+            "acc": 52,
+        }
+        if args.sense_gyro:
+            sense_hz_check["gyro"] = 52
+        if args.sense_mag:
+            sense_hz_check["mag"] = 20
+
+        print_hz_summary(
+            sense_hz_check,
+            state_sense,
+            extra_streams=(["ppi"] if (args.no_sdk_mode and not args.no_ppi) else None),
+        )
+        state_h10["status"] = "Disconnected."
+        state_sense["status"] = "Disconnected."
 
 
 if __name__ == "__main__":

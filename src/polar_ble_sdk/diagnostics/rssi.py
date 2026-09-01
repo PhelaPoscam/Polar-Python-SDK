@@ -38,30 +38,35 @@ async def rssi_loop(
         if conn and conn.polar_device
         else None
     )
-    if not client:
-        return
+    if client:
+        rssi = await read_rssi(client)
+        if rssi is None:
+            log_event(
+                log_panel,
+                "RSSI not available (bleak 3.x backend restriction)",
+                "warning",
+                device=device,
+                log_file=log_file,
+            )
+        else:
+            log_event(
+                log_panel,
+                f"RSSI: {rssi} dBm",
+                "info",
+                device=device,
+                log_file=log_file,
+            )
 
-    rssi = await read_rssi(client)
-    if rssi is None:
-        log_event(
-            log_panel,
-            "RSSI not available (bleak 3.x backend restriction)",
-            "warning",
-            device=device,
-            log_file=log_file,
-        )
-        return
-
-    log_event(
-        log_panel,
-        f"RSSI: {rssi} dBm",
-        "info",
-        device=device,
-        log_file=log_file,
-    )
     while True:
         interval = 5.0 if getattr(log_panel, "level", "moderate") == "verbose" else 30.0
         await asyncio.sleep(interval)
+        client = (
+            getattr(conn.polar_device, "_client", None)
+            if conn and conn.polar_device
+            else None
+        )
+        if not client:
+            continue
         try:
             rssi = await read_rssi(client)
             if rssi is not None:

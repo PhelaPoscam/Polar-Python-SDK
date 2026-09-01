@@ -29,12 +29,22 @@ ENV/
 
 # Environment variables
 .env
+.env.*
+!.env.example
 
-# IDE and Editor configs
+# IDE, Editor, & AI assistant configs
 .vscode/
 .idea/
 .vs/
 .commandcode/
+.claude/
+.codex/
+.repowise/
+.mcp.json
+mcp.json
+.cursor/
+.windsurf/
+AGENTS.md
 *.swp
 *.swo
 *~
@@ -44,9 +54,10 @@ ENV/
 *.h5
 *.joblib
 
-# Data files (large/sensitive files)
+# Data & Logging
 *.csv
 *.xlsx
+*.log
 datasets/
 data/
 analysis/
@@ -62,6 +73,8 @@ skills-lock.json
 # OS generated files
 .DS_Store
 Thumbs.db
+desktop.ini
+*.tmp
 
 # Streamlit config/cache
 .streamlit/
@@ -70,7 +83,11 @@ Thumbs.db
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
 .coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # Reference folder
 reference/
