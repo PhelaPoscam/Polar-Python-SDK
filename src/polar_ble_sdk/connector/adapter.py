@@ -11,6 +11,7 @@ from typing import Any
 
 from .ble_discovery import discover_dual_polar_devices
 from .stream import PolarH10, PolarVeritySense
+from .stream.base import DISCONNECT_INFO, DisconnectReason, looks_like_bond_break
 
 logger = logging.getLogger("polar_adapter")
 
@@ -249,9 +250,9 @@ class PolarAdapter:
 
             # Check Sense link
             if self._enable_sense_flag and not self._reconnecting_sense:
-                needs_reconnect = False
+                reason: DisconnectReason | None = None
                 if self.conn_sense is None:
-                    needs_reconnect = True
+                    reason = DisconnectReason.LINK_LOSS
                 else:
                     client = getattr(
                         getattr(self.conn_sense, "polar_device", None),
@@ -266,20 +267,22 @@ class PolarAdapter:
                         if self._last_sense_packet_time > 0
                         else 0.0
                     )
-                    if not is_conn or (
+                    if not is_conn:
+                        reason = DisconnectReason.LINK_LOSS
+                    elif (
                         self._last_sense_packet_time > 0
                         and time_since_pkt > self.freeze_timeout
                     ):
-                        needs_reconnect = True
+                        reason = DisconnectReason.STREAM_FROZEN
 
-                if needs_reconnect:
-                    asyncio.create_task(self._reconnect_sense())
+                if reason is not None:
+                    asyncio.create_task(self._reconnect_sense(reason))
 
             # Check H10 link
             if self._enable_h10_flag and not self._reconnecting_h10:
-                needs_reconnect = False
+                reason = None
                 if self.conn_h10 is None:
-                    needs_reconnect = True
+                    reason = DisconnectReason.LINK_LOSS
                 else:
                     client = getattr(
                         getattr(self.conn_h10, "polar_device", None),
@@ -294,23 +297,28 @@ class PolarAdapter:
                         if self._last_h10_packet_time > 0
                         else 0.0
                     )
-                    if not is_conn or (
+                    if not is_conn:
+                        reason = DisconnectReason.LINK_LOSS
+                    elif (
                         self._last_h10_packet_time > 0
                         and time_since_pkt > self.freeze_timeout
                     ):
-                        needs_reconnect = True
+                        reason = DisconnectReason.STREAM_FROZEN
 
-                if needs_reconnect:
-                    asyncio.create_task(self._reconnect_h10())
+                if reason is not None:
+                    asyncio.create_task(self._reconnect_h10(reason))
 
-    async def _reconnect_sense(self) -> None:
+    async def _reconnect_sense(
+        self, reason: DisconnectReason = DisconnectReason.LINK_LOSS
+    ) -> None:
         """Auto-reconnect handler for Polar Verity Sense."""
         if self._reconnecting_sense or not self._running:
             return
         self._reconnecting_sense = True
+        label, guidance = DISCONNECT_INFO[reason]
         if self.status_callback:
-            self.status_callback("Sense", "Watchdog: Reconnecting...")
-        logger.warning("Polar Sense BLE link stalled; attempting auto-reconnect...")
+            self.status_callback("Sense", f"Watchdog: {label.lower()}; reconnecting...")
+        logger.warning("Polar Sense %s: %s", label.lower(), guidance)
 
         try:
             if self.conn_sense:
@@ -330,20 +338,35 @@ class PolarAdapter:
                         self.status_callback("Sense", "Connected! Streaming...")
                     logger.info("Polar Sense reconnected and resumed streaming.")
         except Exception as exc:
-            logger.error("Polar Sense reconnect failed: %s", exc)
+            fail_label, fail_guidance = DISCONNECT_INFO[
+                (
+                    DisconnectReason.BOND_BROKEN
+                    if looks_like_bond_break(str(exc))
+                    else DisconnectReason.LINK_LOSS
+                )
+            ]
+            logger.error(
+                "Polar Sense reconnect failed (%s): %s — %s",
+                fail_label.lower(),
+                exc,
+                fail_guidance,
+            )
             if self.status_callback:
-                self.status_callback("Sense", f"Reconnect failed ({exc})")
+                self.status_callback("Sense", f"{fail_label}: {fail_guidance}")
         finally:
             self._reconnecting_sense = False
 
-    async def _reconnect_h10(self) -> None:
+    async def _reconnect_h10(
+        self, reason: DisconnectReason = DisconnectReason.LINK_LOSS
+    ) -> None:
         """Auto-reconnect handler for Polar H10."""
         if self._reconnecting_h10 or not self._running:
             return
         self._reconnecting_h10 = True
+        label, guidance = DISCONNECT_INFO[reason]
         if self.status_callback:
-            self.status_callback("H10", "Watchdog: Reconnecting...")
-        logger.warning("Polar H10 BLE link stalled; attempting auto-reconnect...")
+            self.status_callback("H10", f"Watchdog: {label.lower()}; reconnecting...")
+        logger.warning("Polar H10 %s: %s", label.lower(), guidance)
 
         try:
             if self.conn_h10:
@@ -363,9 +386,21 @@ class PolarAdapter:
                         self.status_callback("H10", "Connected! Streaming...")
                     logger.info("Polar H10 reconnected and resumed streaming.")
         except Exception as exc:
-            logger.error("Polar H10 reconnect failed: %s", exc)
+            fail_label, fail_guidance = DISCONNECT_INFO[
+                (
+                    DisconnectReason.BOND_BROKEN
+                    if looks_like_bond_break(str(exc))
+                    else DisconnectReason.LINK_LOSS
+                )
+            ]
+            logger.error(
+                "Polar H10 reconnect failed (%s): %s — %s",
+                fail_label.lower(),
+                exc,
+                fail_guidance,
+            )
             if self.status_callback:
-                self.status_callback("H10", f"Reconnect failed ({exc})")
+                self.status_callback("H10", f"{fail_label}: {fail_guidance}")
         finally:
             self._reconnecting_h10 = False
 

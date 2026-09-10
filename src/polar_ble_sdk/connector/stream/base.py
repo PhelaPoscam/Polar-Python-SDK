@@ -5,6 +5,7 @@ import contextlib
 import sys
 import time
 from collections.abc import Callable
+from enum import Enum
 from typing import Any
 
 from ..._pmd import PolarDevice
@@ -12,6 +13,43 @@ from ..._pmd.constants import (
     PmdMeasurementType,
     PolarCharacteristic,
 )
+
+
+class DisconnectReason(str, Enum):
+    """Why a device came off the air, so callers can show user guidance."""
+
+    USER_INITIATED = "user_initiated"
+    LINK_LOSS = "link_loss"
+    STREAM_FROZEN = "stream_frozen"
+    BOND_BROKEN = "bond_broken"
+
+
+# (short label for status lines, full guidance for the log panel)
+DISCONNECT_INFO: dict[DisconnectReason, tuple[str, str]] = {
+    DisconnectReason.USER_INITIATED: ("Disconnected", "Requested shutdown."),
+    DisconnectReason.LINK_LOSS: (
+        "Link lost",
+        "Device out of range, powered off, or asleep. Auto-reconnecting.",
+    ),
+    DisconnectReason.STREAM_FROZEN: (
+        "Stream frozen",
+        "Connected but no data received. Re-establishing the session.",
+    ),
+    DisconnectReason.BOND_BROKEN: (
+        "Bond broken",
+        "Remove the device in Windows Bluetooth settings, re-pair, then retry.",
+    ),
+}
+
+
+def looks_like_bond_break(err_str: str) -> bool:
+    """True when a BLE error carries the Windows signature of a broken/missing bond."""
+    return (
+        "Authentication" in err_str
+        or "Insufficient" in err_str
+        or "(5)" in err_str
+        or "-2147023673" in err_str
+    )
 
 
 class BasePolarDevice:
@@ -47,6 +85,16 @@ class BasePolarDevice:
         if self.log_callback:
             self.log_callback(msg, severity)
 
+    def _on_ble_disconnected(self, _client: Any) -> None:
+        """Bleak hook for any OS-level disconnect; reports the reason if unexpected.
+
+        Fires for intentional teardowns too, so it is gated on ``_running``:
+        _disconnect_client clears that flag before calling disconnect().
+        """
+        if self._running:
+            label, guidance = DISCONNECT_INFO[DisconnectReason.LINK_LOSS]
+            self._emit(f"{label}: {guidance}", "warning")
+
     async def start_notify(self) -> None:
         """Connect to device and initialize notifications."""
         self.stream_errors = {}
@@ -67,7 +115,11 @@ class BasePolarDevice:
         for attempt in range(1, self.connect_attempts + 1):
             attempt_started = time.monotonic()
             try:
-                self.polar_device = PolarDevice(self.device)
+                self.polar_device = PolarDevice(
+                    self.device,
+                    disconnected_callback=self._on_ble_disconnected,
+                    pmd_event_callback=self._emit,
+                )
                 self._log(
                     f"Connecting to {device_name or 'Polar device'} "
                     f"(attempt {attempt}/{self.connect_attempts})..."
@@ -97,12 +149,7 @@ class BasePolarDevice:
             except Exception as e:
                 last_error = e
                 err_str = str(e)
-                if (
-                    "Authentication" in err_str
-                    or "Insufficient" in err_str
-                    or "(5)" in err_str
-                    or "-2147023673" in err_str
-                ):
+                if looks_like_bond_break(err_str):
                     self._log(
                         f"Device ({device_name}) requires pairing. Initiating BLE pairing/bonding..."
                     )
@@ -238,6 +285,8 @@ class BasePolarDevice:
             self._running = False
             return
 
+        # Clear before teardown so _on_ble_disconnected treats it as intentional.
+        self._running = False
         self._emit("Disconnecting...")
 
         client = getattr(self.polar_device, "_client", None)
@@ -247,7 +296,6 @@ class BasePolarDevice:
             with contextlib.suppress(Exception):
                 await client.disconnect()
 
-        self._running = False
         if clear_device:
             self.polar_device = None
             self._emit("Disconnected", "success")
@@ -299,6 +347,7 @@ class BasePolarDevice:
             return True
         if measurement_type not in features:
             self._log(f"[DEBUG] {label} skipped — not in available features")
+            self._emit(f"{label} stream skipped — not advertised by device", "warning")
             return False
         try:
             available = await self._get_available_settings(measurement_type)

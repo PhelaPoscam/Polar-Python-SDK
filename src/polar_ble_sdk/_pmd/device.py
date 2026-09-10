@@ -26,6 +26,10 @@ from .models import (
     PPIData,
 )
 
+# Emit a per-kind frame tally every N raw PMD notifications. Low enough to spot
+# a silent stream, high enough not to flood the log panel during a session.
+PMD_STATS_INTERVAL = 500
+
 
 class PolarDevice:
     """A client to interface with Polar BLE devices.
@@ -59,16 +63,31 @@ class PolarDevice:
     _mag_callback: MAGCallback | None = None
     _hr_callback: HRCallback | None = None
 
-    def __init__(self, address_or_ble_device: str | BLEDevice) -> None:
+    def __init__(
+        self,
+        address_or_ble_device: str | BLEDevice,
+        disconnected_callback: Callable[[BleakClient], None] | None = None,
+        pmd_event_callback: Callable[[str, str], None] | None = None,
+    ) -> None:
         """Initializes the PolarDevice with a BLE address or device.
 
         Args:
             address_or_ble_device: The Bluetooth MAC address (str) or a discovered
                 BLEDevice instance of the Polar device.
+            disconnected_callback: Optional Bleak hook invoked on any disconnect
+                (intentional or unexpected), mirroring the vendor SDK's
+                onDeviceDisconnected reason callback.
+            pmd_event_callback: Optional sink for diagnostic events on the PMD
+                data path (parse errors, periodic frame-count summaries).
+                Signature matches ``BasePolarDevice._emit`` (msg, severity).
         """
-        self._client = BleakClient(address_or_ble_device)
+        self._client = BleakClient(
+            address_or_ble_device, disconnected_callback=disconnected_callback
+        )
         self._queue_pmd_control = asyncio.Queue()
         self._factors = {}
+        self._pmd_event_cb = pmd_event_callback
+        self._pmd_counts: dict[str, int] = {}
 
     async def connect(self) -> None:
         """Connects to the Polar BLE device and sets up initial notifications.
@@ -124,6 +143,44 @@ class PolarDevice:
         features = data[1]
         return [PmdMeasurementType(i) for i in range(8) if features & (1 << i)]
 
+    async def _read_control_response(
+        self,
+        op: int,
+        measurement_type: int | None = None,
+        timeout: float = 5.0,
+    ) -> bytearray | None:
+        """Await the control-point reply matching ``op`` and ``measurement_type``.
+
+        Replies are only removed from the queue when a caller reads them, so
+        commands that ignore their reply (SDK mode, stop) leave one behind. A
+        blind ``queue.get()`` then reads that stale reply as its own, pairing
+        every later request with the response to the one before it. That is how
+        an ACC start rejected for missing channels was reported as success: the
+        SDK-mode reply poisoned the settings fetch, and the GET reply was then
+        read as the START reply. Matching on the response header discards
+        mismatched replies and keeps waiting, so pairing stays correct whatever
+        is queued.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            try:
+                response = await asyncio.wait_for(
+                    self._queue_pmd_control.get(), remaining
+                )
+            except asyncio.TimeoutError:
+                return None
+            if (
+                len(response) >= 3
+                and response[0] == 0xF0
+                and response[1] == op
+                and (measurement_type is None or response[2] == measurement_type)
+            ):
+                return response
+
     async def request_stream_settings(
         self, measurement_type: PmdMeasurementType
     ) -> MeasurementSettings:
@@ -134,12 +191,22 @@ class PolarDevice:
 
         Returns:
             The available measurement settings for the requested type.
+
+        Raises:
+            exceptions.ControlPointResponseError: If the device does not answer.
         """
         await self._client.write_gatt_char(
             PolarCharacteristic.PMD_CONTROL_POINT.value,
             bytearray([PmdControlOperationCode.GET, measurement_type.value]),
         )
-        return MeasurementSettings.from_bytes(await self._queue_pmd_control.get())
+        response = await self._read_control_response(
+            PmdControlOperationCode.GET, measurement_type.value
+        )
+        if response is None:
+            raise exceptions.ControlPointResponseError(
+                f"No settings response for {measurement_type.name}"
+            )
+        return MeasurementSettings.from_bytes(response)
 
     async def start_stream(self, settings: MeasurementSettings) -> None:
         """Starts a generic PMD stream based on the provided settings.
@@ -149,11 +216,22 @@ class PolarDevice:
 
         Args:
             settings: The measurement settings configuration to apply.
+
+        Raises:
+            exceptions.ControlPointResponseError: If the device does not answer,
+                or rejects the requested settings.
         """
         await self._client.write_gatt_char(
             PolarCharacteristic.PMD_CONTROL_POINT.value, settings.to_bytes()
         )
-        response = MeasurementSettings.from_bytes(await self._queue_pmd_control.get())
+        response_bytes = await self._read_control_response(
+            PmdControlOperationCode.START, settings.measurement_type.value
+        )
+        if response_bytes is None:
+            raise exceptions.ControlPointResponseError(
+                f"No start response for {settings.measurement_type.name}"
+            )
+        response = MeasurementSettings.from_bytes(response_bytes)
         if (
             response.error_code is not None
             and response.error_code != PmdControlPointErrorCode.SUCCESS
@@ -188,7 +266,9 @@ class PolarDevice:
         SDK mode unlocks additional PMD settings (e.g. PPG at 135/176 Hz on the
         Verity Sense). Protocol: REQUEST_MEASUREMENT_START with the SDK_MODE
         measurement type (0x09), per the official Polar BLE SDK (which also
-        sends the command without reading a response).
+        sends the command without reading a response). The reply is left queued;
+        ``_read_control_response`` discards replies that match no pending
+        request, so it cannot desynchronise later commands.
         """
         await self._client.write_gatt_char(
             PolarCharacteristic.PMD_CONTROL_POINT.value,
@@ -213,7 +293,9 @@ class PolarDevice:
             PolarCharacteristic.PMD_CONTROL_POINT.value,
             bytearray([0x06]),  # GET_SDK_MODE_STATUS
         )
-        response = await asyncio.wait_for(self._queue_pmd_control.get(), timeout=3.0)
+        response = await self._read_control_response(0x06, timeout=3.0)
+        if response is None:
+            raise asyncio.TimeoutError("No response to GET_SDK_MODE_STATUS")
         # response[0]=0xF0, response[1]=op(6), response[2]=type(9),
         # response[3]=status(0=OK), response[4]=more, response[5]=sdk_mode_status
         return len(response) > 5 and response[5] != 0
@@ -509,13 +591,32 @@ class PolarDevice:
         self, _: BleakGATTCharacteristic | int, data: bytearray
     ) -> None:
         """Parses raw PMD data and dispatches it to the appropriate registered callback."""
+        self._pmd_counts["raw"] = self._pmd_counts.get("raw", 0) + 1
         try:
             parsed_data = parsers.parse_polar_data(data, self._factors.get)
-        except (ValueError, IndexError, KeyError):
+        except (ValueError, IndexError, KeyError) as exc:
+            self._pmd_counts["errors"] = self._pmd_counts.get("errors", 0) + 1
+            if self._pmd_event_cb is not None:
+                self._pmd_event_cb(
+                    f"PMD parse error: {type(exc).__name__}: {exc} "
+                    f"(raw len={len(data)})",
+                    "warning",
+                )
             return  # Skip malformed frames
 
         if parsed_data is None:
             return
+        kind = type(parsed_data).__name__.removesuffix("Data").lower()
+        self._pmd_counts[kind] = self._pmd_counts.get(kind, 0) + 1
+        if self._pmd_counts["raw"] % PMD_STATS_INTERVAL == 0 and self._pmd_event_cb:
+            c = self._pmd_counts
+            self._pmd_event_cb(
+                f"PMD stats @ {c['raw']}: raw={c['raw']} ecg={c.get('ecg', 0)} "
+                f"acc={c.get('acc', 0)} ppg={c.get('ppg', 0)} ppi={c.get('ppi', 0)} "
+                f"gyro={c.get('gyro', 0)} mag={c.get('mag', 0)} "
+                f"err={c.get('errors', 0)}",
+                "info",
+            )
         match parsed_data:
             case ECGData() if self._ecg_callback:
                 self._ecg_callback(parsed_data)

@@ -265,7 +265,7 @@ async def main() -> None:
         "--sense-gyro",
         action="store_true",
         default=False,
-        help="Enable Polar Verity Sense Gyroscope stream (52 Hz). Note: on Verity Sense, Gyro shares the IMU FIFO and will disable/override ACC.",
+        help="Enable Polar Verity Sense Gyroscope stream (52 Hz). Runs concurrently with ACC on the shared IMU; neither disables the other.",
     )
     parser.add_argument(
         "--sense-mag",

@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polar_ble_sdk.connector.adapter import PolarAdapter
+from polar_ble_sdk.connector.stream.base import (
+    DISCONNECT_INFO,
+    DisconnectReason,
+    looks_like_bond_break,
+)
 
 
 class TestPolarAdapter:
@@ -116,7 +121,7 @@ class TestPolarAdapter:
         # Simulate packet received in the past (> freeze_timeout)
         adapter._last_h10_packet_time = time.monotonic() - 1.0
 
-        async def fake_reconnect() -> None:
+        async def fake_reconnect(*_args) -> None:
             reconnect_triggered.set()
 
         adapter._reconnect_h10 = fake_reconnect  # type: ignore[assignment]
@@ -148,7 +153,7 @@ class TestPolarAdapter:
         adapter._running = True
         adapter._enable_sense_flag = True
 
-        async def fake_reconnect() -> None:
+        async def fake_reconnect(*_args) -> None:
             reconnect_triggered.set()
 
         adapter._reconnect_sense = fake_reconnect  # type: ignore[assignment]
@@ -195,7 +200,7 @@ class TestPolarAdapter:
         mock_conn.stop_notify.assert_awaited_once()
         mock_conn.start_notify.assert_awaited_once()
         assert adapter._reconnecting_h10 is False
-        assert ("H10", "Watchdog: Reconnecting...") in statuses
+        assert ("H10", "Watchdog: link lost; reconnecting...") in statuses
         assert ("H10", "Connected! Streaming...") in statuses
         assert adapter.last_h10_packet_time > 0
 
@@ -225,6 +230,36 @@ class TestPolarAdapter:
         assert adapter.conn_sense is None
         mock_h10.stop_notify.assert_awaited_once()
         mock_sense.stop_notify.assert_awaited_once()
+
+
+class TestDisconnectReason:
+    def test_bond_break_signature(self) -> None:
+        assert looks_like_bond_break(
+            "Error (5): Access is denied. Authentication Required"
+        )
+        assert looks_like_bond_break("-2147023673 Insufficient encryption")
+        assert not looks_like_bond_break("Connection timed out")
+
+    @pytest.mark.asyncio
+    async def test_reconnect_reports_bond_broken(self) -> None:
+        statuses: list[tuple[str, str]] = []
+        adapter = PolarAdapter(status_callback=lambda d, m: statuses.append((d, m)))
+        adapter._running = True
+        adapter.h10_dev = MagicMock()
+
+        mock_conn = MagicMock()
+        mock_conn.stop_notify = AsyncMock()
+        mock_conn.start_notify = AsyncMock(
+            side_effect=Exception("Authentication Required (5)")
+        )
+        adapter.conn_h10 = mock_conn
+        with patch.object(
+            adapter, "_init_h10", lambda: setattr(adapter, "conn_h10", mock_conn)
+        ):
+            await adapter._reconnect_h10(DisconnectReason.LINK_LOSS)
+
+        guidance = DISCONNECT_INFO[DisconnectReason.BOND_BROKEN][1]
+        assert any(dev == "H10" and guidance in msg for dev, msg in statuses)
 
 
 def contextlib_suppress():
