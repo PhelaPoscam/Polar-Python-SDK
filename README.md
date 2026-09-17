@@ -37,7 +37,8 @@ monitor-polar --device "Vantage"
 
 Dual-device dashboard (H10 + Sense):
 ```bash
-python scripts/monitor_dual_polar.py
+monitor-dual-polar
+# or: python scripts/monitor_dual_polar.py
 ```
 
 ---
@@ -48,9 +49,10 @@ python scripts/monitor_dual_polar.py
 Polar-Python-SDK/
 ├── src/polar_ble_sdk/
 │   ├── __init__.py                   # Public SDK exports (Connection, Metrics, Research)
-│   ├── cli.py                        # Console dashboard CLI entrypoint
-│   ├── dashboard_utils.py            # Backward-compatibility façade
+│   ├── cli.py                        # Console dashboard CLI entrypoint (monitor-polar)
+│   ├── dual_cli.py                   # Dual-device live dashboard CLI entrypoint (monitor-dual-polar)
 │   ├── _pmd/                         # Low-level Polar Measurement Data protocol
+│   │   ├── __main__.py               # Low-level PMD protocol CLI utility
 │   │   ├── device.py                 # PolarDevice Bleak client wrapper
 │   │   ├── constants/                # PMD opcodes, error codes, UUIDs, epoch offsets
 │   │   ├── models/                   # Strongly typed dataclasses (ECG, PPG, ACC, etc.)
@@ -83,13 +85,13 @@ Polar-Python-SDK/
 │       ├── validation.py             # compute_validation_metrics(): Lin's CCC, ICC(2,1), Bland-Altman LoA, WSCV
 │       ├── ppg.py                    # Optical PPG filtering, zero-crossing, Welch FFT, and adaptive beat detection
 │       └── report.py                 # Automated Markdown cross-validation report and diagnostic Matplotlib figures
+├── examples/
+│   └── connect_polar.py              # Minimal example connecting and receiving raw stream callbacks
 ├── scripts/
-│   ├── monitor_dual_polar.py         # Dual-device live terminal dashboard (H10 + Verity Sense)
+│   ├── monitor_dual_polar.py         # Dual-device live terminal dashboard wrapper
 │   ├── run_analysis.py               # Cross-device validation & optical waveform analysis CLI
-│   ├── monitor_polar_terminal.py     # Single-device CLI dashboard wrapper
 │   ├── analyze_hz.py                 # Post-session Hz & signal integrity verifier
-│   ├── connect_polar.py              # Simple stream testing script
-│   ├── scan_ble.py                   # BLE device scanner
+│   ├── connect_polar.py              # Backward-compatible wrapper delegating to examples/connect_polar.py
 │   └── pair_watch.ps1                # Windows WinRT BLE pairing helper
 ├── data/                             # Session logs (written by dashboards)
 │   └── {device_type}/{session_ts}/   # e.g. h10/20260818_120000 or dual/...
@@ -218,12 +220,11 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 
 | Tool / Script | Command | Description |
 |---|---|---|
-| **Single-Device Dashboard** | `monitor-polar`<br>*(or `python scripts/monitor_polar_terminal.py`)* | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Slim identity header, compact info bar, and a rolling event log showing connection/stream/RSSI events. Logs 1 Hz summary or full raw streams to CSV plus a session event log file. Prints a session-end Hz verification table and reports failed streams in the status line. |
-| **Dual-Device Dashboard** | `python scripts/monitor_dual_polar.py` | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Side-by-side stream panels with a shared rolling event log (device-prefixed `[H10]`/`[Sense]`). Records synchronized 1 Hz summary or full raw CSV logs plus a session event log file. |
+| **Single-Device Dashboard** | `monitor-polar` | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Slim identity header, compact info bar, and a rolling event log showing connection/stream/RSSI events. Logs 1 Hz summary or full raw streams to CSV plus a session event log file. Prints a session-end Hz verification table and reports failed streams in the status line. |
+| **Dual-Device Dashboard** | `monitor-dual-polar`<br>*(or `python scripts/monitor_dual_polar.py`)* | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Side-by-side stream panels with a shared rolling event log (device-prefixed `[H10]`/`[Sense]`). Records synchronized 1 Hz summary or full raw CSV logs plus a session event log file. |
 | **Session Hz Verifier** | `python scripts/analyze_hz.py <session_dir>` | Real-world verification that a recorded session collected at the configured rates — reports actual average Hz, sample count, and standard deviation per stream from the raw CSVs. Works on single-device (`.../raw/`) and dual-device (`.../h10/raw/`, `.../sense/raw/`) layouts. |
 | **Low-Level PMD Utility** | `python -m polar_ble_sdk._pmd <subcommand>` | Direct protocol interaction tool. Supports subcommands:<br>• `scan`: Scan for nearby Polar devices<br>• `inspect --address <MAC>`: Query available GATT PMD features and stream settings<br>• `stream --address <MAC> -s <hr/ecg/acc/...>`: Stream raw PMD packets |
-| **BLE Scanner** | `python scripts/scan_ble.py` | Quick discovery utility to scan for all nearby Bluetooth Low Energy devices and display MAC addresses/names. |
-| **Simple Stream Tester** | `python scripts/connect_polar.py` | Minimal testing script demonstrating basic connection and raw callback stream printing. |
+| **Simple Stream Tester** | `python examples/connect_polar.py`<br>*(or `python scripts/connect_polar.py`)* | Minimal testing script demonstrating basic connection and raw callback stream printing. |
 | **Windows Pairing Helper** | `.\scripts\pair_watch.ps1` | PowerShell helper script to assist with Windows WinRT Bluetooth pairing for Polar watches. |
 
 ---

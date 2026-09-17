@@ -116,8 +116,8 @@ def main() -> None:
         and "h10" in session.dual_sessions
         and "sense" in session.dual_sessions
     ):
-        h10_sum = session.dual_sessions["h10"].summary
-        sense_sum = session.dual_sessions["sense"].summary
+        h10_sum = session.dual_sessions["h10"].summary.copy()
+        sense_sum = session.dual_sessions["sense"].summary.copy()
         if not h10_sum.empty and not sense_sum.empty:
             h10_sum = h10_sum.rename(
                 columns={"HeartRate_BPM": "H10_HR", "HRV_RMSSD_ms": "H10_RMSSD"}
@@ -125,11 +125,38 @@ def main() -> None:
             sense_sum = sense_sum.rename(
                 columns={"HeartRate_BPM": "Sense_HR", "HRV_RMSSD_ms": "Sense_RMSSD"}
             )
-            df_merged = (
-                pd.merge(h10_sum, sense_sum, on="Timestamp", how="outer")
-                .sort_values("Timestamp")
-                .reset_index(drop=True)
-            )
+            if "Timestamp" in h10_sum.columns and "Timestamp" in sense_sum.columns:
+                h10_sum["_dt"] = pd.to_datetime(h10_sum["Timestamp"], errors="coerce")
+                sense_sum["_dt"] = pd.to_datetime(
+                    sense_sum["Timestamp"], errors="coerce"
+                )
+                h10_clean = h10_sum.dropna(subset=["_dt"]).sort_values("_dt")
+                sense_clean = sense_sum.dropna(subset=["_dt"]).sort_values("_dt")
+                if not h10_clean.empty and not sense_clean.empty:
+                    df_merged = (
+                        pd.merge_asof(
+                            h10_clean,
+                            sense_clean,
+                            on="_dt",
+                            tolerance=pd.Timedelta(milliseconds=500),
+                            direction="nearest",
+                            suffixes=("", "_sense"),
+                        )
+                        .drop(columns=["_dt"], errors="ignore")
+                        .reset_index(drop=True)
+                    )
+                else:
+                    df_merged = (
+                        pd.merge(h10_sum, sense_sum, on="Timestamp", how="outer")
+                        .sort_values("Timestamp")
+                        .reset_index(drop=True)
+                    )
+            else:
+                df_merged = (
+                    pd.merge(h10_sum, sense_sum, on="Timestamp", how="outer")
+                    .sort_values("Timestamp")
+                    .reset_index(drop=True)
+                )
 
     # 4. PPG Optical Waveform Derivation (if raw PPG is recorded)
     ppg_epochs = pd.DataFrame()
@@ -293,12 +320,10 @@ def main() -> None:
     plots = (
         generate_validation_plots(df_merged, reports_dir) if not df_merged.empty else []
     )
-    report_md = (
-        generate_markdown_report(
-            metrics, session_path.name, ppg_metrics=ppg_metrics_dict
-        )
-        if "metrics" in locals()
-        else ""
+    report_md = generate_markdown_report(
+        metrics if "metrics" in locals() else {},
+        session_path.name,
+        ppg_metrics=ppg_metrics_dict,
     )
     if report_md:
         report_file = reports_dir / "validation_report.md"

@@ -1,2 +1,3 @@
-# Bluetooth Low Energy
+# Bluetooth Low Energy & Terminal Dashboard
 bleak
+rich

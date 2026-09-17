@@ -54,12 +54,14 @@ class PolarVeritySense(BasePolarDevice):
                 # Enable unconditionally (idempotent); the status pre-check can
                 # fail if the response format differs, so don't gate on it.
                 await self.polar_device.enable_sdk_mode()
+                self._sdk_mode_enabled = True
                 self._log("[DEBUG] SDK mode enabled")
             except Exception as e:
                 self._log(f"[DEBUG] SDK mode enable failed: {e}")
         else:
             try:
                 await self.polar_device.disable_sdk_mode()
+                self._sdk_mode_enabled = False
                 self._log("[DEBUG] SDK mode disabled")
             except Exception as e:
                 self._log(f"[DEBUG] SDK mode disable failed: {e}")

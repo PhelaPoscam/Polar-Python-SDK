@@ -37,6 +37,7 @@ class DeviceMetadata:
     battery_end: str = "-"
     features_detected: list[str] = field(default_factory=list)
     stream_configurations: dict[str, Any] = field(default_factory=dict)
+    clock_zero_points: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -48,6 +49,7 @@ class SessionMetadata:
     session_type: str = "single"  # "single" | "dual"
     start_time_iso: str = ""
     start_time_epoch_ns: int = 0
+    host_epoch_start_ns: int = 0
     end_time_iso: str = ""
     end_time_epoch_ns: int = 0
     duration_s: float = 0.0
@@ -55,6 +57,7 @@ class SessionMetadata:
     devices: dict[str, DeviceMetadata] = field(default_factory=dict)
     stream_results: dict[str, Any] = field(default_factory=dict)
     markers: list[dict[str, Any]] = field(default_factory=list)
+    clock_zero_points: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -85,16 +88,19 @@ class SessionManager:
 
         # Metadata structure
         now_dt = datetime.now(timezone.utc)
+        now_ns = time.time_ns()
         self.metadata = SessionMetadata(
             session_id=self.session_id,
             session_type="dual" if is_dual else "single",
             start_time_iso=now_dt.isoformat(),
-            start_time_epoch_ns=time.time_ns(),
+            start_time_epoch_ns=now_ns,
+            host_epoch_start_ns=now_ns,
             system_info={
                 "os": platform.platform(),
                 "python_version": sys.version.split()[0],
                 "platform": sys.platform,
             },
+            clock_zero_points={"host_epoch_ns": now_ns},
         )
 
         self._log_file: Any = None
@@ -148,9 +154,14 @@ class SessionManager:
     def register_marker(self, label: str, timestamp_s: float | None = None) -> None:
         """Record an event marker in the session metadata."""
         now = time.time() if timestamp_s is None else timestamp_s
+        iso_str = (
+            datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+            if timestamp_s is not None
+            else datetime.now(timezone.utc).isoformat()
+        )
         self.metadata.markers.append(
             {
-                "timestamp_iso": datetime.now(timezone.utc).isoformat(),
+                "timestamp_iso": iso_str,
                 "timestamp_epoch_s": now,
                 "label": label,
             }
@@ -162,7 +173,18 @@ class SessionManager:
         configured_rates: dict[str, int] | None = None,
     ) -> None:
         """Flush and close all open frame loggers, event logs, and write session_meta.json."""
-        for fl in self._frame_loggers.values():
+        for key, fl in self._frame_loggers.items():
+            if fl.first_ts_ns is not None:
+                self.metadata.clock_zero_points[key] = fl.first_ts_ns
+                if "_" in key:
+                    dev_prefix, stream_name = key.split("_", 1)
+                    if dev_prefix in self.metadata.devices:
+                        self.metadata.devices[dev_prefix].clock_zero_points[
+                            stream_name
+                        ] = fl.first_ts_ns
+                else:
+                    for dev in self.metadata.devices.values():
+                        dev.clock_zero_points[key] = fl.first_ts_ns
             fl.close()
 
         if self._log_file:

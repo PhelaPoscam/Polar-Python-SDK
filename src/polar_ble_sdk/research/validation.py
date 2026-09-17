@@ -24,13 +24,13 @@ def calculate_lins_ccc(x: Any, y: Any) -> float:
 
     mean_x = float(np.mean(x_arr))
     mean_y = float(np.mean(y_arr))
-    var_x = float(np.var(x_arr, ddof=1))
-    var_y = float(np.var(y_arr, ddof=1))
+    var_x = float(np.var(x_arr, ddof=0))
+    var_y = float(np.var(y_arr, ddof=0))
 
     if var_x == 0 and var_y == 0:
         return 1.0 if mean_x == mean_y else 0.0
 
-    cov_xy = float(np.cov(x_arr, y_arr)[0, 1])
+    cov_xy = float(np.mean((x_arr - mean_x) * (y_arr - mean_y)))
     denom = var_x + var_y + (mean_x - mean_y) ** 2
     if denom == 0:
         return float("nan")
@@ -126,36 +126,46 @@ def detect_sense_artifacts(
     artifact_mask = np.zeros(n, dtype=bool)
     artifact_layers: list[str | None] = [None] * n
 
-    # 1. Plateau detection (exact constant non-zero value for >= min_plateau_sec while H10 varies)
-    curr_val: float | None = None
-    curr_start = 0
+    # 1. Symmetric plateau detection (constant non-zero value for >= min_plateau_sec while reference varies)
+    def _check_and_mark_plateau(
+        sig_a: np.ndarray, sig_b: np.ndarray, label: str
+    ) -> None:
+        curr_val: float | None = None
+        curr_start = 0
+        for i in range(n):
+            val = sig_a[i]
+            if np.isnan(val) or val <= 0:
+                if curr_val is not None and (i - curr_start) >= min_plateau_sec:
+                    sub_b = sig_b[curr_start:i]
+                    valid_b = sub_b[(~np.isnan(sub_b)) & (sub_b > 0)]
+                    if len(valid_b) > 0 and np.std(valid_b) > 0:
+                        artifact_mask[curr_start:i] = True
+                        for k in range(curr_start, i):
+                            artifact_layers[k] = label
+                curr_val = None
+            elif val == curr_val:
+                continue
+            else:
+                if curr_val is not None and (i - curr_start) >= min_plateau_sec:
+                    sub_b = sig_b[curr_start:i]
+                    valid_b = sub_b[(~np.isnan(sub_b)) & (sub_b > 0)]
+                    if len(valid_b) > 0 and np.std(valid_b) > 0:
+                        artifact_mask[curr_start:i] = True
+                        for k in range(curr_start, i):
+                            artifact_layers[k] = label
+                curr_val = val
+                curr_start = i
 
-    def _check_and_mark_plateau(start_idx: int, end_idx: int) -> None:
-        length = end_idx - start_idx
-        if length >= min_plateau_sec:
-            sub_h10 = h10_hr[start_idx:end_idx]
-            valid_h10 = sub_h10[(~np.isnan(sub_h10)) & (sub_h10 > 0)]
-            if len(valid_h10) > 0 and np.std(valid_h10) > 0:
-                for idx in range(start_idx, end_idx):
-                    artifact_mask[idx] = True
-                    artifact_layers[idx] = "plateau"
+        if curr_val is not None and (n - curr_start) >= min_plateau_sec:
+            sub_b = sig_b[curr_start:n]
+            valid_b = sub_b[(~np.isnan(sub_b)) & (sub_b > 0)]
+            if len(valid_b) > 0 and np.std(valid_b) > 0:
+                artifact_mask[curr_start:n] = True
+                for k in range(curr_start, n):
+                    artifact_layers[k] = label
 
-    for i in range(n):
-        val = sense_hr[i]
-        if np.isnan(val) or val <= 0:
-            if curr_val is not None:
-                _check_and_mark_plateau(curr_start, i)
-            curr_val = None
-        elif val == curr_val:
-            continue
-        else:
-            if curr_val is not None:
-                _check_and_mark_plateau(curr_start, i)
-            curr_val = val
-            curr_start = i
-
-    if curr_val is not None:
-        _check_and_mark_plateau(curr_start, n)
+    _check_and_mark_plateau(sense_hr, h10_hr, "plateau_sense")
+    _check_and_mark_plateau(h10_hr, sense_hr, "plateau_h10")
 
     # 2. Sustained large diff detection
     diff = np.abs(sense_hr - h10_hr)
@@ -375,16 +385,17 @@ def compute_validation_metrics(df: pd.DataFrame) -> dict[str, Any]:
         else 0
     )
 
-    valid_hr = df.dropna(subset=["H10_HR", "Sense_HR"])
-    valid_hr = valid_hr[
-        (valid_hr["H10_HR"] > 0)
-        & (valid_hr["Sense_HR"] > 0)
-        & (~valid_hr.get("artifact", False))
-    ]
-    n = len(valid_hr)
+    paired_hr = df.dropna(subset=["H10_HR", "Sense_HR"])
+    paired_hr = paired_hr[(paired_hr["H10_HR"] > 0) & (paired_hr["Sense_HR"] > 0)]
+    n_received = len(paired_hr)
     dropout_rate = (
-        ((total_records - n) / total_records) * 100.0 if total_records > 0 else 0.0
+        ((total_records - n_received) / total_records) * 100.0
+        if total_records > 0
+        else 0.0
     )
+
+    valid_hr = paired_hr[~paired_hr.get("artifact", False)]
+    n = len(valid_hr)
 
     if n == 0:
         base: dict[str, Any] = {

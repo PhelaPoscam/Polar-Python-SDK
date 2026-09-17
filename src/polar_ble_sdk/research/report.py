@@ -25,8 +25,12 @@ def generate_validation_plots(df: pd.DataFrame, output_dir: Path) -> list[Path]:
     if len(valid) < 2:
         return plot_paths
 
-    x = valid["H10_HR"].values.astype(float)
-    y = valid["Sense_HR"].values.astype(float)
+    clean = valid[~valid["artifact"]] if "artifact" in valid.columns else valid
+    if len(clean) < 2:
+        clean = valid
+
+    x = clean["H10_HR"].values.astype(float)
+    y = clean["Sense_HR"].values.astype(float)
     diff = y - x
     mean = (x + y) / 2.0
     bias = float(np.mean(diff))
@@ -34,7 +38,22 @@ def generate_validation_plots(df: pd.DataFrame, output_dir: Path) -> list[Path]:
 
     # 1. Bland-Altman Plot
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(mean, diff, alpha=0.6, edgecolors="none", c="#1f77b4")
+    ax.scatter(
+        mean, diff, alpha=0.6, edgecolors="none", c="#1f77b4", label="Valid Paired HR"
+    )
+    if "artifact" in valid.columns and valid["artifact"].any():
+        art = valid[valid["artifact"]]
+        art_x = art["H10_HR"].values.astype(float)
+        art_y = art["Sense_HR"].values.astype(float)
+        ax.scatter(
+            (art_x + art_y) / 2.0,
+            art_y - art_x,
+            alpha=0.4,
+            edgecolors="none",
+            c="#d62728",
+            marker="x",
+            label="Artifact",
+        )
     ax.axhline(bias, color="red", linestyle="--", label=f"Mean Bias ({bias:+.2f} BPM)")
     ax.axhline(
         bias + 1.96 * sd,
@@ -140,14 +159,14 @@ def generate_markdown_report(
                 "",
                 "| Metric | Measured Value | Grade / Status | Clinical / Research Threshold |",
                 "| :--- | :--- | :--- | :--- |",
-                f"| **MAE** (Mean Absolute Error) | `{metrics.get('mae', 0):.2f} BPM` | `{metrics.get('mae_grade', 'n/a').upper()}` | `< 5.0 BPM` |",
-                f"| **MAPE** (Mean Absolute % Error) | `{metrics.get('mape', 0):.2f} %` | `{metrics.get('mape_grade', 'n/a').upper()}` | `< 5.0 %` |",
-                f"| **Systematic Bias** | `{metrics.get('bias', 0):+.2f} BPM` | `{metrics.get('bias_grade', 'n/a').upper()}` | `|Bias| < 2.0 BPM` |",
-                f"| **Lin's CCC** | `{metrics.get('lins_ccc', 0):.3f}` | `{metrics.get('ccc_grade', 'n/a').upper()}` | `> 0.90` (Substantial) |",
-                f"| **ICC (2,1)** | `{metrics.get('icc_2_1', 0):.3f}` | `{metrics.get('icc_grade', 'n/a').upper()}` | `> 0.75` (Good) |",
-                f"| **Pearson r** | `{metrics.get('pearson_r', 0):.3f}` | `{metrics.get('r_grade', 'n/a').upper()}` | `> 0.90` |",
-                f"| **Within-Subject CV** | `{metrics.get('wscv', 0):.2f} %` | `{metrics.get('cv_grade', 'n/a').upper()}` | `< 5.0 %` |",
-                f"| **Data Dropout Rate** | `{metrics.get('dropout_rate', 0):.2f} %` | `{metrics.get('dropout_grade', 'n/a').upper()}` | `< 5.0 %` |",
+                f"| **MAE** (Mean Absolute Error) | `{metrics.get('mae', 0):.2f} BPM` | `{str(metrics.get('mae_grade') or 'n/a').upper()}` | `< 5.0 BPM` |",
+                f"| **MAPE** (Mean Absolute % Error) | `{metrics.get('mape', 0):.2f} %` | `{str(metrics.get('mape_grade') or 'n/a').upper()}` | `< 5.0 %` |",
+                f"| **Systematic Bias** | `{metrics.get('bias', 0):+.2f} BPM` | `{str(metrics.get('bias_grade') or 'n/a').upper()}` | `|Bias| < 2.0 BPM` |",
+                f"| **Lin's CCC** | `{metrics.get('lins_ccc', 0):.3f}` | `{str(metrics.get('ccc_grade') or 'n/a').upper()}` | `> 0.90` (Substantial) |",
+                f"| **ICC (2,1)** | `{metrics.get('icc_2_1', 0):.3f}` | `{str(metrics.get('icc_grade') or 'n/a').upper()}` | `> 0.75` (Good) |",
+                f"| **Pearson r** | `{metrics.get('pearson_r', 0):.3f}` | `{str(metrics.get('r_grade') or 'n/a').upper()}` | `> 0.90` |",
+                f"| **Within-Subject CV** | `{metrics.get('wscv', 0):.2f} %` | `{str(metrics.get('cv_grade') or 'n/a').upper()}` | `< 5.0 %` |",
+                f"| **Data Dropout Rate** | `{metrics.get('dropout_rate', 0):.2f} %` | `{str(metrics.get('dropout_grade') or 'n/a').upper()}` | `< 5.0 %` |",
                 "",
                 "---",
                 "",

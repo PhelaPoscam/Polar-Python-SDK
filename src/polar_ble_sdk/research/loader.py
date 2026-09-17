@@ -66,11 +66,19 @@ def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
         return pd.DataFrame(columns=["Timestamp_s", "ch1", "ch2", "ch3", "ch4"])
 
     n0 = len(rows_samples[0])
-    sample_dt = (
-        1.0 / (n0 / (rows_ts[1] - rows_ts[0]))
-        if len(rows_ts) > 1 and (rows_ts[1] - rows_ts[0]) > 0
-        else 1.0 / 135.0
-    )
+    if len(rows_ts) > 2 and (rows_ts[-1] - rows_ts[0]) > 0 and len(rows_samples) > 1:
+        diffs = [rows_ts[k + 1] - rows_ts[k] for k in range(len(rows_ts) - 1)]
+        valid_diffs = [d for d in diffs if 0.01 < d < 1.0]
+        if valid_diffs and n0 > 0:
+            import statistics
+
+            sample_dt = statistics.median(valid_diffs) / n0
+        else:
+            sample_dt = 1.0 / 135.0
+    elif len(rows_ts) > 1 and (rows_ts[1] - rows_ts[0]) > 0 and n0 > 0:
+        sample_dt = (rows_ts[1] - rows_ts[0]) / n0
+    else:
+        sample_dt = 1.0 / 135.0
 
     recs: list[list[Any]] = []
     for ts, samples in zip(rows_ts, rows_samples, strict=False):
@@ -84,6 +92,39 @@ def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
         .dropna()
         .reset_index(drop=True)
     )
+
+
+def _parse_wide_ecg_csv(path: Path) -> pd.DataFrame:
+    """Parse variable-width or wide ECG frames into a sample-level DataFrame."""
+    rows_ts: list[float] = []
+    rows_samples: list[list[int]] = []
+    with path.open(newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        _header = next(reader, None)
+        for line in reader:
+            if not line:
+                continue
+            try:
+                ts = float(line[0])
+                samples = [int(float(c)) for c in line[1:] if c.strip() != ""]
+                rows_ts.append(ts)
+                rows_samples.append(samples)
+            except (ValueError, SyntaxError):
+                continue
+
+    if not rows_samples:
+        return pd.DataFrame(columns=["Timestamp_s", "uV", "ECG_uV"])
+
+    sample_dt = 1.0 / 130.0
+
+    recs: list[tuple[float, int, int]] = []
+    for ts, samples in zip(rows_ts, rows_samples, strict=False):
+        for i, s in enumerate(samples):
+            sample_time = ts + i * sample_dt
+            recs.append((sample_time, s, s))
+
+    df = pd.DataFrame(recs, columns=["Timestamp_s", "uV", "ECG_uV"])
+    return df.reset_index(drop=True)
 
 
 def _load_single_device_dir(device_dir: Path) -> PolarSessionData:
@@ -120,6 +161,8 @@ def _load_single_device_dir(device_dir: Path) -> PolarSessionData:
             try:
                 if stream_name == "ppg":
                     streams[stream_name] = _parse_wide_ppg_csv(csv_path)
+                elif stream_name == "ecg":
+                    streams[stream_name] = _parse_wide_ecg_csv(csv_path)
                 else:
                     df = pd.read_csv(csv_path)
                     if "Timestamp_s" in df.columns:
@@ -192,3 +235,38 @@ def load_session(session_path: Path | str) -> PolarSessionData:
         )
 
     return _load_single_device_dir(path)
+
+
+def load_raw_stream(raw_path_or_dir: Path | str, stream_name: str) -> pd.DataFrame:
+    """Load and parse an individual raw sensor stream CSV.
+
+    Args:
+        raw_path_or_dir: Directory containing stream CSVs or direct path to a CSV file.
+        stream_name: Stream name (e.g. 'ecg', 'ppg', 'acc', 'gyro', 'mag').
+
+    Returns:
+        pd.DataFrame: Parsed and unrolled stream data.
+    """
+    raw_path = Path(raw_path_or_dir)
+    csv_path = (
+        raw_path if raw_path.is_file() else raw_path / f"{stream_name.lower()}.csv"
+    )
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Raw stream file not found: {csv_path}")
+
+    s_name = stream_name.lower()
+    if s_name == "ppg":
+        return _parse_wide_ppg_csv(csv_path)
+    if s_name == "ecg":
+        return _parse_wide_ecg_csv(csv_path)
+
+    df = pd.read_csv(csv_path)
+    if "Timestamp_s" in df.columns:
+        df["Timestamp_s"] = pd.to_numeric(df["Timestamp_s"], errors="coerce")
+    if {"X_mG", "Y_mG", "Z_mG"}.issubset(df.columns):
+        df["ACC_Mag_mG"] = (df["X_mG"] ** 2 + df["Y_mG"] ** 2 + df["Z_mG"] ** 2) ** 0.5
+    if {"X_dps", "Y_dps", "Z_dps"}.issubset(df.columns):
+        df["GYRO_Mag_dps"] = (
+            df["X_dps"] ** 2 + df["Y_dps"] ** 2 + df["Z_dps"] ** 2
+        ) ** 0.5
+    return df

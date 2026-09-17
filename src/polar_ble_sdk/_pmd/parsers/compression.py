@@ -114,7 +114,7 @@ def parse_delta_frame(
                 if offset + i < len(bit_set):
                     value |= bit_set[offset + i] << i
 
-            if bit_width > 1 and (value & (1 << (bit_width - 1))):
+            if value & (1 << (bit_width - 1)):
                 value |= -1 << bit_width
 
             channel_samples.append(value)

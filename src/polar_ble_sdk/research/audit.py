@@ -19,6 +19,7 @@ class StreamAudit:
     std_dev_hz: float
     max_gap_s: float
     gap_count: int
+    packet_count: int = 0
 
 
 def audit_csv_stream(csv_path: Path) -> StreamAudit:
@@ -51,6 +52,7 @@ def audit_csv_stream(csv_path: Path) -> StreamAudit:
             std_dev_hz=0.0,
             max_gap_s=0.0,
             gap_count=0,
+            packet_count=len(timestamps),
         )
 
     duration = timestamps[-1] - timestamps[0]
@@ -74,12 +76,13 @@ def audit_csv_stream(csv_path: Path) -> StreamAudit:
 
     return StreamAudit(
         stream=stream_name,
-        sample_count=len(timestamps),
+        sample_count=total_samples,
         duration_s=duration,
         average_hz=avg_hz,
         std_dev_hz=std_dev,
         max_gap_s=max_gap,
         gap_count=len(gaps),
+        packet_count=len(timestamps),
     )
 
 

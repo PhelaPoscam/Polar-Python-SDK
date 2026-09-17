@@ -6,6 +6,8 @@ and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches).
 
 from __future__ import annotations
 
+from typing import Any
+
 from polar_ble_sdk.connector.adapter import PolarAdapter
 from polar_ble_sdk.connector.ble_discovery import (
     discover_dual_polar_devices,
@@ -20,13 +22,36 @@ from polar_ble_sdk.metrics.hrv import (
     calculate_rmssd,
     calculate_sdnn,
 )
-from polar_ble_sdk.research.audit import verify_session_integrity
-from polar_ble_sdk.research.loader import PolarSessionData, load_session
 from polar_ble_sdk.session.session import (
     DeviceMetadata,
     SessionManager,
     SessionMetadata,
 )
+
+_LAZY_RESEARCH_SYMBOLS = {
+    "load_session": "polar_ble_sdk.research.loader",
+    "PolarSessionData": "polar_ble_sdk.research.loader",
+    "verify_session_integrity": "polar_ble_sdk.research.audit",
+}
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_RESEARCH_SYMBOLS:
+        mod_name = _LAZY_RESEARCH_SYMBOLS[name]
+        try:
+            import importlib
+
+            mod = importlib.import_module(mod_name)
+            val = getattr(mod, name)
+            globals()[name] = val
+            return val
+        except ImportError as e:
+            raise ImportError(
+                f"'{name}' requires the research dependencies (pandas, numpy, scipy). "
+                "Install them with: pip install 'polar-ble-sdk[research]'"
+            ) from e
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
 
 __all__ = [
     # Discovery & Connection

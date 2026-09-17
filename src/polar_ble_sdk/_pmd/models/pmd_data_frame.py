@@ -41,7 +41,8 @@ class PmdDataFrame:
             raise ValueError("Data is too short to parse PmdDataFrame")
 
         measurement_type = PmdMeasurementType(data[0])
-        timestamp = int.from_bytes(data[1:9], byteorder="little") + TIMESTAMP_OFFSET
+        raw_timestamp = int.from_bytes(data[1:9], byteorder="little")
+        timestamp = raw_timestamp + TIMESTAMP_OFFSET if raw_timestamp != 0 else 0
         frame_type_byte = data[9]
 
         frame_type_val = frame_type_byte & cls.DATA_FRAME_BIT_MASK

@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from .ble_discovery import discover_dual_polar_devices
+from .ble_discovery import discover_dual_polar_devices, discover_polar_device
 from .stream import PolarH10, PolarVeritySense
 from .stream.base import DISCONNECT_INFO, DisconnectReason, looks_like_bond_break
 
@@ -92,6 +92,7 @@ class PolarAdapter:
         self._reconnecting_sense = False
         self._running = False
         self._watchdog_task: asyncio.Task[None] | None = None
+        self._active_tasks: set[asyncio.Task[Any]] = set()
 
         self.proxy_h10 = _ConnectorProxy(self, "h10")
         self.proxy_sense = _ConnectorProxy(self, "sense")
@@ -130,6 +131,12 @@ class PolarAdapter:
             getattr(self.conn_sense, "polar_device", None), "_client", None
         )
         return bool(client and getattr(client, "is_connected", False))
+
+    def _create_task(self, coro: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coro)
+        self._active_tasks.add(task)
+        task.add_done_callback(self._active_tasks.discard)
+        return task
 
     def _wrap_h10_cb(self, cb: Callable[[Any], None] | None) -> Callable[[Any], None]:
         def wrapped(data: Any) -> None:
@@ -238,7 +245,7 @@ class PolarAdapter:
         if self.enable_watchdog and (
             self._watchdog_task is None or self._watchdog_task.done()
         ):
-            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+            self._watchdog_task = self._create_task(self._watchdog_loop())
 
         return h10_ok, sense_ok
 
@@ -276,7 +283,7 @@ class PolarAdapter:
                         reason = DisconnectReason.STREAM_FROZEN
 
                 if reason is not None:
-                    asyncio.create_task(self._reconnect_sense(reason))
+                    self._create_task(self._reconnect_sense(reason))
 
             # Check H10 link
             if self._enable_h10_flag and not self._reconnecting_h10:
@@ -306,7 +313,7 @@ class PolarAdapter:
                         reason = DisconnectReason.STREAM_FROZEN
 
                 if reason is not None:
-                    asyncio.create_task(self._reconnect_h10(reason))
+                    self._create_task(self._reconnect_h10(reason))
 
     async def _reconnect_sense(
         self, reason: DisconnectReason = DisconnectReason.LINK_LOSS
@@ -326,7 +333,9 @@ class PolarAdapter:
                     await asyncio.wait_for(self.conn_sense.stop_notify(), timeout=3.0)
             await asyncio.sleep(self.reconnect_cooldown)
             if not self.sense_dev:
-                _, fresh_dev = await self.discover(timeout=5.0)
+                fresh_dev = await discover_polar_device(
+                    self.sense_target or "sense", timeout=5.0
+                )
                 if fresh_dev:
                     self.sense_dev = fresh_dev
             if self.sense_dev:
@@ -374,7 +383,9 @@ class PolarAdapter:
                     await asyncio.wait_for(self.conn_h10.stop_notify(), timeout=3.0)
             await asyncio.sleep(self.reconnect_cooldown)
             if not self.h10_dev:
-                fresh_dev, _ = await self.discover(timeout=5.0)
+                fresh_dev = await discover_polar_device(
+                    self.h10_target or "h10", timeout=5.0
+                )
                 if fresh_dev:
                     self.h10_dev = fresh_dev
             if self.h10_dev:
@@ -412,6 +423,12 @@ class PolarAdapter:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watchdog_task
         self._watchdog_task = None
+
+        for t in list(self._active_tasks):
+            t.cancel()
+        if self._active_tasks:
+            await asyncio.gather(*self._active_tasks, return_exceptions=True)
+        self._active_tasks.clear()
 
         for label, conn in [("H10", self.conn_h10), ("Sense", self.conn_sense)]:
             if conn:

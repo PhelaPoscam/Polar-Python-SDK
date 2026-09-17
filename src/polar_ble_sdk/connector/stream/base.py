@@ -71,6 +71,8 @@ class BasePolarDevice:
         self.pair_timeout = kwargs.get("pair_timeout", 60.0)
         self.post_pair_delay = kwargs.get("post_pair_delay", 2.0)
         self.stream_errors: dict[str, str] = {}
+        self._active_streams: set[PmdMeasurementType] = set()
+        self._sdk_mode_enabled: bool = False
         # log_callback is a simple callable(msg, severity) — no event bus needed.
         self.log_callback: Callable[[str, str], None] | None = kwargs.get(
             "log_callback"
@@ -212,7 +214,9 @@ class BasePolarDevice:
                 if attempt < self.connect_attempts:
                     await asyncio.sleep(self.retry_backoff * attempt)
 
-        raise last_error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Failed to connect to device: no attempts succeeded.")
 
     async def _pair_if_needed(self, device_name: str) -> None:
         """Wait for Windows pairing before starting protected Polar streams."""
@@ -276,7 +280,18 @@ class BasePolarDevice:
         pass
 
     async def stop_notify(self) -> None:
-        """Stop all streams and disconnect."""
+        """Stop all active streams, disable SDK mode, and disconnect."""
+        if self.polar_device:
+            for stream_type in list(self._active_streams):
+                with contextlib.suppress(Exception):
+                    await self.polar_device.stop_stream(stream_type)
+            self._active_streams.clear()
+
+            if self._sdk_mode_enabled:
+                with contextlib.suppress(Exception):
+                    await self.polar_device.disable_sdk_mode()
+                self._sdk_mode_enabled = False
+
         await self._disconnect_client()
 
     async def _disconnect_client(self, *, clear_device: bool = True) -> None:
@@ -392,6 +407,7 @@ class BasePolarDevice:
                     resolved[key] = self.custom_settings[custom_key]
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)
+            self._active_streams.add(measurement_type)
             self._log(f"[DEBUG] {label} stream started OK")
             self._emit(f"{label} stream started", "success")
             return True

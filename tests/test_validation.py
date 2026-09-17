@@ -104,3 +104,31 @@ class TestValidationMetrics:
         md = generate_markdown_report(metrics, "test_session_123")
         assert "test_session_123" in md
         assert "MAE" in md
+
+    def test_dropout_rate_decoupled_from_artifacts(self) -> None:
+        """Verify that sensor motion artifacts do not inflate BLE transmission dropout rate."""
+        ts = pd.date_range("2026-08-18 12:00:00", periods=50, freq="1s")
+        # 50 total records, all 50 received (no BLE packet loss)
+        # 25 seconds of flatline plateau in Sense
+        h10 = [60.0 + i * 0.5 for i in range(50)]
+        sense = [70.0] * 25 + [60.0 + i * 0.5 for i in range(25, 50)]
+        df = pd.DataFrame({"Timestamp": ts, "H10_HR": h10, "Sense_HR": sense})
+        metrics = compute_validation_metrics(df)
+
+        assert metrics["dropout_rate"] == 0.0  # 0% transmission loss
+        assert metrics["artifact_rate"] >= 40.0  # ~50% motion artifact rate
+
+    def test_symmetric_plateau_detection(self) -> None:
+        """Verify plateau artifacts are flagged symmetrically on either sensor."""
+        # Plateau on H10 (reference sensor), varying Sense
+        h10 = [70.0] * 25 + [80.0] * 5
+        sense = [60.0 + i * 0.5 for i in range(30)]
+        df = pd.DataFrame({"H10_HR": h10, "Sense_HR": sense})
+        res = detect_sense_artifacts(df, min_plateau_sec=20)
+        assert res["artifact"].sum() >= 20
+
+    def test_generate_markdown_report_sdk_mode_notice(self) -> None:
+        """Verify empty metrics dict produces clean SDK Mode Operating Notice without crashing."""
+        md = generate_markdown_report({}, "sdk_session_001")
+        assert "sdk_session_001" in md
+        assert "Verity Sense SDK Mode Active" in md

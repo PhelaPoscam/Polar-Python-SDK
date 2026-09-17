@@ -12,3 +12,4 @@ class HRData:
 
     heartrate: int
     rr_intervals: list[float]
+    contact_detected: bool | None = None

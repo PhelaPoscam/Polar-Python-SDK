@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import struct
 from collections.abc import Callable
 from typing import TypeAlias
@@ -53,6 +54,7 @@ class PolarDevice:
 
     _client: BleakClient
     _queue_pmd_control: asyncio.Queue
+    _control_lock: asyncio.Lock
     _factors: dict[PmdMeasurementType, float]
 
     _ecg_callback: ECGCallback | None = None
@@ -85,6 +87,7 @@ class PolarDevice:
             address_or_ble_device, disconnected_callback=disconnected_callback
         )
         self._queue_pmd_control = asyncio.Queue()
+        self._control_lock = asyncio.Lock()
         self._factors = {}
         self._pmd_event_cb = pmd_event_callback
         self._pmd_counts: dict[str, int] = {}
@@ -105,6 +108,11 @@ class PolarDevice:
 
     async def disconnect(self) -> None:
         """Disconnects from the Polar BLE device."""
+        while not self._queue_pmd_control.empty():
+            try:
+                self._queue_pmd_control.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         await self._client.disconnect()
 
     async def __aenter__(self):
@@ -141,7 +149,12 @@ class PolarDevice:
                 "Unexpected response from the control point"
             )
         features = data[1]
-        return [PmdMeasurementType(i) for i in range(8) if features & (1 << i)]
+        results: list[PmdMeasurementType] = []
+        for i in range(8):
+            if features & (1 << i):
+                with contextlib.suppress(ValueError):
+                    results.append(PmdMeasurementType(i))
+        return results
 
     async def _read_control_response(
         self,
@@ -195,18 +208,19 @@ class PolarDevice:
         Raises:
             exceptions.ControlPointResponseError: If the device does not answer.
         """
-        await self._client.write_gatt_char(
-            PolarCharacteristic.PMD_CONTROL_POINT.value,
-            bytearray([PmdControlOperationCode.GET, measurement_type.value]),
-        )
-        response = await self._read_control_response(
-            PmdControlOperationCode.GET, measurement_type.value
-        )
-        if response is None:
-            raise exceptions.ControlPointResponseError(
-                f"No settings response for {measurement_type.name}"
+        async with self._control_lock:
+            await self._client.write_gatt_char(
+                PolarCharacteristic.PMD_CONTROL_POINT.value,
+                bytearray([PmdControlOperationCode.GET, measurement_type.value]),
             )
-        return MeasurementSettings.from_bytes(response)
+            response = await self._read_control_response(
+                PmdControlOperationCode.GET, measurement_type.value
+            )
+            if response is None:
+                raise exceptions.ControlPointResponseError(
+                    f"No settings response for {measurement_type.name}"
+                )
+            return MeasurementSettings.from_bytes(response)
 
     async def start_stream(self, settings: MeasurementSettings) -> None:
         """Starts a generic PMD stream based on the provided settings.
@@ -221,30 +235,33 @@ class PolarDevice:
             exceptions.ControlPointResponseError: If the device does not answer,
                 or rejects the requested settings.
         """
-        await self._client.write_gatt_char(
-            PolarCharacteristic.PMD_CONTROL_POINT.value, settings.to_bytes()
-        )
-        response_bytes = await self._read_control_response(
-            PmdControlOperationCode.START, settings.measurement_type.value
-        )
-        if response_bytes is None:
-            raise exceptions.ControlPointResponseError(
-                f"No start response for {settings.measurement_type.name}"
+        async with self._control_lock:
+            await self._client.write_gatt_char(
+                PolarCharacteristic.PMD_CONTROL_POINT.value, settings.to_bytes()
             )
-        response = MeasurementSettings.from_bytes(response_bytes)
-        if (
-            response.error_code is not None
-            and response.error_code != PmdControlPointErrorCode.SUCCESS
-        ):
-            raise exceptions.ControlPointResponseError(
-                f"Device rejected stream: {response.error_code.name}"
+            response_bytes = await self._read_control_response(
+                PmdControlOperationCode.START, settings.measurement_type.value
             )
-        for setting in response.settings:
-            if setting.type == PmdSettingType.FACTOR and setting.values:
-                raw_int_factor = setting.values[0]
-                real_factor = struct.unpack("<f", struct.pack("<I", raw_int_factor))[0]
-                self._factors[settings.measurement_type] = real_factor
-                break
+            if response_bytes is None:
+                raise exceptions.ControlPointResponseError(
+                    f"No start response for {settings.measurement_type.name}"
+                )
+            response = MeasurementSettings.from_bytes(response_bytes)
+            if (
+                response.error_code is not None
+                and response.error_code != PmdControlPointErrorCode.SUCCESS
+            ):
+                raise exceptions.ControlPointResponseError(
+                    f"Device rejected stream: {response.error_code.name}"
+                )
+            for setting in response.settings:
+                if setting.type == PmdSettingType.FACTOR and setting.values:
+                    raw_int_factor = setting.values[0]
+                    real_factor = struct.unpack(
+                        "<f", struct.pack("<I", raw_int_factor)
+                    )[0]
+                    self._factors[settings.measurement_type] = real_factor
+                    break
 
     async def stop_stream(self, measurement_type: PmdMeasurementType) -> None:
         """Stops a generic PMD stream and cleans up its stored factors.
@@ -252,11 +269,12 @@ class PolarDevice:
         Args:
             measurement_type: The type of measurement stream to stop.
         """
-        await self._client.write_gatt_char(
-            PolarCharacteristic.PMD_CONTROL_POINT.value,
-            bytearray([PmdControlOperationCode.STOP, measurement_type.value]),
-        )
-        self._factors.pop(measurement_type, None)
+        async with self._control_lock:
+            await self._client.write_gatt_char(
+                PolarCharacteristic.PMD_CONTROL_POINT.value,
+                bytearray([PmdControlOperationCode.STOP, measurement_type.value]),
+            )
+            self._factors.pop(measurement_type, None)
 
     # ── SDK mode (enables higher sample rates, e.g. PPG 135/176 Hz) ──────
 
@@ -270,17 +288,19 @@ class PolarDevice:
         ``_read_control_response`` discards replies that match no pending
         request, so it cannot desynchronise later commands.
         """
-        await self._client.write_gatt_char(
-            PolarCharacteristic.PMD_CONTROL_POINT.value,
-            bytearray([PmdControlOperationCode.START, 0x09]),
-        )
+        async with self._control_lock:
+            await self._client.write_gatt_char(
+                PolarCharacteristic.PMD_CONTROL_POINT.value,
+                bytearray([PmdControlOperationCode.START, 0x09]),
+            )
 
     async def disable_sdk_mode(self) -> None:
         """Disables SDK mode on the device (STOP_MEASUREMENT, type 0x09)."""
-        await self._client.write_gatt_char(
-            PolarCharacteristic.PMD_CONTROL_POINT.value,
-            bytearray([PmdControlOperationCode.STOP, 0x09]),
-        )
+        async with self._control_lock:
+            await self._client.write_gatt_char(
+                PolarCharacteristic.PMD_CONTROL_POINT.value,
+                bytearray([PmdControlOperationCode.STOP, 0x09]),
+            )
 
     async def sdk_mode_enabled(self) -> bool:
         """Returns True if SDK mode is currently enabled (GET_SDK_MODE_STATUS).
@@ -289,16 +309,17 @@ class PolarDevice:
         Response: [0xF0, 0x06, 0x09, status, more, sdk_mode_status]
         SDK-mode status is the first parameter byte (index 5); non-zero = enabled.
         """
-        await self._client.write_gatt_char(
-            PolarCharacteristic.PMD_CONTROL_POINT.value,
-            bytearray([0x06]),  # GET_SDK_MODE_STATUS
-        )
-        response = await self._read_control_response(0x06, timeout=3.0)
-        if response is None:
-            raise asyncio.TimeoutError("No response to GET_SDK_MODE_STATUS")
-        # response[0]=0xF0, response[1]=op(6), response[2]=type(9),
-        # response[3]=status(0=OK), response[4]=more, response[5]=sdk_mode_status
-        return len(response) > 5 and response[5] != 0
+        async with self._control_lock:
+            await self._client.write_gatt_char(
+                PolarCharacteristic.PMD_CONTROL_POINT.value,
+                bytearray([0x06]),  # GET_SDK_MODE_STATUS
+            )
+            response = await self._read_control_response(0x06, timeout=3.0)
+            if response is None:
+                raise asyncio.TimeoutError("No response to GET_SDK_MODE_STATUS")
+            # response[0]=0xF0, response[1]=op(6), response[2]=type(9),
+            # response[3]=status(0=OK), response[4]=more, response[5]=sdk_mode_status
+            return len(response) > 5 and response[5] != 0
 
     async def start_ecg_stream(
         self, ecg_callback: ECGCallback, sample_rate: int, resolution: int
@@ -594,7 +615,7 @@ class PolarDevice:
         self._pmd_counts["raw"] = self._pmd_counts.get("raw", 0) + 1
         try:
             parsed_data = parsers.parse_polar_data(data, self._factors.get)
-        except (ValueError, IndexError, KeyError) as exc:
+        except (ValueError, IndexError, KeyError, struct.error) as exc:
             self._pmd_counts["errors"] = self._pmd_counts.get("errors", 0) + 1
             if self._pmd_event_cb is not None:
                 self._pmd_event_cb(
@@ -606,8 +627,7 @@ class PolarDevice:
 
         if parsed_data is None:
             return
-        kind = type(parsed_data).__name__.removesuffix("Data").lower()
-        self._pmd_counts[kind] = self._pmd_counts.get(kind, 0) + 1
+
         if self._pmd_counts["raw"] % PMD_STATS_INTERVAL == 0 and self._pmd_event_cb:
             c = self._pmd_counts
             self._pmd_event_cb(
@@ -617,21 +637,27 @@ class PolarDevice:
                 f"err={c.get('errors', 0)}",
                 "info",
             )
-        match parsed_data:
-            case ECGData() if self._ecg_callback:
-                self._ecg_callback(parsed_data)
-            case ACCData() if self._acc_callback:
-                self._acc_callback(parsed_data)
-            case PPIData() if self._ppi_callback:
-                self._ppi_callback(parsed_data)
-            case PPGData() if self._ppg_callback:
-                self._ppg_callback(parsed_data)
-            case GyroData() if self._gyro_callback:
-                self._gyro_callback(parsed_data)
-            case MAGData() if self._mag_callback:
-                self._mag_callback(parsed_data)
-            case _:
-                return
+        try:
+            match parsed_data:
+                case ECGData() if self._ecg_callback:
+                    self._ecg_callback(parsed_data)
+                case ACCData() if self._acc_callback:
+                    self._acc_callback(parsed_data)
+                case PPIData() if self._ppi_callback:
+                    self._ppi_callback(parsed_data)
+                case PPGData() if self._ppg_callback:
+                    self._ppg_callback(parsed_data)
+                case GyroData() if self._gyro_callback:
+                    self._gyro_callback(parsed_data)
+                case MAGData() if self._mag_callback:
+                    self._mag_callback(parsed_data)
+                case _:
+                    return
+            kind = type(parsed_data).__name__.removesuffix("Data").lower()
+            self._pmd_counts[kind] = self._pmd_counts.get(kind, 0) + 1
+        except Exception as cb_exc:
+            if self._pmd_event_cb:
+                self._pmd_event_cb(f"PMD callback error: {cb_exc}", "error")
 
     def _handle_hr_measurement(
         self, _: BleakGATTCharacteristic | int, data: bytearray

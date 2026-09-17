@@ -30,12 +30,12 @@ def calculate_rmssd(rr_list: Sequence[float | int | None]) -> float:
             and None values are automatically filtered out.
 
     Returns:
-        float: The calculated RMSSD in milliseconds, or 0.0 if fewer than 2 valid
+        float: The calculated RMSSD in milliseconds, or NaN if fewer than 2 valid
             intervals are provided.
     """
     vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
     if len(vals) < 2:
-        return 0.0
+        return float("nan")
     diffs = [vals[i + 1] - vals[i] for i in range(len(vals) - 1)]
     return float(math.sqrt(sum(d * d for d in diffs) / len(diffs)))
 
@@ -50,12 +50,12 @@ def calculate_sdnn(rr_list: Sequence[float | int | None]) -> float:
         rr_list: A sequence of RR or PPI interval values in milliseconds.
 
     Returns:
-        float: The calculated SDNN in milliseconds, or 0.0 if fewer than 2 valid intervals.
+        float: The calculated SDNN in milliseconds, or NaN if fewer than 2 valid intervals.
     """
     vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
     n = len(vals)
     if n < 2:
-        return 0.0
+        return float("nan")
     mean = sum(vals) / n
     variance = sum((x - mean) ** 2 for x in vals) / (n - 1)
     return float(math.sqrt(variance))
@@ -68,11 +68,11 @@ def calculate_pnn50(rr_list: Sequence[float | int | None]) -> float:
         rr_list: A sequence of RR or PPI interval values in milliseconds.
 
     Returns:
-        float: The pNN50 percentage (0.0 to 100.0), or 0.0 if fewer than 2 valid intervals.
+        float: The pNN50 percentage (0.0 to 100.0), or NaN if fewer than 2 valid intervals.
     """
     vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
     if len(vals) < 2:
-        return 0.0
+        return float("nan")
     diffs = [abs(vals[i + 1] - vals[i]) for i in range(len(vals) - 1)]
     nn50 = sum(1 for d in diffs if d > 50.0)
     return float((nn50 / len(diffs)) * 100.0)

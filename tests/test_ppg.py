@@ -41,6 +41,17 @@ class TestPpgSignalProcessing:
         hr = epoch_hr_from_fft(wave, fs)
         assert pytest.approx(hr, abs=2.0) == 90.0
 
+    @pytest.mark.parametrize("target_bpm", [60.0, 72.0, 85.0, 120.0, 150.0])
+    def test_fft_resolution_across_rates_at_135hz(self, target_bpm: float) -> None:
+        """Verify sub-BPM FFT accuracy at 135 Hz without bin quantization collapse."""
+        fs = 135.0
+        duration_s = 10.0
+        freq_hz = target_bpm / 60.0
+        t = np.linspace(0, duration_s, int(duration_s * fs), endpoint=False)
+        wave = np.sin(2 * np.pi * freq_hz * t)
+        measured_hr = epoch_hr_from_fft(wave, fs)
+        assert abs(measured_hr - target_bpm) < 0.5
+
     def test_bandpass_filter(self) -> None:
         fs = 100.0
         t = np.linspace(0, 10, 1000, endpoint=False)
@@ -58,6 +69,13 @@ class TestPpgSignalProcessing:
         # 1.62 should be split into two ~0.81 intervals
         assert len(cleaned) == 6
         assert all(0.75 <= v <= 0.85 for v in cleaned)
+
+    def test_clean_ibi_with_max_s_gating(self) -> None:
+        # Missed beat 1.62s with max_s=1.0: doubling repair must occur before max_s filtering
+        ibis = np.array([0.8, 0.82, 1.62, 0.81, 0.79])
+        cleaned = clean_ibi(ibis, max_s=1.0)
+        assert len(cleaned) == 6
+        assert all(v <= 1.0 for v in cleaned)
 
     def test_ibi_to_hr_and_rmssd(self) -> None:
         ibis_s = np.array([0.8, 0.8, 0.8, 0.8])  # 75 BPM

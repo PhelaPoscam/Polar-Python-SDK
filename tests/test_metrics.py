@@ -1,4 +1,4 @@
-"""Unit tests for HRV algorithms and sampling rate estimation trackers."""
+import math
 
 import pytest
 
@@ -22,8 +22,8 @@ class TestHrvCalculations:
         assert rmssd == pytest.approx(15.811388, rel=1e-4)
 
     def test_rmssd_empty_and_single(self):
-        assert calculate_rmssd([]) == 0.0
-        assert calculate_rmssd([800.0]) == 0.0
+        assert math.isnan(calculate_rmssd([]))
+        assert math.isnan(calculate_rmssd([800.0]))
 
     def test_rmssd_filters_invalid_zero_and_none(self):
         assert calculate_rmssd([0.0, 800.0, None, 820.0, -10.0]) == pytest.approx(

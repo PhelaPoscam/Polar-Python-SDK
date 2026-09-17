@@ -32,27 +32,42 @@ class NonBlockingKeyboardReader:
         if self._win_msvcrt is not None:
             while self._win_msvcrt.kbhit():
                 ch = self._win_msvcrt.getwch()
-                if ch == " ":
-                    now = time.monotonic()
-                    if (now - self._last_space_ts) >= 0.2:
-                        marker = self._hotkeys.get("SPACE")
-                        if marker:
-                            markers.append(marker)
-                        self._last_space_ts = now
+                if ch in ("\x00", "\xe0"):
+                    if self._win_msvcrt.kbhit():
+                        self._win_msvcrt.getwch()
                     continue
-                if len(ch) == 1:
+
+                if ch == "\x08":
+                    self._buffer = self._buffer[:-1]
+                    continue
+
+                if ch in ("\r", "\n"):
+                    line = self._buffer.strip()
+                    self._buffer = ""
+                    if line:
+                        line_upper = line.upper()
+                        if line_upper in self._hotkeys:
+                            markers.append(self._hotkeys[line_upper])
+                        else:
+                            markers.append(line)
+                    continue
+
+                if not self._buffer:
+                    if ch == " ":
+                        now = time.monotonic()
+                        if (now - self._last_space_ts) >= 0.2:
+                            marker = self._hotkeys.get("SPACE")
+                            if marker:
+                                markers.append(marker)
+                            self._last_space_ts = now
+                        continue
                     ch_upper = ch.upper()
                     marker = self._hotkeys.get(ch_upper)
                     if marker:
                         markers.append(marker)
                         continue
-                    if ch in ("\r", "\n"):
-                        line = self._buffer.strip()
-                        self._buffer = ""
-                        if line:
-                            markers.append(line)
-                    else:
-                        self._buffer += ch
+
+                self._buffer += ch
         else:
             import select
 

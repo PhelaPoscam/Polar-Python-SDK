@@ -125,9 +125,9 @@ class ACCData:
 
         acc_samples = []
         for sample in samples:
-            x = int(sample[0] * acc_factor)
-            y = int(sample[1] * acc_factor)
-            z = int(sample[2] * acc_factor)
+            x = int(round(sample[0] * acc_factor))
+            y = int(round(sample[1] * acc_factor))
+            z = int(round(sample[2] * acc_factor))
             acc_samples.append((x, y, z))
 
         return cls(timestamp=frame.timestamp, data=acc_samples)
@@ -147,9 +147,9 @@ class ACCData:
         acc_samples = []
         for sample in samples:
             if factor != 1.0:
-                x = int(sample[0] * factor)
-                y = int(sample[1] * factor)
-                z = int(sample[2] * factor)
+                x = int(round(sample[0] * factor))
+                y = int(round(sample[1] * factor))
+                z = int(round(sample[2] * factor))
             else:
                 x = sample[0]
                 y = sample[1]

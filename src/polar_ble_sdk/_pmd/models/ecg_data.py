@@ -27,9 +27,12 @@ class ECGData:
             )
 
         content = frame.data_content
+        n_samples = len(content) // 3
         ecg_samples = [
-            int.from_bytes(content[i : i + 3], byteorder="little", signed=True)
-            for i in range(0, len(content), 3)
+            int.from_bytes(
+                content[i * 3 : (i + 1) * 3], byteorder="little", signed=True
+            )
+            for i in range(n_samples)
         ]
 
         return cls(timestamp=frame.timestamp, data=ecg_samples)

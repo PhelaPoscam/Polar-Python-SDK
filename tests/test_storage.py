@@ -84,3 +84,6 @@ class TestSessionManager:
         assert data["markers"][0]["label"] == "baseline_start"
         assert "ecg" in data["stream_results"]
         assert data["stream_results"]["ecg"]["observed_hz"] == 130.0
+        assert "clock_zero_points" in data
+        assert "host_epoch_ns" in data["clock_zero_points"]
+        assert data["host_epoch_start_ns"] > 0

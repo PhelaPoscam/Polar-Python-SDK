@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import sys
 import time
 from collections import deque
@@ -39,6 +40,7 @@ from polar_ble_sdk.session.state import (
     feed_hr,
     make_callback,
     make_device_state,
+    reset_device_state_on_disconnect,
     unwrap_vector,
 )
 from polar_ble_sdk.storage.frame_logger import (
@@ -50,6 +52,8 @@ from polar_ble_sdk.storage.frame_logger import (
 from polar_ble_sdk.storage.summary_logger import CsvLogger
 from polar_ble_sdk.ui.components import device_panel, header_bar, info_bar
 from polar_ble_sdk.ui.log_panel import LogPanel, log_event
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -125,6 +129,12 @@ async def main() -> None:
         type=str,
         default=None,
         help="Custom hotkeys: KEY=LABEL,KEY2=LABEL2",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Custom root directory for recorded session data (default: ./data).",
     )
     parser.add_argument(
         "--device",
@@ -308,11 +318,20 @@ async def main() -> None:
     # ── Session & Storage Setup ───────────────────────────────────────
     device_name = getattr(device, "name", "") or ""
     device_address = getattr(device, "address", "") or ""
-    _is_h10 = _is_h10 or "h10" in device_name.lower()
+    if not args.streams and not args.type:
+        _is_h10 = "h10" in device_name.lower()
+        enabled_streams = (
+            list(_H10_STREAMS) if _is_h10 else _sense_streams(args.no_sdk_mode)
+        )
+        if not _is_h10 and args.ppi and args.no_sdk_mode:
+            enabled_streams.append("ppi")
+    else:
+        _is_h10 = _is_h10 or "h10" in device_name.lower()
     device_type = "h10" if _is_h10 else "sense"
 
+    data_root = Path(args.data_dir) if args.data_dir else Path.cwd() / "data"
     session_mgr = SessionManager(
-        base_dir=PROJECT_ROOT,
+        base_dir=data_root,
         device_type=device_type,
         is_dual=False,
     )
@@ -569,7 +588,11 @@ async def main() -> None:
                     last_frame_log = now
                     frame_count_logger.check(state, enabled_streams)
 
-                if args.duration and (now - start) >= args.duration:
+                if (
+                    args.duration is not None
+                    and args.duration > 0
+                    and (now - start) >= args.duration
+                ):
                     log_event(
                         log_panel,
                         f"Target duration ({args.duration}s) reached.",
@@ -600,10 +623,18 @@ async def main() -> None:
 
             if battery_task:
                 battery_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await battery_task
             if rssi_task:
                 rssi_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await rssi_task
 
-            await conn.stop_notify()
+            try:
+                await asyncio.wait_for(conn.stop_notify(), timeout=4.0)
+            except Exception as e:
+                logger.debug("Error stopping notifications: %s", e)
+
             session_mgr.metadata.devices[device_type].battery_end = state.get(
                 "battery", "-"
             )
@@ -622,7 +653,7 @@ async def main() -> None:
             if "acc" in enabled_streams:
                 configured_rates["acc"] = 200 if _is_h10 else 52
             if "ppg" in enabled_streams:
-                configured_rates["ppg"] = 135 if _is_h10 else 55
+                configured_rates["ppg"] = 55 if args.no_sdk_mode else 135
             if "gyro" in enabled_streams:
                 configured_rates["gyro"] = 52
             if "mag" in enabled_streams:
@@ -640,12 +671,12 @@ async def main() -> None:
             )
 
             state["status"] = "Disconnected."
+            reset_device_state_on_disconnect(state)
             live.update(build())
 
-            if configured_rates:
-                extra = ["ppi"] if "ppi" in enabled_streams else None
-                print_hz_summary(configured_rates, state, extra_streams=extra)
-            await asyncio.sleep(1)
+    if configured_rates:
+        extra = ["ppi"] if "ppi" in enabled_streams else None
+        print_hz_summary(configured_rates, state, extra_streams=extra)
 
 
 def _entrypoint() -> None:

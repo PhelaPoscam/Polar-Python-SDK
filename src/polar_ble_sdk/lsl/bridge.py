@@ -255,15 +255,18 @@ class PolarLSLBridge:
         self.outlets["h10_acc"].push_chunk(chunk, timestamps)
 
     def push_h10_hr(self, data: Any) -> None:
-        """Push an instantaneous Heart Rate measurement."""
+        """Push an instantaneous Heart Rate measurement and all RR intervals."""
         if "h10_hr" not in self.outlets:
             return
         hr_val, rr_list = data
         if hr_val <= 0:
             return
         t_now = self.local_clock()
-        rr_val = float(rr_list[-1]) if rr_list else 0.0
-        self.outlets["h10_hr"].push_sample([float(hr_val), rr_val], t_now)
+        if rr_list:
+            for rr in rr_list:
+                self.outlets["h10_hr"].push_sample([float(hr_val), float(rr)], t_now)
+        else:
+            self.outlets["h10_hr"].push_sample([float(hr_val), 0.0], t_now)
 
     def push_sense_ppg(self, data: Any) -> None:
         """Push a burst of Verity Sense 4-channel optical PPG samples."""
@@ -277,14 +280,16 @@ class PolarLSLBridge:
         t_now = self.local_clock()
         dt = 1.0 / self.ppg_rate
         timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
-        chunk = [
-            (
-                [int(s[0]), int(s[1]), int(s[2]), int(s[3])]
-                if isinstance(s, list | tuple) and len(s) >= 4
-                else [int(s)]
-            )
-            for s in samples
-        ]
+        chunk = []
+        for s in samples:
+            if isinstance(s, list | tuple):
+                if len(s) >= 4:
+                    chunk.append([int(s[0]), int(s[1]), int(s[2]), int(s[3])])
+                else:
+                    padded = [int(v) for v in s] + [0] * (4 - len(s))
+                    chunk.append(padded)
+            else:
+                chunk.append([int(s), 0, 0, 0])
         self.outlets["sense_ppg"].push_chunk(chunk, timestamps)
 
     def push_sense_acc(self, data: Any) -> None:
@@ -356,7 +361,12 @@ class PolarLSLBridge:
 
         def wrapped(data: Any) -> None:
             if existing_cb is not None:
-                existing_cb(data)
+                try:
+                    existing_cb(data)
+                except Exception as cb_exc:
+                    logger.warning(
+                        "Error in user callback for %s: %s", stream_name, cb_exc
+                    )
             if push_fn is not None:
                 try:
                     push_fn(data)

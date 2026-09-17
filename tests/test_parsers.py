@@ -44,6 +44,28 @@ class TestHeartRateParser:
         with pytest.raises(ValueError, match="too short"):
             parse_hr_data(bytearray([0x00]))
 
+    def test_hr_with_energy_expended(self):
+        # flags=0x18 (8-bit HR, bit 3=energy expended present, bit 4=RR present)
+        # hr=75, energy=500 kJ (0x01F4), RR=1024 raw (1000.0 ms, 0x0400)
+        raw = bytearray([0x18, 75, 0xF4, 0x01, 0x00, 0x04])
+        data = parse_hr_data(raw)
+        assert data.heartrate == 75
+        assert len(data.rr_intervals) == 1
+        assert data.rr_intervals[0] == pytest.approx(1000.0, rel=1e-3)
+
+    def test_hr_contact_flags(self):
+        # bit 2=0 (not supported) -> contact_detected is None
+        data_unsupported = parse_hr_data(bytearray([0x00, 60]))
+        assert data_unsupported.contact_detected is None
+
+        # bit 2=1 (supported), bit 1=0 (not detected) -> False
+        data_no_contact = parse_hr_data(bytearray([0x04, 60]))
+        assert data_no_contact.contact_detected is False
+
+        # bit 2=1 (supported), bit 1=1 (detected) -> True
+        data_contact = parse_hr_data(bytearray([0x06, 60]))
+        assert data_contact.contact_detected is True
+
 
 class TestDeltaCompressionEngine:
     def test_empty_delta_frames(self):
@@ -83,6 +105,19 @@ class TestDeltaCompressionEngine:
         assert samples[1] == [12]
         assert samples[2] == [9]
 
+    def test_1bit_delta_sign_extension(self):
+        # 1 channel, 8-bit ref sample = 100
+        # Delta header: delta_size=1 bit, sample_count=1
+        # Delta 1 bit = 1 (in two's complement 1-bit signed, 1 is -1!)
+        # Packed byte: 0b00000001 = 0x01
+        raw = bytearray([100, 1, 1, 0x01])
+        samples = parse_delta_frames_all(
+            raw, channels=1, resolution=8, data_type="signed_int"
+        )
+        assert len(samples) == 2
+        assert samples[0] == [100]
+        assert samples[1] == [99]  # 100 + (-1) = 99, NOT 100 + 1 = 101!
+
 
 class TestPmdDataFrameParsers:
     def test_ecg_raw_parsing(self):
@@ -101,6 +136,34 @@ class TestPmdDataFrameParsers:
         assert isinstance(parsed, ECGData)
         assert parsed.timestamp == 1000 + TIMESTAMP_OFFSET
         assert parsed.data == [1234, -567]
+
+    def test_zero_timestamp_preserved(self):
+        # Device sending timestamp=0 (sentinel) must remain 0, not 0 + TIMESTAMP_OFFSET
+        header = bytearray([0])  # ECG
+        header.extend((0).to_bytes(8, "little"))  # ts = 0
+        header.append(0x00)
+        content = bytearray()
+        content.extend((500).to_bytes(3, "little", signed=True))
+        raw = header + content
+
+        parsed = parse_polar_data(raw, lambda _: 1.0)
+        assert isinstance(parsed, ECGData)
+        assert parsed.timestamp == 0
+
+    def test_ecg_trailing_bytes_discarded(self):
+        # 2 complete samples (6 bytes) + 1 trailing incomplete byte = 7 bytes
+        header = bytearray([0])
+        header.extend((1000).to_bytes(8, "little"))
+        header.append(0x00)
+        content = bytearray()
+        content.extend((100).to_bytes(3, "little", signed=True))
+        content.extend((-200).to_bytes(3, "little", signed=True))
+        content.append(0xFF)  # Incomplete trailing byte
+        raw = header + content
+
+        parsed = parse_polar_data(raw, lambda _: 1.0)
+        assert isinstance(parsed, ECGData)
+        assert parsed.data == [100, -200]
 
     def test_acc_raw_type_0(self):
         # Type=2 (ACC), raw Type 0 (1 byte per axis)

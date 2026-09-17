@@ -66,6 +66,9 @@ Papers/
 # Local lock files
 skills-lock.json
 
+# Working notes & AI-generated audit artifacts
+walkthrough.md
+
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb

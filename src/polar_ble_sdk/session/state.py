@@ -18,6 +18,8 @@ def make_device_state(name: str = "Polar Device") -> dict[str, Any]:
         "rr_intervals": [],
         "hr_history": deque(maxlen=40),
         "rr_history": deque(maxlen=50),
+        "ppi_intervals": [],
+        "ppi_history": deque(maxlen=50),
         "ppg_count": 0,
         "ppg_hz": 0.0,
         "ppg_last_sample": "-",
@@ -163,8 +165,10 @@ def feed_ppi(data: Any, state: dict[str, Any], ts: deque) -> None:
     _track_session(state, "ppi", len(data))
     ppi_ms = [float(s[1]) for s in data if len(s) > 1 and s[1] is not None and s[1] > 0]
     if ppi_ms:
-        state["rr_intervals"] = ppi_ms
-        state["rr_history"].extend(ppi_ms)
+        state["ppi_intervals"] = ppi_ms
+        state["ppi_history"].extend(ppi_ms)
+        if not state["rr_history"]:
+            state["rr_intervals"] = ppi_ms
 
 
 def make_callback(
@@ -189,11 +193,23 @@ def make_callback(
     return cb
 
 
+def reset_device_state_on_disconnect(state: dict[str, Any]) -> None:
+    """Clear transient live sensor values when a device disconnects."""
+    state["hr"] = 0
+    state["rr_intervals"] = []
+    state["rr_history"].clear()
+    state["ppi_intervals"] = []
+    state["ppi_history"].clear()
+    state["acc_raw"] = None
+    state["gyro_raw"] = None
+    state["mag_raw"] = None
+
+
 def unwrap_vector(
     state: dict[str, Any], raw_key: str, count_key: str
 ) -> tuple[Any, Any, Any]:
     """Unpack a 3-axis tuple (x, y, z) if samples are present, otherwise return (None, None, None)."""
-    val = state.get(raw_key) if state.get(count_key, 0) > 0 else None
+    val = state.get(raw_key)
     if isinstance(val, tuple | list) and len(val) >= 3:
         return val[0], val[1], val[2]
     return None, None, None

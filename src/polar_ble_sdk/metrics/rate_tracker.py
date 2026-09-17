@@ -20,11 +20,13 @@ class StreamAccumulator:
     samples: int = 0
     first_ts: float = 0.0
     last_ts: float = 0.0
+    _has_started: bool = False
 
     def add(self, count: int, timestamp: float | None = None) -> None:
         now = time.time() if timestamp is None else timestamp
-        if self.samples == 0:
+        if not self._has_started:
             self.first_ts = now
+            self._has_started = True
         self.samples += count
         self.last_ts = now
 

@@ -25,9 +25,13 @@ dependencies = [
 
 [project.scripts]
 monitor-polar = "polar_ble_sdk.cli:_entrypoint"
+monitor-dual-polar = "polar_ble_sdk.dual_cli:_entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"polar_ble_sdk" = ["py.typed"]
 
 [tool.black]
 line-length = 88
@@ -44,6 +48,12 @@ extend-exclude = '''
 [project.optional-dependencies]
 lsl = [
     "pylsl>=1.16.0",
+]
+research = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
 ]
 dev = [
     "pytest>=7",
@@ -93,6 +103,7 @@ check_untyped_defs = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 norecursedirs = [".venv", "reference"]

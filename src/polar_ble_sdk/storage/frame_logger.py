@@ -6,6 +6,7 @@ with millisecond-accurate timestamps relative to the first received frame.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import logging
 from collections.abc import Callable
@@ -56,6 +57,11 @@ class StreamFrameLogger:
         self._ppi_cumulative_s: float = 0.0
         self.samples_written = 0
 
+    @property
+    def first_ts_ns(self) -> int | None:
+        """First frame timestamp in nanoseconds (device hardware clock or host epoch ns)."""
+        return self._first_ts_ns
+
     def open(self) -> None:
         """Open the file and write the CSV header."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,13 +91,33 @@ class StreamFrameLogger:
             for sample in data:
                 self._writer.writerow([f"{rel_s:.3f}", *sample])
                 self.samples_written += 1
+        if self.samples_written % 100 == 0:
+            self.flush()
 
     def write_ppi_frames(self, data: list[Any]) -> None:
-        """Write a batch of PPI samples with quality and skin-contact flags."""
+        """Write a batch of PPI samples with quality and skin-contact flags.
+
+        Rebases timestamps using the device hardware clock timestamp (sample[0]).
+        If sample[0] is zero or missing (e.g. un-timestamped frames), falls back
+        to cumulative interval progression (_ppi_cumulative_s) to guarantee monotonic
+        timeline continuity.
+        """
         if not self._writer:
             return
 
         for sample in data:
+            ts_ns = (
+                sample[0]
+                if (sample and len(sample) > 0 and sample[0] is not None)
+                else 0
+            )
+            if ts_ns > 0:
+                if self._first_ts_ns is None:
+                    self._first_ts_ns = ts_ns
+                rel_s = (ts_ns - self._first_ts_ns) / 1e9
+            else:
+                rel_s = self._ppi_cumulative_s
+
             if len(sample) >= 4:
                 ppi = sample[1]
                 err_est = sample[2]
@@ -99,12 +125,12 @@ class StreamFrameLogger:
                 contact = sample[4] if len(sample) >= 5 else None
                 contact_sup = sample[5] if len(sample) >= 6 else None
             else:
-                ppi = sample[1]
+                ppi = sample[1] if len(sample) > 1 else None
                 err_est = hr = contact = contact_sup = None
 
             self._writer.writerow(
                 [
-                    f"{self._ppi_cumulative_s:.3f}",
+                    f"{rel_s:.3f}",
                     ppi,
                     "" if err_est is None else err_est,
                     "" if hr is None else hr,
@@ -112,13 +138,24 @@ class StreamFrameLogger:
                     "" if contact_sup is None else int(bool(contact_sup)),
                 ]
             )
-            self._ppi_cumulative_s += float(ppi) / 1000.0
+            if ppi is not None:
+                self._ppi_cumulative_s += float(ppi) / 1000.0
             self.samples_written += 1
+
+        if self.samples_written % 50 == 0:
+            self.flush()
+
+    def flush(self) -> None:
+        """Flush unwritten buffer to disk."""
+        if self._file:
+            with contextlib.suppress(OSError):
+                self._file.flush()
 
     def close(self) -> None:
         """Flush and close the underlying file handle."""
         if self._file:
             try:
+                self._file.flush()
                 self._file.close()
             except OSError as e:
                 logger.warning("Error closing frame log file %s: %s", self._path, e)
