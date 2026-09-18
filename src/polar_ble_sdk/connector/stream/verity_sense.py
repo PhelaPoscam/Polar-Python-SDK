@@ -31,9 +31,10 @@ class PolarVeritySense(BasePolarDevice):
         self.mag_callback = mag_callback
         self.ecg_callback = ecg_callback
         self._ppi_active = False
-        # Configurable defaults for subclasses (Watch overrides some).
-        self._strict_hr = False
-        self._catch_auth_on_features = True
+        # Watches want HR failures and auth errors to surface instead of being
+        # swallowed; the Sense/OH1 keeps streaming without them.
+        self._strict_hr = kwargs.get("strict_hr", False)
+        self._catch_auth_on_features = kwargs.get("catch_auth_on_features", True)
         # 135 Hz PPG is the default: at 55 Hz the raw optical signal is
         # dominated by a fixed ~104 BPM beat artifact and the cardiac pulse is
         # not recoverable; at 135 Hz the pulse is clearly present (validated:
@@ -193,39 +194,25 @@ class PolarVeritySense(BasePolarDevice):
             with contextlib.suppress(Exception):
                 self.ppi_callback(ppi_vals)
 
-    def _ppg_handler(self, ppg_data) -> None:
-        if self.ppg_callback:
-            try:
-                self.ppg_callback((ppg_data.timestamp, ppg_data.samples))
-            except Exception:
-                import traceback
+    def _forward(self, callback, frame, samples) -> None:
+        """Hand one parsed frame to a user callback without letting it kill the stream."""
+        if not callback:
+            return
+        try:
+            callback((frame.timestamp, samples))
+        except Exception:
+            traceback.print_exc()
 
-                traceback.print_exc()
+    def _ppg_handler(self, ppg_data) -> None:
+        self._forward(self.ppg_callback, ppg_data, ppg_data.samples)
 
     def _acc_handler(self, acc_data) -> None:
-        if self.acc_callback:
-            try:
-                self.acc_callback((acc_data.timestamp, acc_data.data))
-            except Exception:
-                import traceback
-
-                traceback.print_exc()
+        self._forward(self.acc_callback, acc_data, acc_data.data)
 
     def _gyro_handler(self, gyro_data) -> None:
-        if self.gyro_callback:
-            try:
-                self.gyro_callback((gyro_data.timestamp, gyro_data.data))
-            except Exception:
-                import traceback
-
-                traceback.print_exc()
+        self._forward(self.gyro_callback, gyro_data, gyro_data.data)
 
     def _mag_handler(self, mag_data) -> None:
-        if self.mag_callback:
-            try:
-                mag_vals = [(s.x, s.y, s.z) for s in mag_data.data]
-                self.mag_callback((mag_data.timestamp, mag_vals))
-            except Exception:
-                import traceback
-
-                traceback.print_exc()
+        self._forward(
+            self.mag_callback, mag_data, [(s.x, s.y, s.z) for s in mag_data.data]
+        )

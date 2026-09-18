@@ -35,7 +35,6 @@ class DeviceMetadata:
     device_type: str = "unknown"
     battery_start: str = "-"
     battery_end: str = "-"
-    features_detected: list[str] = field(default_factory=list)
     stream_configurations: dict[str, Any] = field(default_factory=dict)
     clock_zero_points: dict[str, int] = field(default_factory=dict)
 

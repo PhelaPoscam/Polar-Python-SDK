@@ -38,7 +38,6 @@ monitor-polar --device "Vantage"
 Dual-device dashboard (H10 + Sense):
 ```bash
 monitor-dual-polar
-# or: python scripts/monitor_dual_polar.py
 ```
 
 ---
@@ -51,6 +50,7 @@ Polar-Python-SDK/
 │   ├── __init__.py                   # Public SDK exports (Connection, Metrics, Research)
 │   ├── cli.py                        # Console dashboard CLI entrypoint (monitor-polar)
 │   ├── dual_cli.py                   # Dual-device live dashboard CLI entrypoint (monitor-dual-polar)
+│   ├── cli_common.py                 # Shared CLI flags, stream callbacks, and dashboard loop
 │   ├── _pmd/                         # Low-level Polar Measurement Data protocol
 │   │   ├── __main__.py               # Low-level PMD protocol CLI utility
 │   │   ├── device.py                 # PolarDevice Bleak client wrapper
@@ -59,9 +59,8 @@ Polar-Python-SDK/
 │   │   └── parsers/                  # Bit-level delta compression & SIG HR decoders
 │   ├── connector/                    # Device Abstraction Layer
 │   │   ├── ble_discovery.py          # Fast BLE scanner & device matcher
-│   │   ├── schemas.py                # SignalPacket data contract
-│   │   ├── stream/                   # Device modules (Base, H10, VeritySense, Watch)
-│   │   └── exporters/                # Async QueueSink and streaming interfaces
+│   │   ├── adapter.py                # PolarAdapter: dual links, watchdog, auto-reconnect
+│   │   └── stream/                   # Device modules (Base, H10, VeritySense)
 │   ├── session/                      # Session Lifecycle & Metadata Management
 │   │   ├── session.py                # SessionManager & SessionMetadata (writes session_meta.json)
 │   │   └── state.py                  # Thread-safe in-memory device state containers
@@ -69,7 +68,7 @@ Polar-Python-SDK/
 │   │   ├── frame_logger.py           # StreamFrameLogger: full-resolution raw CSV logs
 │   │   └── summary_logger.py         # CsvLogger: 1 Hz post-processed summary CSV logs
 │   ├── metrics/                      # Physiological Signal & Rate Processing
-│   │   ├── hrv.py                    # Pure-Python RMSSD, SDNN, pNN50 algorithms
+│   │   ├── hrv.py                    # RMSSD, SDNN, pNN50 algorithms
 │   │   └── rate_tracker.py           # Real-time sliding-window & session Hz estimators
 │   ├── diagnostics/                  # Hardware Telemetry
 │   │   ├── battery.py                # Battery reading & periodic update loop
@@ -88,10 +87,8 @@ Polar-Python-SDK/
 ├── examples/
 │   └── connect_polar.py              # Minimal example connecting and receiving raw stream callbacks
 ├── scripts/
-│   ├── monitor_dual_polar.py         # Dual-device live terminal dashboard wrapper
 │   ├── run_analysis.py               # Cross-device validation & optical waveform analysis CLI
 │   ├── analyze_hz.py                 # Post-session Hz & signal integrity verifier
-│   ├── connect_polar.py              # Backward-compatible wrapper delegating to examples/connect_polar.py
 │   └── pair_watch.ps1                # Windows WinRT BLE pairing helper
 ├── data/                             # Session logs (written by dashboards)
 │   └── {device_type}/{session_ts}/   # e.g. h10/20260818_120000 or dual/...
@@ -134,7 +131,7 @@ asyncio.run(main())
 Load an entire recorded session (metadata, 1 Hz summary, and raw high-frequency sensor streams) with one line:
 
 ```python
-from polar_ble_sdk import load_session, verify_session_integrity
+from polar_ble_sdk.research import load_session, verify_session_integrity
 
 # 1. Load session into structured pandas DataFrames
 session = load_session("data/h10/20260818_120000")
@@ -169,7 +166,7 @@ print(audit_report)
 
 | Function | Description |
 |---|---|
-| `create_polar_connector(device, **callbacks)` | Instantiate the right connector (`PolarH10`, `PolarVeritySense`, `PolarWatch`). |
+| `create_polar_connector(device, **callbacks)` | Instantiate the right connector (`PolarH10`, or `PolarVeritySense`, which also drives watches). |
 
 Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_callback`, `gyro_callback`, `mag_callback`, `ppi_callback`.
 
@@ -177,24 +174,12 @@ Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_ca
 
 | Class / Function | Description |
 |---|---|
-| `load_session(path)` | Load single or dual recording sessions into a `PolarSessionData` container with pandas DataFrames. |
-| `verify_session_integrity(path)` | Audit sampling rates, inter-sample standard deviation (jitter), and packet gap statistics. |
+| `load_session(path)` | Load single or dual recording sessions into a `PolarSessionData` container with pandas DataFrames. Import from `polar_ble_sdk.research`. |
+| `verify_session_integrity(path)` | Audit sampling rates, inter-sample standard deviation (jitter), and packet gap statistics. Import from `polar_ble_sdk.research`. |
 | `calculate_rmssd(rr_intervals)` | Calculate Root Mean Square of Successive Differences (in ms) from RR/PPI intervals. |
 | `calculate_sdnn(rr_intervals)` | Calculate Standard Deviation of NN intervals (in ms). |
 | `calculate_pnn50(rr_intervals)` | Calculate percentage of successive intervals differing by > 50 ms. |
 | `SessionManager` | Orchestrate session storage, raw frame logging, and audit manifest (`session_meta.json`) serialization. |
-
-### Data Model
-
-```python
-@dataclass
-class SignalPacket:
-    timestamp: float
-    source: str
-    subject_id: str | None
-    signals: dict
-    features: dict
-```
 
 ---
 
@@ -221,10 +206,10 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | Tool / Script | Command | Description |
 |---|---|---|
 | **Single-Device Dashboard** | `monitor-polar` | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Slim identity header, compact info bar, and a rolling event log showing connection/stream/RSSI events. Logs 1 Hz summary or full raw streams to CSV plus a session event log file. Prints a session-end Hz verification table and reports failed streams in the status line. |
-| **Dual-Device Dashboard** | `monitor-dual-polar`<br>*(or `python scripts/monitor_dual_polar.py`)* | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Side-by-side stream panels with a shared rolling event log (device-prefixed `[H10]`/`[Sense]`). Records synchronized 1 Hz summary or full raw CSV logs plus a session event log file. |
+| **Dual-Device Dashboard** | `monitor-dual-polar` | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Side-by-side stream panels with a shared rolling event log (device-prefixed `[H10]`/`[Sense]`). Records synchronized 1 Hz summary or full raw CSV logs plus a session event log file. |
 | **Session Hz Verifier** | `python scripts/analyze_hz.py <session_dir>` | Real-world verification that a recorded session collected at the configured rates — reports actual average Hz, sample count, and standard deviation per stream from the raw CSVs. Works on single-device (`.../raw/`) and dual-device (`.../h10/raw/`, `.../sense/raw/`) layouts. |
 | **Low-Level PMD Utility** | `python -m polar_ble_sdk._pmd <subcommand>` | Direct protocol interaction tool. Supports subcommands:<br>• `scan`: Scan for nearby Polar devices<br>• `inspect --address <MAC>`: Query available GATT PMD features and stream settings<br>• `stream --address <MAC> -s <hr/ecg/acc/...>`: Stream raw PMD packets |
-| **Simple Stream Tester** | `python examples/connect_polar.py`<br>*(or `python scripts/connect_polar.py`)* | Minimal testing script demonstrating basic connection and raw callback stream printing. |
+| **Simple Stream Tester** | `python examples/connect_polar.py` | Minimal testing script demonstrating basic connection and raw callback stream printing. |
 | **Windows Pairing Helper** | `.\scripts\pair_watch.ps1` | PowerShell helper script to assist with Windows WinRT Bluetooth pairing for Polar watches. |
 
 ---
@@ -238,26 +223,24 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--type` | Force device type (`h10` or `sense`) and default stream sets. | `monitor-polar --type h10` |
 | `--streams` | Comma-separated list of streams to enable (`hr,ecg,acc,ppg,ppi,gyro,mag`). | `--streams hr,ecg,acc` |
 | `--no-sdk-mode` | **Disable** SDK mode (now the default): PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-polar --no-sdk-mode` |
-| `--sdk-mode` | Explicitly enable SDK mode (already the default). Required for PPG > 55 Hz. | `monitor-polar --sdk-mode --ppg-rate 135` |
-| `--ppi` | Enable the Sense PPI stream (only valid with `--no-sdk-mode`; SDK mode disables HR/PPI). | `monitor-polar --no-sdk-mode --ppi` |
+| `--ppi` | Ask for the Sense PPI stream. Only valid with `--no-sdk-mode`, which already enables it; SDK mode disables HR/PPI. | `monitor-polar --no-sdk-mode --ppi` |
 | `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
 | `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
-| `--no-log` | Disable all CSV logging completely. | `monitor-polar --no-log` |
+| `--no-log` | Disable CSV logging completely. | `monitor-polar --no-log` |
 | `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=Event, S=Start, B=Baseline, R=Recovery`. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
 | `--log-level` | Terminal log verbosity: `minimal` (errors only), `moderate` (default, connection + stream events + RSSI), `verbose` (adds per-frame counts, frequent RSSI). Press **L** during monitoring to toggle at runtime. | `monitor-polar --log-level verbose` |
 | `--<sensor>-rate` | Override specific sensor sampling rate (e.g., `--ecg-rate 130`, `--acc-rate 200`). | `--ecg-rate 130` |
 
-#### `scripts/monitor_dual_polar.py` (Dual-Device Dashboard)
+#### `monitor-dual-polar` (Dual-Device Dashboard)
 | Flag | Description | Example |
 |---|---|---|
 | `--h10` | Target MAC address or name for the Polar H10. | `--h10 "Polar H10 12345678"` |
 | `--sense` | Target MAC address or name for the Verity Sense. | `--sense "Polar Sense 87654321"` |
 | `--duration` | Set recording duration in seconds; automatically disconnects and closes cleanly. | `--duration 180` |
-| `--log-full` | Enable full-resolution raw CSV logs for both H10 (`data/dual/.../h10/raw/`) and Sense (`data/dual/.../sense/raw/`). | `python scripts/monitor_dual_polar.py --log-full` |
-| `--no-log` | Disable summary and full CSV logging. | `python scripts/monitor_dual_polar.py --no-log` |
-| `--no-ppi` | Disable the Sense PPI stream (only relevant with `--no-sdk-mode`; SDK mode disables PPI anyway). | `python scripts/monitor_dual_polar.py --no-ppi` |
-| `--no-sdk-mode` | Disable SDK mode: PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `python scripts/monitor_dual_polar.py --no-sdk-mode` |
-| `--sdk-mode` | Explicitly enable SDK mode (default). Required for 135 Hz raw 4-channel optical PPG. | `python scripts/monitor_dual_polar.py --sdk-mode --ppg-rate 135` |
+| `--no-log-full` | Disable the full-resolution raw CSV logs written by default to `data/dual/.../h10/raw/` and `.../sense/raw/`. | `monitor-dual-polar --no-log-full` |
+| `--no-log` | Disable summary and full CSV logging. | `monitor-dual-polar --no-log` |
+| `--no-ppi` | Disable the Sense PPI stream (only relevant with `--no-sdk-mode`; SDK mode disables PPI anyway). | `monitor-dual-polar --no-ppi` |
+| `--no-sdk-mode` | Disable SDK mode: PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-dual-polar --no-sdk-mode` |
 | `--log-level` | Terminal log verbosity: `minimal`, `moderate` (default), `verbose`. Press **L** during monitoring to toggle at runtime. | `--log-level verbose` |
 
 ---
@@ -271,7 +254,7 @@ Both dashboards write session data under `data/`, with full-resolution raw CSVs,
 | Dashboard | Session dir | Raw streams | Post-processed | Event log |
 |---|---|---|---|---|
 | `monitor-polar` | `data/{h10\|sense}/{timestamp}/` | `raw/<stream>.csv` | `post-processed/summary.csv` | `monitor_<timestamp>.log` |
-| `monitor_dual_polar.py` | `data/dual/{timestamp}/` | `h10/raw/<stream>.csv`, `sense/raw/<stream>.csv` | `h10/post-processed/summary.csv`, `sense/post-processed/summary.csv` | `dual_<timestamp>.log` |
+| `monitor-dual-polar` | `data/dual/{timestamp}/` | `h10/raw/<stream>.csv`, `sense/raw/<stream>.csv` | `h10/post-processed/summary.csv`, `sense/post-processed/summary.csv` | `dual_<timestamp>.log` |
 
 The event log file records every terminal log event (connection, stream start/stop, RSSI, errors, markers) as plain text, one line per event. Useful for post-session debugging.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import statistics
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -67,12 +68,7 @@ def audit_csv_stream(csv_path: Path) -> StreamAudit:
     max_gap = max(diffs) if diffs else 0.0
 
     hz_values = [1.0 / d for d in diffs if d > 0]
-    if len(hz_values) > 1:
-        mean_hz = sum(hz_values) / len(hz_values)
-        variance = sum((h - mean_hz) ** 2 for h in hz_values) / (len(hz_values) - 1)
-        std_dev = variance**0.5
-    else:
-        std_dev = 0.0
+    std_dev = statistics.stdev(hz_values) if len(hz_values) > 1 else 0.0
 
     return StreamAudit(
         stream=stream_name,

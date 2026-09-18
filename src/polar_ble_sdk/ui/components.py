@@ -11,11 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 
-def device_panel(
-    state: dict[str, Any],
-    is_h10: bool,
-    _rmssd: float | None = None,
-) -> Panel:
+def device_panel(state: dict[str, Any], is_h10: bool) -> Panel:
     """Build a Rich Panel displaying live sensor metrics."""
 
     def _hr_style(val: int) -> str:

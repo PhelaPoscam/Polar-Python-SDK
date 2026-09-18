@@ -12,6 +12,7 @@ Physiological Reference:
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Sequence
 
 
@@ -53,12 +54,9 @@ def calculate_sdnn(rr_list: Sequence[float | int | None]) -> float:
         float: The calculated SDNN in milliseconds, or NaN if fewer than 2 valid intervals.
     """
     vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
-    n = len(vals)
-    if n < 2:
+    if len(vals) < 2:
         return float("nan")
-    mean = sum(vals) / n
-    variance = sum((x - mean) ** 2 for x in vals) / (n - 1)
-    return float(math.sqrt(variance))
+    return statistics.stdev(vals)
 
 
 def calculate_pnn50(rr_list: Sequence[float | int | None]) -> float:

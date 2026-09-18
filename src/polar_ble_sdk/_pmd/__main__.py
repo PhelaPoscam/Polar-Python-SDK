@@ -1,153 +1,72 @@
+"""Low-level PMD protocol CLI: scan for Polar devices, inspect them, stream raw data."""
+
+from __future__ import annotations
+
 import argparse
 import asyncio
-import importlib.util
+import contextlib
 import json
-import sys
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 
 from . import PolarDevice
 from .constants import PmdMeasurementType
-from .models import (
-    ACCData,
-    ECGData,
-    GyroData,
-    HRData,
-    MAGData,
-    MeasurementSettings,
-    PPGData,
-    PPIData,
-)
-
-
-def check_dependencies() -> None:
-    if importlib.util.find_spec("rich") is not None:
-        return
-
-    print("Error: Missing optional dependency: rich")
-    print("To use the CLI tool, please install the library with 'cli' extras:")
-    print('pip install "polar-ble-sdk"')
-    sys.exit(1)
-
-
-check_dependencies()
-
-from rich.console import Console  # noqa: E402
-from rich.panel import Panel  # noqa: E402
-from rich.table import Table  # noqa: E402
+from .models import MeasurementSettings
 
 console = Console()
 
-
 STREAM_TYPES: set[str] = {"ecg", "acc", "ppi", "ppg", "gyro", "mag", "hr"}
-STREAM_OUTPUT_JSON: bool = False
+# Streams the device configures itself; passing settings to them is an error.
+UNCONFIGURABLE_STREAMS: set[str] = {"ppi", "hr"}
 
 
-def print_stream_json(
-    stream_type: str,
-    data: ECGData | ACCData | PPIData | PPGData | GyroData | MAGData | HRData,
-) -> None:
-    print(json.dumps({"type": stream_type, "data": asdict(data)}, ensure_ascii=False))
+class Out:
+    """Report progress and results as Rich text, or as newline-delimited JSON.
+
+    Every command speaks through one of these, so the two output modes cannot
+    drift apart the way parallel ``if as_json:`` branches do.
+    """
+
+    def __init__(self, as_json: bool) -> None:
+        self.json = as_json
+
+    def status(self, message: str) -> Any:
+        """Spinner while a slow call runs; silent in JSON mode."""
+        if self.json:
+            return contextlib.nullcontext()
+        return console.status(f"[bold yellow]{message}[/bold yellow]", spinner="dots")
+
+    def emit(self, payload: dict[str, Any] | None = None, rich: Any = None) -> None:
+        """Print the JSON payload or the Rich renderable, whichever mode is on."""
+        if self.json:
+            if payload is not None:
+                print(json.dumps(payload, ensure_ascii=False))
+        elif rich is not None:
+            console.print(rich)
+
+    def error(self, message: str) -> int:
+        """Report a failure and return the process exit code."""
+        self.emit({"error": message}, f"[bold red]{message}[/bold red]")
+        return 1
 
 
-def ecg_callback(data: ECGData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("ECG", data)
-    else:
-        console.print(f"[bold green]ECG:[/bold green] {data}")
+def stream_callback(out: Out, label: str) -> Callable[[Any], None]:
+    """Build the per-sample printer for one stream type."""
 
+    def callback(data: Any) -> None:
+        out.emit(
+            {"type": label, "data": asdict(data)},
+            f"[bold green]{label}:[/bold green] {data}",
+        )
 
-def acc_callback(data: ACCData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("ACC", data)
-    else:
-        console.print(f"[bold green]ACC:[/bold green] {data}")
-
-
-def ppi_callback(data: PPIData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("PPI", data)
-    else:
-        console.print(f"[bold green]PPI:[/bold green] {data}")
-
-
-def ppg_callback(data: PPGData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("PPG", data)
-    else:
-        console.print(f"[bold green]PPG:[/bold green] {data}")
-
-
-def gyro_callback(data: GyroData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("GYRO", data)
-    else:
-        console.print(f"[bold green]GYRO:[/bold green] {data}")
-
-
-def mag_callback(data: MAGData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("MAG", data)
-    else:
-        console.print(f"[bold green]MAG:[/bold green] {data}")
-
-
-def hr_callback(data: HRData) -> None:
-    if STREAM_OUTPUT_JSON:
-        print_stream_json("HR", data)
-    else:
-        console.print(f"[bold green]HR:[/bold green] {data}")
-
-
-async def scan(timeout: float, name_contains: str, as_json: bool) -> int:
-    if as_json:
-        devices: list[BLEDevice] = await BleakScanner.discover(timeout=timeout)
-    else:
-        with console.status(
-            "[bold yellow]Searching for Polar devices...[/bold yellow]", spinner="dots"
-        ):
-            devices = await BleakScanner.discover(timeout=timeout)
-
-    name_filter = name_contains.lower()
-    polar_devices: list[BLEDevice] = [
-        device
-        for device in devices
-        if device.name and name_filter in device.name.lower()
-    ]
-
-    if not polar_devices:
-        if not as_json:
-            console.print(
-                f"[bold red]No devices found matching '{name_contains}'.[/bold red]"
-            )
-        return 0
-
-    if as_json:
-        for device in polar_devices:
-            print(
-                json.dumps(
-                    {"name": device.name, "address": device.address}, ensure_ascii=False
-                )
-            )
-        return 0
-
-    table = Table(
-        title="Discovered Polar Devices", show_header=True, header_style="bold magenta"
-    )
-    table.add_column("Name", style="bold")
-    table.add_column("Address", style="cyan")
-
-    for device in polar_devices:
-        table.add_row(device.name, device.address)
-
-    console.print(
-        f"[bold green]Found {len(polar_devices)} Polar device(s).[/bold green]\n"
-    )
-    console.print(table)
-    return 0
+    return callback
 
 
 def _match_device(
@@ -157,23 +76,65 @@ def _match_device(
     name_contains: str | None,
 ) -> BLEDevice | None:
     if address:
-        return next((device for device in devices if device.address == address), None)
-
+        return next((d for d in devices if d.address == address), None)
     if name:
-        return next((device for device in devices if device.name == name), None)
-
+        return next((d for d in devices if d.name == name), None)
     if name_contains:
-        name_filter = name_contains.lower()
+        needle = name_contains.lower()
         return next(
-            (
-                device
-                for device in devices
-                if device.name and name_filter in device.name.lower()
-            ),
+            (d for d in devices if d.name and needle in d.name.lower()),
             None,
         )
-
     return None
+
+
+async def _find_device(
+    out: Out,
+    address: str | None,
+    name: str | None,
+    name_contains: str | None,
+    timeout: float,
+) -> BLEDevice | None:
+    """Scan and return the one requested device, reporting why if there is none."""
+    if not any([address, name, name_contains]):
+        out.error("One of --address, --name, or --name-contains is required.")
+        return None
+
+    with out.status("Searching for Polar devices..."):
+        devices = await BleakScanner.discover(timeout=timeout)
+
+    device = _match_device(devices, address, name, name_contains)
+    if not device:
+        out.error("No matching device found.")
+    return device
+
+
+async def scan(timeout: float, name_contains: str, as_json: bool) -> int:
+    out = Out(as_json)
+    with out.status("Searching for Polar devices..."):
+        devices = await BleakScanner.discover(timeout=timeout)
+
+    needle = name_contains.lower()
+    matches = [d for d in devices if d.name and needle in d.name.lower()]
+
+    if not matches:
+        out.emit(
+            None, f"[bold red]No devices found matching '{name_contains}'.[/bold red]"
+        )
+        return 0
+
+    table = Table(
+        title="Discovered Polar Devices", show_header=True, header_style="bold magenta"
+    )
+    table.add_column("Name", style="bold")
+    table.add_column("Address", style="cyan")
+    for device in matches:
+        out.emit({"name": device.name, "address": device.address})
+        table.add_row(device.name, device.address)
+
+    out.emit(None, f"[bold green]Found {len(matches)} Polar device(s).[/bold green]\n")
+    out.emit(None, table)
+    return 0
 
 
 async def inspect_device(
@@ -183,92 +144,39 @@ async def inspect_device(
     timeout: float,
     as_json: bool,
 ) -> int:
-    if not any([address, name, name_contains]):
-        if as_json:
-            print(
-                json.dumps(
-                    {
-                        "error": "One of --address, --name, or --name-contains is required."
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            console.print(
-                "[bold red]One of --address, --name, or --name-contains is required.[/bold red]"
-            )
+    out = Out(as_json)
+    device = await _find_device(out, address, name, name_contains, timeout)
+    if not device:
         return 1
 
-    if as_json:
-        devices: list[BLEDevice] = await BleakScanner.discover(timeout=timeout)
-    else:
-        with console.status(
-            "[bold yellow]Searching for Polar devices...[/bold yellow]", spinner="dots"
-        ):
-            devices = await BleakScanner.discover(timeout=timeout)
-
-    selected_device = _match_device(
-        devices, address=address, name=name, name_contains=name_contains
+    out.emit(
+        None,
+        Panel(
+            f"[bold green]Selected:[/bold green] [bold white]{device.name}[/bold white]\n"
+            f"[bold cyan]Address:[/bold cyan] {device.address}",
+            title="Inspecting",
+            border_style="green",
+            expand=False,
+        ),
     )
 
-    if not selected_device:
-        if as_json:
-            print(
-                json.dumps({"error": "No matching device found."}, ensure_ascii=False)
-            )
-        else:
-            console.print("[bold red]No matching device found.[/bold red]")
-        return 1
-
-    polar_device = PolarDevice(selected_device)
-
-    if as_json:
+    polar_device = PolarDevice(device)
+    with out.status(f"Connecting to {device.name}..."):
         await polar_device.connect()
-    else:
-        console.print()
-        console.print(
-            Panel(
-                f"[bold green]Selected:[/bold green] [bold white]{selected_device.name}[/bold white]\n[bold cyan]Address:[/bold cyan] {selected_device.address}",
-                title="Inspecting",
-                border_style="green",
-                expand=False,
-            )
-        )
-        with console.status(
-            f"[bold yellow]Connecting to [bold white]{selected_device.name}[/bold white]...[/bold yellow]",
-            spinner="dots",
-        ):
-            await polar_device.connect()
 
     try:
-        if not as_json:
-            console.print(
-                f"[bold green]Successfully connected to {selected_device.name}.[/bold green]\n"
-            )
-            with console.status(
-                "[bold yellow]Fetching device features and settings...[/bold yellow]",
-                spinner="dots",
-            ):
-                available_features = await polar_device.get_available_features()
-                settings_by_feature: list[
-                    tuple[PmdMeasurementType, MeasurementSettings]
-                ] = []
-                for feature in available_features:
-                    settings_by_feature.append(
-                        (feature, await polar_device.request_stream_settings(feature))
-                    )
-        else:
-            available_features = await polar_device.get_available_features()
-            settings_by_feature = []
-            for feature in available_features:
-                settings_by_feature.append(
-                    (feature, await polar_device.request_stream_settings(feature))
-                )
+        with out.status("Fetching device features and settings..."):
+            settings_by_feature: list[
+                tuple[PmdMeasurementType, MeasurementSettings]
+            ] = [
+                (feature, await polar_device.request_stream_settings(feature))
+                for feature in await polar_device.get_available_features()
+            ]
 
-        if as_json:
-            result: dict[str, Any] = {
-                "name": selected_device.name,
-                "address": selected_device.address,
+        out.emit(
+            {
+                "name": device.name,
+                "address": device.address,
                 "features": [
                     {
                         "id": feature.value,
@@ -281,8 +189,7 @@ async def inspect_device(
                     for feature, settings in settings_by_feature
                 ],
             }
-            print(json.dumps(result, ensure_ascii=False))
-            return 0
+        )
 
         table = Table(
             title="Available Stream Settings",
@@ -293,37 +200,26 @@ async def inspect_device(
         table.add_column("Feature ID", justify="center", style="dim")
         table.add_column("Measurement Type", justify="center", style="bold")
         table.add_column("Supported Parameters", style="green")
-
         for feature, settings in settings_by_feature:
-            params_str_list: list[str] = []
-            for setting in settings.settings:
-                setting_values = ", ".join(map(str, setting.values))
-                params_str_list.append(f"{setting.type.name}: [{setting_values}]")
-
-            params_display = (
-                " | ".join(params_str_list)
-                if params_str_list
-                else "[dim]No configurable parameters[/dim]"
+            params = [
+                f"{s.type.name}: [{', '.join(map(str, s.values))}]"
+                for s in settings.settings
+            ]
+            table.add_row(
+                str(feature.value),
+                feature.name,
+                " | ".join(params) or "[dim]No configurable parameters[/dim]",
             )
-            table.add_row(str(feature.value), feature.name, params_display)
-
-        console.print(table)
+        out.emit(None, table)
         return 0
     finally:
-        if as_json:
+        with out.status(f"Disconnecting from {device.name}..."):
             await polar_device.disconnect()
-        else:
-            with console.status(
-                f"[bold yellow]Disconnecting from [bold white]{selected_device.name}[/bold white]...[/bold yellow]",
-                spinner="dots",
-            ):
-                await polar_device.disconnect()
-            console.print(
-                f"[bold green]Disconnected from {selected_device.name}.[/bold green]"
-            )
+        out.emit(None, f"[bold green]Disconnected from {device.name}.[/bold green]")
 
 
 def parse_stream_spec(spec: str) -> dict[str, Any]:
+    """Parse ``ecg:sample_rate=130,resolution=14`` into a stream configuration."""
     stream_type_part, separator, params_part = spec.partition(":")
     stream_type = stream_type_part.strip().lower()
 
@@ -336,6 +232,8 @@ def parse_stream_spec(spec: str) -> dict[str, Any]:
     if separator:
         if not params_part.strip():
             raise ValueError(f"Stream '{stream_type}' has an empty parameter list.")
+        if stream_type in UNCONFIGURABLE_STREAMS:
+            raise ValueError(f"Stream '{stream_type}' takes no parameters.")
 
         for raw_param in params_part.split(","):
             param = raw_param.strip()
@@ -346,7 +244,6 @@ def parse_stream_spec(spec: str) -> dict[str, Any]:
 
             key, has_value, value = param.partition("=")
             param_name = key.strip().lower()
-            raw_value = value.strip()
 
             if not has_value:
                 raise ValueError(
@@ -362,35 +259,13 @@ def parse_stream_spec(spec: str) -> dict[str, Any]:
                 )
 
             try:
-                params[param_name] = int(raw_value)
+                params[param_name] = int(value.strip())
             except ValueError as exc:
                 raise ValueError(
                     f"Stream '{stream_type}' parameter '{param_name}' must be an integer."
                 ) from exc
 
     return {"type": stream_type, "params": params}
-
-
-async def start_stream(
-    polar_device: PolarDevice, stream_config: dict[str, Any]
-) -> None:
-    stream_type = stream_config["type"]
-    params: dict[str, int] = stream_config["params"]
-
-    if stream_type == "ecg":
-        await polar_device.start_ecg_stream(ecg_callback=ecg_callback, **params)
-    elif stream_type == "acc":
-        await polar_device.start_acc_stream(acc_callback=acc_callback, **params)
-    elif stream_type == "ppi":
-        await polar_device.start_ppi_stream(ppi_callback=ppi_callback)
-    elif stream_type == "ppg":
-        await polar_device.start_ppg_stream(ppg_callback=ppg_callback, **params)
-    elif stream_type == "gyro":
-        await polar_device.start_gyro_stream(gyro_callback=gyro_callback, **params)
-    elif stream_type == "mag":
-        await polar_device.start_mag_stream(mag_callback=mag_callback, **params)
-    elif stream_type == "hr":
-        await polar_device.start_hr_stream(hr_callback=hr_callback)
 
 
 async def stream_device(
@@ -402,200 +277,105 @@ async def stream_device(
     stream_specs: list[str] | None,
     as_json: bool,
 ) -> int:
-    global STREAM_OUTPUT_JSON
-    STREAM_OUTPUT_JSON = as_json
+    out = Out(as_json)
 
-    if not any([address, name, name_contains]):
-        if as_json:
-            print(
-                json.dumps(
-                    {
-                        "error": "One of --address, --name, or --name-contains is required."
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            console.print(
-                "[bold red]One of --address, --name, or --name-contains is required.[/bold red]"
-            )
-        return 1
     if not stream_specs:
-        if as_json:
-            print(
-                json.dumps(
-                    {"error": "At least one --stream option is required."},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            console.print(
-                "[bold red]At least one --stream option is required.[/bold red]"
-            )
-        return 1
-
+        return out.error("At least one --stream option is required.")
     try:
         stream_configs = [parse_stream_spec(spec) for spec in stream_specs]
     except ValueError as exc:
-        if as_json:
-            print(json.dumps({"error": f"Invalid --stream: {exc}"}, ensure_ascii=False))
-        else:
-            console.print(f"[bold red]Invalid --stream:[/bold red] {exc}")
+        return out.error(f"Invalid --stream: {exc}")
+
+    device = await _find_device(out, address, name, name_contains, timeout)
+    if not device:
         return 1
 
-    if as_json:
-        devices: list[BLEDevice] = await BleakScanner.discover(timeout=timeout)
-    else:
-        with console.status(
-            "[bold yellow]Searching for Polar devices...[/bold yellow]", spinner="dots"
-        ):
-            devices = await BleakScanner.discover(timeout=timeout)
-
-    selected_device = _match_device(
-        devices, address=address, name=name, name_contains=name_contains
+    out.emit(
+        {"event": "device_selected", "name": device.name, "address": device.address},
+        Panel(
+            f"[bold green]Selected:[/bold green] [bold white]{device.name}[/bold white]\n"
+            f"[bold cyan]Address:[/bold cyan] {device.address}",
+            title="Streaming",
+            border_style="green",
+            expand=False,
+        ),
     )
-    if not selected_device:
-        if as_json:
-            print(
-                json.dumps({"error": "No matching device found."}, ensure_ascii=False)
-            )
-        else:
-            console.print("[bold red]No matching device found.[/bold red]")
-        return 1
 
-    if not as_json:
-        console.print()
-        console.print(
-            Panel(
-                f"[bold green]Selected:[/bold green] [bold white]{selected_device.name}[/bold white]\n[bold cyan]Address:[/bold cyan] {selected_device.address}",
-                title="Streaming",
-                border_style="green",
-                expand=False,
-            )
-        )
-    else:
-        print(
-            json.dumps(
-                {
-                    "event": "device_selected",
-                    "name": selected_device.name,
-                    "address": selected_device.address,
-                },
-                ensure_ascii=False,
-            )
-        )
-
-    polar_device = PolarDevice(selected_device)
-    if as_json:
+    polar_device = PolarDevice(device)
+    with out.status(f"Connecting to {device.name}..."):
         await polar_device.connect()
-    else:
-        with console.status(
-            f"[bold yellow]Connecting to [bold white]{selected_device.name}[/bold white]...[/bold yellow]",
-            spinner="dots",
-        ):
-            await polar_device.connect()
 
     try:
-        if as_json:
-            print(
-                json.dumps(
-                    {
-                        "event": "connected",
-                        "name": selected_device.name,
-                        "address": selected_device.address,
-                    },
-                    ensure_ascii=False,
-                )
+        summary = Table(
+            title="Final Configuration Summary", border_style="green", show_lines=True
+        )
+        summary.add_column("Measurement Type", justify="center", style="bold")
+        summary.add_column("Selected Settings", style="cyan")
+        for config in stream_configs:
+            summary.add_row(
+                config["type"].upper(),
+                " | ".join(f"{k}: {v}" for k, v in config["params"].items())
+                or "[dim]No parameters[/dim]",
             )
-            print(
-                json.dumps(
-                    {"event": "stream_config", "streams": stream_configs},
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            console.print(
-                f"[bold green]Successfully connected to {selected_device.name}.[/bold green]\n"
-            )
-
-            summary_table = Table(
-                title="Final Configuration Summary",
-                border_style="green",
-                show_lines=True,
-            )
-            summary_table.add_column("Measurement Type", justify="center", style="bold")
-            summary_table.add_column("Selected Settings", style="cyan")
-
-            for config in stream_configs:
-                params: dict[str, int] = config["params"]
-                params_display = (
-                    " | ".join([f"{name}: {value}" for name, value in params.items()])
-                    or "[dim]No parameters[/dim]"
-                )
-                summary_table.add_row(config["type"].upper(), params_display)
-
-            console.print(summary_table)
+        out.emit(
+            {"event": "connected", "name": device.name, "address": device.address},
+            f"[bold green]Successfully connected to {device.name}.[/bold green]\n",
+        )
+        out.emit({"event": "stream_config", "streams": stream_configs}, summary)
 
         for config in stream_configs:
-            await start_stream(polar_device, config)
+            stream_type = config["type"]
+            start = getattr(polar_device, f"start_{stream_type}_stream")
+            await start(stream_callback(out, stream_type.upper()), **config["params"])
 
+        out.emit(
+            {"event": "streaming_started", "duration": duration},
+            (
+                "\n[bold cyan]Streaming started. Press Ctrl+C to stop.[/bold cyan]\n"
+                if duration == -1
+                else f"\n[bold cyan]Streaming started. Running for {duration} second(s).[/bold cyan]\n"
+            ),
+        )
         if duration == -1:
-            if as_json:
-                print(
-                    json.dumps(
-                        {"event": "streaming_started", "duration": -1},
-                        ensure_ascii=False,
-                    )
-                )
-            else:
-                console.print(
-                    "\n[bold cyan]Streaming started. Press Ctrl+C to stop.[/bold cyan]\n"
-                )
             await asyncio.Future()
         else:
-            if as_json:
-                print(
-                    json.dumps(
-                        {"event": "streaming_started", "duration": duration},
-                        ensure_ascii=False,
-                    )
-                )
-            else:
-                console.print(
-                    f"\n[bold cyan]Streaming started. Running for {duration} second(s).[/bold cyan]\n"
-                )
             await asyncio.sleep(duration)
 
-        if as_json:
-            print(json.dumps({"event": "streaming_completed"}, ensure_ascii=False))
-        else:
-            console.print(
-                "\n[bold green]Streaming completed successfully.[/bold green]"
-            )
+        out.emit(
+            {"event": "streaming_completed"},
+            "\n[bold green]Streaming completed successfully.[/bold green]",
+        )
         return 0
     finally:
-        STREAM_OUTPUT_JSON = False
-        if as_json:
+        with out.status(f"Disconnecting from {device.name}..."):
             await polar_device.disconnect()
-            print(
-                json.dumps(
-                    {
-                        "event": "disconnected",
-                        "name": selected_device.name,
-                        "address": selected_device.address,
-                    },
-                    ensure_ascii=False,
-                )
-            )
-        else:
-            with console.status(
-                f"[bold yellow]Disconnecting from [bold white]{selected_device.name}[/bold white]...[/bold yellow]",
-                spinner="dots",
-            ):
-                await polar_device.disconnect()
-            console.print(
-                f"[bold green]Disconnected from {selected_device.name}.[/bold green]"
-            )
+        out.emit(
+            {"event": "disconnected", "name": device.name, "address": device.address},
+            f"[bold green]Disconnected from {device.name}.[/bold green]",
+        )
+
+
+def _add_device_selectors(parser: argparse.ArgumentParser, verb: str) -> None:
+    parser.add_argument("--address", help=f"Exact device address to {verb}")
+    parser.add_argument("--name", help=f"Exact device name to {verb}")
+    parser.add_argument(
+        "--name-contains",
+        help="Case-insensitive device name filter; uses the first match",
+    )
+
+
+def _add_common(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="Scan timeout in seconds (default: 5.0)",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output newline-delimited JSON instead of rich text",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -604,58 +384,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     scan_parser = subparsers.add_parser("scan", help="Scan nearby Polar devices")
     scan_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=5.0,
-        help="Scan timeout in seconds (default: 5.0)",
-    )
-    scan_parser.add_argument(
         "--name-contains",
         default="polar",
         help="Case-insensitive device name filter (default: polar)",
     )
-    scan_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output newline-delimited JSON instead of rich text",
-    )
+    _add_common(scan_parser)
 
     inspect_parser = subparsers.add_parser(
         "inspect", help="Inspect a Polar device and list its stream settings"
     )
-    inspect_parser.add_argument("--address", help="Exact device address to inspect")
-    inspect_parser.add_argument("--name", help="Exact device name to inspect")
-    inspect_parser.add_argument(
-        "--name-contains",
-        help="Case-insensitive device name filter; uses the first match",
-    )
-    inspect_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=5.0,
-        help="Scan timeout in seconds (default: 5.0)",
-    )
-    inspect_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output JSON instead of rich text",
-    )
+    _add_device_selectors(inspect_parser, "inspect")
+    _add_common(inspect_parser)
 
     stream_parser = subparsers.add_parser(
         "stream", help="Start one or more streams on a Polar device"
     )
-    stream_parser.add_argument("--address", help="Exact device address to stream from")
-    stream_parser.add_argument("--name", help="Exact device name to stream from")
-    stream_parser.add_argument(
-        "--name-contains",
-        help="Case-insensitive device name filter; uses the first match",
-    )
-    stream_parser.add_argument(
-        "--timeout",
-        type=float,
-        default=5.0,
-        help="Scan timeout in seconds (default: 5.0)",
-    )
+    _add_device_selectors(stream_parser, "stream from")
     stream_parser.add_argument(
         "--duration",
         type=int,
@@ -663,15 +407,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stream duration in seconds; -1 means run until interrupted (default: -1)",
     )
     stream_parser.add_argument(
+        "-s",
         "--stream",
         action="append",
         help="Stream spec like 'hr' or 'ecg:sample_rate=130,resolution=14'; repeat to start multiple streams",
     )
-    stream_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Output JSON lines instead of rich text",
-    )
+    _add_common(stream_parser)
 
     return parser
 

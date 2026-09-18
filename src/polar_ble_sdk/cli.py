@@ -8,8 +8,6 @@ import contextlib
 import logging
 import sys
 import time
-from collections import deque
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +15,13 @@ from rich.console import Group
 from rich.live import Live
 from rich.panel import Panel
 
+from polar_ble_sdk.cli_common import (
+    LOG_TOGGLE,
+    add_common_args,
+    build_stream_callbacks,
+    run_dashboard,
+    stream_setting_kwargs,
+)
 from polar_ble_sdk.connector.ble_discovery import (
     discover_polar_device,
     discover_polar_devices,
@@ -30,32 +35,18 @@ from polar_ble_sdk.input.keyboard import (
     parse_marker_specs,
 )
 from polar_ble_sdk.metrics.hrv import calculate_rmssd
-from polar_ble_sdk.metrics.rate_tracker import (
-    RateTracker,
-    print_hz_summary,
-    update_hz_for_state,
-)
+from polar_ble_sdk.metrics.rate_tracker import RateTracker, print_hz_summary
 from polar_ble_sdk.session.session import DeviceMetadata, SessionManager
 from polar_ble_sdk.session.state import (
-    feed_hr,
-    make_callback,
     make_device_state,
     reset_device_state_on_disconnect,
     unwrap_vector,
-)
-from polar_ble_sdk.storage.frame_logger import (
-    StreamFrameLogger,
-    make_frame_callback,
-    make_hr_callback,
-    make_ppi_callback,
 )
 from polar_ble_sdk.storage.summary_logger import CsvLogger
 from polar_ble_sdk.ui.components import device_panel, header_bar, info_bar
 from polar_ble_sdk.ui.log_panel import LogPanel, log_event
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 if sys.platform == "win32":
     with contextlib.suppress(Exception):
@@ -64,6 +55,10 @@ if sys.platform == "win32":
 _H10_STREAMS = ("hr", "ecg", "acc")
 _SENSE_STREAMS = ("ppg", "acc", "gyro", "mag")
 KNOWN_STREAMS = {"ecg", "ppg", "acc", "gyro", "mag", "hr", "ppi"}
+
+# Rates the connector asks for, used for the session-end Hz verification.
+# ACC differs per device and PPG per SDK mode, so both are patched in below.
+_CONFIGURED_RATES = {"ecg": 130, "acc": 52, "gyro": 52, "mag": 20}
 
 SUMMARY_CSV_COLUMNS = [
     "Timestamp",
@@ -84,11 +79,21 @@ SUMMARY_CSV_COLUMNS = [
 ]
 
 
-def _sense_streams(no_sdk_mode: bool) -> list[str]:
-    """Default Sense stream set based on SDK mode selection."""
+def _is_h10_name(name: str) -> bool:
+    return "h10" in name.lower()
+
+
+def _default_streams(is_h10: bool, no_sdk_mode: bool) -> list[str]:
+    """Stream set for a device when the user did not pass ``--streams``.
+
+    SDK mode (the default) gives the Sense 135 Hz PPG but silences its own
+    HR/PPI streams, so those are only enabled with ``--no-sdk-mode``.
+    """
+    if is_h10:
+        return list(_H10_STREAMS)
     streams = list(_SENSE_STREAMS)
     if no_sdk_mode:
-        streams.extend(["hr", "ppi"])
+        streams += ["hr", "ppi"]
     return streams
 
 
@@ -99,14 +104,14 @@ def _make_row(state: dict[str, Any], rmssd: float, active_marker: str) -> list[A
         rmssd,
         state.get("battery"),
         state.get("ecg_last_sample"),
-        *unwrap_vector(state, "acc_raw", "acc_count"),
-        *unwrap_vector(state, "gyro_raw", "gyro_count"),
-        *unwrap_vector(state, "mag_raw", "mag_count"),
+        *unwrap_vector(state, "acc_raw"),
+        *unwrap_vector(state, "gyro_raw"),
+        *unwrap_vector(state, "mag_raw"),
         active_marker,
     ]
 
 
-async def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Live Polar Terminal Dashboard")
     parser.add_argument(
         "--csv",
@@ -115,26 +120,9 @@ async def main() -> None:
         help="Custom CSV path for the 1 Hz summary log.",
     )
     parser.add_argument(
-        "--no-log",
-        action="store_true",
-        help="Disable the 1 Hz summary CSV log.",
-    )
-    parser.add_argument(
         "--log-full",
         action="store_true",
         help="Enable full-resolution CSV logs for all active streams.",
-    )
-    parser.add_argument(
-        "--markers",
-        type=str,
-        default=None,
-        help="Custom hotkeys: KEY=LABEL,KEY2=LABEL2",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Custom root directory for recorded session data (default: ./data).",
     )
     parser.add_argument(
         "--device",
@@ -158,177 +146,104 @@ async def main() -> None:
     parser.add_argument(
         "--ppi",
         action="store_true",
-        help="Enable the PPI stream on the Sense (opt-in; requires --no-sdk-mode).",
+        help="Enable the PPI stream on the Sense (implied by --no-sdk-mode).",
     )
-    parser.add_argument(
-        "--sdk-mode",
-        action="store_true",
-        help="Enable SDK mode on the Sense (required for PPG > 55 Hz). Default is ON.",
-    )
-    parser.add_argument(
-        "--no-sdk-mode",
-        action="store_true",
-        help="Disable SDK mode on the Sense: PPG falls back to 55 Hz and HR/PPI become available.",
-    )
-    parser.add_argument(
-        "--duration",
-        type=int,
-        default=None,
-        help="Recording duration in seconds (stops automatically when reached).",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        choices=["minimal", "moderate", "verbose"],
-        default="moderate",
-        help="Terminal log verbosity: minimal, moderate (default), verbose.",
-    )
-    for opt in (
-        "acc-rate",
-        "acc-range",
-        "gyro-rate",
-        "gyro-range",
-        "mag-rate",
-        "ppg-rate",
-        "ecg-rate",
-    ):
-        parser.add_argument(f"--{opt}", type=int, default=None, help=f"Custom {opt}")
+    add_common_args(parser)
+    return parser
+
+
+async def _select_device(args: argparse.Namespace) -> Any:
+    """Scan and resolve the single device to record from, or None."""
+    if args.device:
+        print(f"Scanning for '{args.device}'...")
+        return await discover_polar_device(args.device, timeout=20.0)
+
+    print("Scanning for Polar devices...")
+    devices = await discover_polar_devices(timeout=5.0)
+    if not devices:
+        print("No Polar device found.")
+        return None
+
+    if args.type:
+        devices = [d for d in devices if _is_h10_name(d[0]) == (args.type == "h10")]
+        if not devices:
+            print(f"No {args.type.upper()} device found.")
+            return None
+    elif not args.streams:
+        # Prefer the H10 when both kinds answer the scan.
+        h10s = [d for d in devices if _is_h10_name(d[0])]
+        if h10s:
+            devices = h10s
+
+    if len(devices) == 1:
+        name, _addr, device = devices[0]
+        print(f"Found: {name} — {'H10' if _is_h10_name(name) else 'Sense/OH1'}")
+        return device
+
+    print(f"\n{len(devices)} Polar devices detected:")
+    for i, (name, addr, _) in enumerate(devices):
+        kind = "H10" if _is_h10_name(name) else "Sense/OH1"
+        print(f"  [{i + 1}] {name} ({addr}) — {kind}")
+    while True:
+        choice = input("\nSelect device: ").strip()
+        if choice.lower() == "q":
+            print("Cancelled.")
+            return None
+        try:
+            idx = int(choice) - 1
+        except ValueError:
+            print("Enter a number or 'q'.")
+            continue
+        if 0 <= idx < len(devices):
+            return devices[idx][2]
+        print("Invalid selection.")
+
+
+async def main() -> None:
+    parser = _build_parser()
     args = parser.parse_args()
 
-    # ── Resolve device type and streams ──────────────────────────────
     if args.streams:
-        enabled_streams = [s.strip().lower() for s in args.streams.split(",")]
-        for s in enabled_streams:
+        requested_streams = [s.strip().lower() for s in args.streams.split(",")]
+        for s in requested_streams:
             if s not in KNOWN_STREAMS:
                 parser.error(f"Unknown stream: {s}")
-        _is_h10 = False
-    elif args.type == "h10":
+    else:
+        requested_streams = None
         if args.ppi:
-            parser.error("--ppi is only supported on Verity Sense devices.")
-        enabled_streams = list(_H10_STREAMS)
-        _is_h10 = True
-    elif args.type == "sense":
-        enabled_streams = _sense_streams(args.no_sdk_mode)
-        if args.ppi:
-            if args.no_sdk_mode:
-                enabled_streams.append("ppi")
-            else:
+            if args.type == "h10":
+                parser.error("--ppi is only supported on Verity Sense devices.")
+            if not args.no_sdk_mode:
                 parser.error(
                     "--ppi is unavailable in SDK mode (SDK mode disables HR/PPI). Use --no-sdk-mode."
                 )
-        _is_h10 = False
-    else:
-        enabled_streams = ["hr"]
-        _is_h10 = False
 
     try:
         hotkeys = parse_marker_specs(args.markers)
     except ValueError as e:
         parser.error(str(e))
-    hotkeys["L"] = "__toggle_log__"
+    hotkeys["L"] = LOG_TOGGLE
     marker_legend = format_marker_legend(
-        {k: v for k, v in hotkeys.items() if v != "__toggle_log__"}
+        {k: v for k, v in hotkeys.items() if v != LOG_TOGGLE}
     )
     reader = NonBlockingKeyboardReader(hotkeys)
 
-    # ── Log infrastructure ────────────────────────────────────────────
     log_panel = LogPanel()
     log_panel.set_level(args.log_level)
 
-    # ── Discovery ─────────────────────────────────────────────────────
-    if args.device:
-        print(f"Scanning for '{args.device}'...")
-        device = await discover_polar_device(args.device, timeout=20.0)
-    else:
-        print("Scanning for Polar devices...")
-        devices = await discover_polar_devices(timeout=5.0)
-        if not devices:
-            print("No Polar device found.")
-            return
-
-        if not args.streams and not args.type:
-            h10s = [(n, a, d) for n, a, d in devices if "h10" in n.lower()]
-            senses = [(n, a, d) for n, a, d in devices if "h10" not in n.lower()]
-            if h10s:
-                devices = h10s
-                _is_h10 = True
-                enabled_streams = list(_H10_STREAMS)
-            elif senses:
-                devices = senses
-                _is_h10 = False
-                enabled_streams = _sense_streams(args.no_sdk_mode)
-                if args.ppi and args.no_sdk_mode:
-                    enabled_streams.append("ppi")
-
-        if args.type:
-            filtered = [
-                (n, a, d)
-                for n, a, d in devices
-                if (args.type == "h10" and "h10" in n.lower())
-                or (args.type == "sense" and "h10" not in n.lower())
-            ]
-            if not filtered:
-                print(f"No {args.type.upper()} device found.")
-                return
-            devices = filtered
-
-        if len(devices) == 1:
-            device = devices[0][2]
-            name = devices[0][0]
-            if not args.streams and not args.type:
-                _is_h10 = "h10" in name.lower()
-                enabled_streams = (
-                    list(_H10_STREAMS) if _is_h10 else _sense_streams(args.no_sdk_mode)
-                )
-                if not _is_h10 and args.ppi and args.no_sdk_mode:
-                    enabled_streams.append("ppi")
-            kind = "H10" if _is_h10 else "Sense/OH1"
-            print(f"Found: {name} — {kind}")
-        else:
-            print(f"\n{len(devices)} Polar devices detected:")
-            for i, (name, addr, _) in enumerate(devices):
-                kind = "H10" if "h10" in name.lower() else "Sense/OH1"
-                print(f"  [{i + 1}] {name} ({addr}) — {kind}")
-            while True:
-                try:
-                    choice = input("\nSelect device: ").strip()
-                    if choice.lower() == "q":
-                        print("Cancelled.")
-                        return
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(devices):
-                        break
-                    print("Invalid selection.")
-                except ValueError:
-                    print("Enter a number or 'q'.")
-            device = devices[idx][2]
-            name = devices[idx][0]
-            if not args.streams and not args.type:
-                _is_h10 = "h10" in name.lower()
-                enabled_streams = (
-                    list(_H10_STREAMS) if _is_h10 else _sense_streams(args.no_sdk_mode)
-                )
-                if not _is_h10 and args.ppi and args.no_sdk_mode:
-                    enabled_streams.append("ppi")
-
+    device = await _select_device(args)
     if not device:
         print("No Polar device found.")
         return
 
-    # ── Session & Storage Setup ───────────────────────────────────────
+    # ── Resolve device type and streams ──────────────────────────────
     device_name = getattr(device, "name", "") or ""
     device_address = getattr(device, "address", "") or ""
-    if not args.streams and not args.type:
-        _is_h10 = "h10" in device_name.lower()
-        enabled_streams = (
-            list(_H10_STREAMS) if _is_h10 else _sense_streams(args.no_sdk_mode)
-        )
-        if not _is_h10 and args.ppi and args.no_sdk_mode:
-            enabled_streams.append("ppi")
-    else:
-        _is_h10 = _is_h10 or "h10" in device_name.lower()
-    device_type = "h10" if _is_h10 else "sense"
+    is_h10 = args.type == "h10" if args.type else _is_h10_name(device_name)
+    enabled_streams = requested_streams or _default_streams(is_h10, args.no_sdk_mode)
+    device_type = "h10" if is_h10 else "sense"
 
+    # ── Session & Storage Setup ───────────────────────────────────────
     data_root = Path(args.data_dir) if args.data_dir else Path.cwd() / "data"
     session_mgr = SessionManager(
         base_dir=data_root,
@@ -338,7 +253,6 @@ async def main() -> None:
     session_mgr.init_event_log(prefix="monitor")
     pp_dir = session_mgr.get_post_processed_dir()
 
-    # Session metadata population
     session_mgr.metadata.devices[device_type] = DeviceMetadata(
         name=device_name,
         address=device_address,
@@ -352,103 +266,32 @@ async def main() -> None:
     state["status"] = "Connecting..."
     state["csv_path"] = str(session_mgr.session_dir)
 
-    stream_tags = ",".join(enabled_streams)
-    print(f"Device: {device_type.upper()}  |  Streams: {stream_tags}")
+    print(f"Device: {device_type.upper()}  |  Streams: {','.join(enabled_streams)}")
     print(f"Session: {session_mgr.session_dir}")
     if args.log_full:
         print("Full-resolution logs: enabled")
 
-    # ── Deques for sliding-window rate tracking ───────────────────────
-    stream_ts: dict[str, deque[tuple[float, int]]] = {
-        "ecg": deque(maxlen=20),
-        "ppg": deque(maxlen=20),
-        "acc": deque(maxlen=20),
-        "gyro": deque(maxlen=20),
-        "mag": deque(maxlen=20),
-        "ppi": deque(maxlen=20),
-    }
+    rate_tracker = RateTracker()
+    callbacks = build_stream_callbacks(
+        enabled_streams,
+        state,
+        rate_tracker,
+        session_mgr=session_mgr if args.log_full else None,
+    )
 
-    def _hr_cb(data: Any) -> None:
-        feed_hr(data, state)
-
-    stream_callbacks: dict[str, Any] = {
-        "ecg": make_callback(state, stream_ts["ecg"], "ecg"),
-        "ppg": make_callback(state, stream_ts["ppg"], "ppg"),
-        "acc": make_callback(state, stream_ts["acc"], "acc"),
-        "gyro": make_callback(state, stream_ts["gyro"], "gyro"),
-        "mag": make_callback(state, stream_ts["mag"], "mag"),
-        "ppi": make_callback(state, stream_ts["ppi"], "ppi"),
-    }
-
-    frame_loggers: dict[str, StreamFrameLogger] = {}
-    ecg_cb: Callable[[Any], None] | None = (
-        stream_callbacks["ecg"] if "ecg" in enabled_streams else None
-    )
-    ppg_cb: Callable[[Any], None] | None = (
-        stream_callbacks["ppg"] if "ppg" in enabled_streams else None
-    )
-    acc_cb: Callable[[Any], None] | None = (
-        stream_callbacks["acc"] if "acc" in enabled_streams else None
-    )
-    gyro_cb: Callable[[Any], None] | None = (
-        stream_callbacks["gyro"] if "gyro" in enabled_streams else None
-    )
-    mag_cb: Callable[[Any], None] | None = (
-        stream_callbacks["mag"] if "mag" in enabled_streams else None
-    )
-    ppi_cb: Callable[[Any], None] | None = (
-        stream_callbacks["ppi"] if "ppi" in enabled_streams else None
-    )
-    hr_cb: Callable[[Any], None] | None = _hr_cb if "hr" in enabled_streams else None
-
-    if args.log_full:
-        for stream in enabled_streams:
-            fl = session_mgr.create_frame_logger(stream)
-            frame_loggers[stream] = fl
-            if stream == "hr":
-                hr_cb = make_hr_callback(_hr_cb, fl)
-            elif stream == "ppi":
-                ppi_cb = make_ppi_callback(stream_callbacks[stream], fl)
-            elif stream == "ecg":
-                ecg_cb = make_frame_callback(stream_callbacks[stream], fl)
-            elif stream == "ppg":
-                ppg_cb = make_frame_callback(stream_callbacks[stream], fl)
-            elif stream == "acc":
-                acc_cb = make_frame_callback(stream_callbacks[stream], fl)
-            elif stream == "gyro":
-                gyro_cb = make_frame_callback(stream_callbacks[stream], fl)
-            elif stream == "mag":
-                mag_cb = make_frame_callback(stream_callbacks[stream], fl)
-
-    custom_kwargs: dict[str, Any] = {}
-    if "ecg" in enabled_streams and args.ecg_rate:
-        custom_kwargs["ecg_sample_rate"] = args.ecg_rate
-    if "acc" in enabled_streams:
-        if args.acc_rate:
-            custom_kwargs["acc_sample_rate"] = args.acc_rate
-        if args.acc_range:
-            custom_kwargs["acc_range"] = args.acc_range
-    if "gyro" in enabled_streams:
-        if args.gyro_rate:
-            custom_kwargs["gyro_sample_rate"] = args.gyro_rate
-        if args.gyro_range:
-            custom_kwargs["gyro_range"] = args.gyro_range
-    if "mag" in enabled_streams and args.mag_rate:
-        custom_kwargs["mag_sample_rate"] = args.mag_rate
-    if "ppg" in enabled_streams and args.ppg_rate:
-        custom_kwargs["ppg_sample_rate"] = args.ppg_rate
-    if not _is_h10:
+    custom_kwargs = stream_setting_kwargs(args, enabled_streams)
+    if not is_h10:
         custom_kwargs["sdk_mode"] = not args.no_sdk_mode
 
     conn = create_polar_connector(
         device,
-        callback=hr_cb,
-        ecg_callback=ecg_cb,
-        ppi_callback=ppi_cb,
-        ppg_callback=ppg_cb,
-        acc_callback=acc_cb,
-        gyro_callback=gyro_cb,
-        mag_callback=mag_cb,
+        callback=callbacks.get("hr"),
+        ecg_callback=callbacks.get("ecg"),
+        ppi_callback=callbacks.get("ppi"),
+        ppg_callback=callbacks.get("ppg"),
+        acc_callback=callbacks.get("acc"),
+        gyro_callback=callbacks.get("gyro"),
+        mag_callback=callbacks.get("mag"),
         verbose=False,
         log_callback=lambda msg, sev="info": log_event(
             log_panel, msg, sev, device=device_name, log_file=session_mgr.log_file
@@ -460,76 +303,61 @@ async def main() -> None:
         log_panel, device=device_name, log_file=session_mgr.log_file
     )
 
+    configured_rates: dict[str, int] = {
+        s: _CONFIGURED_RATES[s] for s in enabled_streams if s in _CONFIGURED_RATES
+    }
+    if is_h10 and "acc" in configured_rates:
+        configured_rates["acc"] = 200
+    if "ppg" in enabled_streams:
+        configured_rates["ppg"] = 55 if args.no_sdk_mode else 135
+
     start = time.time()
+    hz_streams = [(s, s) for s in enabled_streams if s != "hr"]
 
     def build() -> Panel:
-        elapsed = time.time() - start
-        hz_streams: list[tuple[str, deque[tuple[float, int]]]] = [
-            (s, stream_ts[s]) for s in enabled_streams if s in stream_ts
-        ]
-        if hz_streams:
-            update_hz_for_state(state, *hz_streams)
-
+        rate_tracker.refresh_state_hz(state, hz_streams)
         header = header_bar(
             device_name=state["device_name"],
             device_addr=state["device_address"],
             status=state["status"],
         )
         info = info_bar(
-            elapsed,
+            time.time() - start,
             battery=state["battery"],
             csv_path=state.get("csv_path", ""),
             csv_rows=state.get("csv_rows_written", 0),
             marker_legend=marker_legend,
             log_level=log_panel.level,
         )
-        parts: list[Any] = [device_panel(state, is_h10=_is_h10), info]
+        parts: list[Any] = [device_panel(state, is_h10=is_h10), info]
         if log_panel.level != "minimal":
             parts.append(log_panel.render())
-        return Panel(
-            Group(*parts),
-            title=header,
-            border_style="cyan",
+        return Panel(Group(*parts), title=header, border_style="cyan")
+
+    def _log(msg: str, severity: str = "info") -> None:
+        log_event(
+            log_panel, msg, severity, device=device_name, log_file=session_mgr.log_file
         )
 
     with Live(build(), refresh_per_second=10) as live:
-        last_log = start
-        last_frame_log = start
         battery_task = None
         rssi_task = None
 
         try:
-            log_event(
-                log_panel,
-                "Starting connection...",
-                device=device_name,
-                log_file=session_mgr.log_file,
-            )
+            _log("Starting connection...")
             await conn.start_notify()
 
             if conn.stream_errors:
                 failed = ", ".join(conn.stream_errors.keys())
                 state["status"] = f"Connected. Failed: {failed}"
                 state["stream_errors"] = conn.stream_errors
-                log_event(
-                    log_panel,
-                    f"Streams failed: {failed}",
-                    "warning",
-                    device=device_name,
-                    log_file=session_mgr.log_file,
-                )
+                _log(f"Streams failed: {failed}", "warning")
             else:
                 state["status"] = "Connected! Streaming live data."
 
             state["battery"] = await read_battery(conn)
             session_mgr.metadata.devices[device_type].battery_start = state["battery"]
-            log_event(
-                log_panel,
-                f"Battery: {state['battery']}",
-                "info",
-                device=device_name,
-                log_file=session_mgr.log_file,
-            )
+            _log(f"Battery: {state['battery']}")
 
             csv_logger = None
             if not args.no_log:
@@ -538,72 +366,44 @@ async def main() -> None:
                 csv_logger.write_header()
                 state["csv_path"] = csv_logger.path_str
 
+            def write_rows(active_marker: str) -> None:
+                if not csv_logger:
+                    return
+                intervals = (
+                    state["ppi_history"]
+                    if (not is_h10 and state["ppi_history"])
+                    else state["rr_history"]
+                )
+                csv_logger.write_row(
+                    _make_row(state, calculate_rmssd(intervals), active_marker)
+                )
+                state["csv_rows_written"] = csv_logger.rows_written
+
+            def on_marker(marker: str) -> None:
+                state["marker_log"].append(f"{time.strftime('%H:%M:%S')} - {marker}")
+                state["last_marker"] = marker
+                session_mgr.register_marker(marker)
+
             battery_task = asyncio.create_task(update_battery_loop(conn, state))
             rssi_task = asyncio.create_task(
                 rssi_loop(
-                    conn,
-                    log_panel,
-                    device=device_name,
-                    log_file=session_mgr.log_file,
+                    conn, log_panel, device=device_name, log_file=session_mgr.log_file
                 )
             )
 
-            while True:
-                active_marker = ""
-                for m in reader.poll_markers():
-                    if m == "__toggle_log__":
-                        new_level = log_panel.cycle_level()
-                        log_event(
-                            log_panel,
-                            f"Log level: {new_level}",
-                            "info",
-                            device=device_name,
-                            log_file=session_mgr.log_file,
-                        )
-                        continue
-                    ts = time.strftime("%H:%M:%S")
-                    state["marker_log"].append(f"{ts} - {m}")
-                    state["last_marker"] = m
-                    active_marker = m
-                    session_mgr.register_marker(m)
-                    log_event(
-                        log_panel,
-                        f"Marker: {m}",
-                        "info",
-                        device=device_name,
-                        log_file=session_mgr.log_file,
-                    )
-
-                now = time.time()
-                if csv_logger and (now - last_log) >= 1.0:
-                    last_log = now
-                    csv_logger.write_row(
-                        _make_row(
-                            state, calculate_rmssd(state["rr_history"]), active_marker
-                        )
-                    )
-                    state["csv_rows_written"] = csv_logger.rows_written
-
-                if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
-                    last_frame_log = now
-                    frame_count_logger.check(state, enabled_streams)
-
-                if (
-                    args.duration is not None
-                    and args.duration > 0
-                    and (now - start) >= args.duration
-                ):
-                    log_event(
-                        log_panel,
-                        f"Target duration ({args.duration}s) reached.",
-                        "info",
-                        device=device_name,
-                        log_file=session_mgr.log_file,
-                    )
-                    break
-
-                live.update(build())
-                await asyncio.sleep(0.1)
+            await run_dashboard(
+                live,
+                build,
+                reader=reader,
+                log_panel=log_panel,
+                log_file=session_mgr.log_file,
+                device=device_name,
+                start=start,
+                duration=args.duration,
+                on_marker=on_marker,
+                write_rows=write_rows,
+                frame_check=lambda: frame_count_logger.check(state, enabled_streams),
+            )
 
         except asyncio.CancelledError:
             pass
@@ -613,22 +413,14 @@ async def main() -> None:
             await asyncio.sleep(3)
         finally:
             state["status"] = "Disconnecting..."
-            log_event(
-                log_panel,
-                "Disconnecting...",
-                device=device_name,
-                log_file=session_mgr.log_file,
-            )
+            _log("Disconnecting...")
             live.update(build())
 
-            if battery_task:
-                battery_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await battery_task
-            if rssi_task:
-                rssi_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await rssi_task
+            for task in (battery_task, rssi_task):
+                if task:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
 
             try:
                 await asyncio.wait_for(conn.stop_notify(), timeout=4.0)
@@ -638,32 +430,7 @@ async def main() -> None:
             session_mgr.metadata.devices[device_type].battery_end = state.get(
                 "battery", "-"
             )
-            log_event(
-                log_panel,
-                "Disconnected",
-                "success",
-                device=device_name,
-                log_file=session_mgr.log_file,
-            )
-
-            # Session-end Hz verification & manifest persistence
-            configured_rates: dict[str, int] = {}
-            if "ecg" in enabled_streams:
-                configured_rates["ecg"] = 130
-            if "acc" in enabled_streams:
-                configured_rates["acc"] = 200 if _is_h10 else 52
-            if "ppg" in enabled_streams:
-                configured_rates["ppg"] = 55 if args.no_sdk_mode else 135
-            if "gyro" in enabled_streams:
-                configured_rates["gyro"] = 52
-            if "mag" in enabled_streams:
-                configured_rates["mag"] = 20
-
-            rate_tracker = RateTracker()
-            for s_name, s_acc in state.get("_session_streams", {}).items():
-                rate_tracker.track(s_name, s_acc["samples"], timestamp=s_acc["last_ts"])
-                if s_name in rate_tracker.accumulators:
-                    rate_tracker.accumulators[s_name].first_ts = s_acc["first_ts"]
+            _log("Disconnected", "success")
 
             session_mgr.close_all(
                 rate_tracker=rate_tracker,
@@ -676,7 +443,7 @@ async def main() -> None:
 
     if configured_rates:
         extra = ["ppi"] if "ppi" in enabled_streams else None
-        print_hz_summary(configured_rates, state, extra_streams=extra)
+        print_hz_summary(configured_rates, rate_tracker, extra_streams=extra)
 
 
 def _entrypoint() -> None:

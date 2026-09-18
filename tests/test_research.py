@@ -69,3 +69,11 @@ class TestResearchLoaderAndAudit:
         assert acc_audit["sample_count"] == 3
         assert acc_audit["average_hz"] == pytest.approx(75.0, rel=1e-1)
         assert acc_audit["gap_count"] == 0
+
+    def test_lazy_research_symbols_from_top_level(self):
+        import polar_ble_sdk
+
+        assert hasattr(polar_ble_sdk, "load_session")
+        assert hasattr(polar_ble_sdk, "verify_session_integrity")
+        assert hasattr(polar_ble_sdk, "PolarSessionData")
+        assert polar_ble_sdk.load_session is load_session

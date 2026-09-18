@@ -50,6 +50,39 @@ class TestValidationMetrics:
         res = detect_sense_artifacts(df, min_plateau_sec=20)
         assert res["artifact"].sum() >= 20
 
+    def test_sustained_diff_is_flagged_only_when_long_enough(self) -> None:
+        # 20 s of >15 BPM disagreement, then 5 s of it: only the first run counts.
+        h10 = [70.0] * 50
+        sense = [100.0] * 20 + [70.0] * 25 + [100.0] * 5
+        df = pd.DataFrame({"H10_HR": h10, "Sense_HR": sense})
+        res = detect_sense_artifacts(df, min_plateau_sec=100, min_diff_sec=15)
+        assert list(res["artifact"])[:20] == [True] * 20
+        assert not res["artifact"][20:].any()
+        assert set(res.loc[res["artifact"], "artifact_layer"]) == {"diff"}
+
+    def test_ppi_quality_runs_are_flagged(self) -> None:
+        n = 40
+        df = pd.DataFrame(
+            {
+                "H10_HR": [70.0 + i * 0.1 for i in range(n)],
+                "Sense_HR": [70.0 + i * 0.1 for i in range(n)],
+                "PPI_SkinContact": [1] * 10 + [0] * 20 + [1] * 10,
+                "PPI_ErrEst_ms": [10] * n,
+            }
+        )
+        res = detect_sense_artifacts(df, min_plateau_sec=100, min_contact_sec=15)
+        assert res["artifact"].sum() == 20
+        assert set(res.loc[res["artifact"], "artifact_layer"]) == {"ppi_quality"}
+
+    def test_plateau_layer_wins_over_diff(self) -> None:
+        """Plateaus are labelled last-writer-wins; diff only fills unlabelled rows."""
+        h10 = [60.0 + i * 0.5 for i in range(30)]
+        sense = [100.0] * 30  # constant and far from H10: both rules fire
+        df = pd.DataFrame({"H10_HR": h10, "Sense_HR": sense})
+        res = detect_sense_artifacts(df, min_plateau_sec=20, min_diff_sec=15)
+        assert res["artifact"].all()
+        assert set(res["artifact_layer"]) == {"plateau_sense"}
+
     def test_build_epochs(self) -> None:
         ts = pd.date_range("2026-08-18 12:00:00", periods=20, freq="1s")
         df = pd.DataFrame(

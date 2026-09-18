@@ -12,6 +12,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+# A stream counts as delivering its configured rate within this relative error.
+RATE_TOLERANCE = 0.05
+
 
 @dataclass
 class StreamAccumulator:
@@ -96,10 +99,26 @@ class RateTracker:
         acc = self.accumulators.get(stream)
         return acc.average_hz if acc else 0.0
 
+    def refresh_state_hz(
+        self,
+        state: dict[str, Any],
+        streams: Sequence[tuple[str, str]],
+        now: float | None = None,
+    ) -> None:
+        """Publish live Hz into a dashboard state dict.
+
+        ``streams`` is a sequence of ``(state_prefix, tracker_key)`` pairs; they
+        differ in dual sessions, where one tracker holds ``h10_acc`` and
+        ``sense_acc`` but each panel still renders ``acc_hz``.
+        """
+        curr_time = time.time() if now is None else now
+        for prefix, key in streams:
+            state[f"{prefix}_hz"] = self.get_instantaneous_hz(key, now=curr_time)
+
     def verify_all(
         self,
         configured: dict[str, int],
-        tolerance_pct: float = 0.05,
+        tolerance_pct: float = RATE_TOLERANCE,
         extra_streams: Sequence[str] | None = None,
     ) -> list[RateVerificationResult]:
         """Compare all configured streams against observed session rates."""
@@ -108,7 +127,6 @@ class RateTracker:
             acc = self.accumulators.get(name, StreamAccumulator())
             actual = acc.average_hz
             err = (abs(actual - cfg_rate) / max(cfg_rate, 1)) if cfg_rate > 0 else 0.0
-            is_match = err <= tolerance_pct
             results.append(
                 RateVerificationResult(
                     stream=name,
@@ -116,7 +134,7 @@ class RateTracker:
                     observed_hz=actual,
                     samples=acc.samples,
                     duration_s=acc.duration,
-                    is_match=is_match,
+                    is_match=err <= tolerance_pct,
                     relative_error_pct=err * 100.0,
                 )
             )
@@ -138,37 +156,9 @@ class RateTracker:
         return results
 
 
-def update_hz_for_state(
-    state: dict[str, Any],
-    *streams: tuple[str, deque[tuple[float, int]]],
-    now: float | None = None,
-) -> None:
-    """Compute observed sample rates and update the state dictionary.
-
-    Backward compatibility helper for dashboard render loops.
-    """
-    curr_time = time.time() if now is None else now
-    for prefix, ts_list in streams:
-        recent = [item for item in ts_list if curr_time - item[0] <= 1.5]
-        if not recent:
-            state[f"{prefix}_hz"] = 0.0
-            continue
-        total_samples = sum(item[1] for item in recent)
-        time_span = curr_time - recent[0][0]
-        state[f"{prefix}_hz"] = total_samples / time_span if time_span > 0.1 else 0.0
-
-
-def compute_session_hz(state: dict[str, Any], stream: str) -> float:
-    """Compute average Hz over the full session from state accumulators."""
-    acc = state.get("_session_streams", {}).get(stream)
-    if not acc or acc["last_ts"] <= acc["first_ts"]:
-        return 0.0
-    return acc["samples"] / (acc["last_ts"] - acc["first_ts"])
-
-
 def print_hz_summary(
     configured: dict[str, int],
-    state: dict[str, Any],
+    tracker: RateTracker,
     *,
     extra_streams: Sequence[str] | None = None,
 ) -> None:
@@ -176,13 +166,12 @@ def print_hz_summary(
     print("\n" + "=" * 56)
     print("  SESSION HZ VERIFICATION")
     print("=" * 56)
-    print(f"  {'Stream':<8} {'Configured':>10} {'Observed':>10} {'Match':>8}")
+    print(f"  {'Stream':<12} {'Configured':>10} {'Observed':>10} {'Match':>8}")
     print("-" * 56)
-    for name, cfg_rate in configured.items():
-        actual = compute_session_hz(state, name)
-        match = "OK" if abs(actual - cfg_rate) / max(cfg_rate, 1) < 0.05 else "X"
-        print(f"  {name:<8} {cfg_rate:>8} Hz {actual:>8.2f} Hz {match:>8}")
-    for name in extra_streams or []:
-        actual = compute_session_hz(state, name)
-        print(f"  {name:<8} {'—':>10} {actual:>8.2f} Hz {'—':>8}")
+    for r in tracker.verify_all(configured, extra_streams=extra_streams):
+        cfg = (
+            f"{r.configured_hz:>7} Hz" if r.configured_hz is not None else f"{'—':>10}"
+        )
+        match = ("OK" if r.is_match else "X") if r.configured_hz is not None else "—"
+        print(f"  {r.stream:<12} {cfg} {r.observed_hz:>7.2f} Hz {match:>8}")
     print("=" * 56 + "\n")

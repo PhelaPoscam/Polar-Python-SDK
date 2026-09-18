@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 
 def calculate_lins_ccc(x: Any, y: Any) -> float:
@@ -81,18 +82,45 @@ def bootstrap_ci(
     if len(data_arr) < 2:
         return float("nan"), float("nan")
 
-    rng = np.random.default_rng(seed)
-    boot_stats = np.empty(n_boot)
-    n = len(data_arr)
+    result = stats.bootstrap(
+        (data_arr,),
+        stat_fn,
+        n_resamples=n_boot,
+        confidence_level=ci / 100.0,
+        method="percentile",
+        vectorized=False,
+        rng=seed,
+    )
+    return float(result.confidence_interval.low), float(result.confidence_interval.high)
 
-    for i in range(n_boot):
-        sample = rng.choice(data_arr, size=n, replace=True)
-        boot_stats[i] = stat_fn(sample)
 
-    alpha = (100.0 - ci) / 2.0
-    lo = float(np.percentile(boot_stats, alpha))
-    hi = float(np.percentile(boot_stats, 100.0 - alpha))
-    return lo, hi
+def _constant_runs(values: np.ndarray, min_len: int) -> list[tuple[int, int]]:
+    """Maximal ``[start, stop)`` runs of one repeated valid (non-NaN, > 0) value.
+
+    NaN never equals itself, so missing samples always break a run.
+    """
+    n = len(values)
+    if n == 0:
+        return []
+    boundaries = np.flatnonzero(values[1:] != values[:-1]) + 1
+    starts = np.concatenate(([0], boundaries))
+    stops = np.concatenate((boundaries, [n]))
+    return [
+        (int(start), int(stop))
+        for start, stop in zip(starts, stops, strict=True)
+        if stop - start >= min_len and not np.isnan(values[start]) and values[start] > 0
+    ]
+
+
+def _true_runs(mask: np.ndarray, min_len: int) -> list[tuple[int, int]]:
+    """Maximal ``[start, stop)`` runs of True at least ``min_len`` samples long."""
+    padded = np.concatenate(([False], mask.astype(bool), [False]))
+    edges = np.flatnonzero(padded[1:] != padded[:-1])
+    return [
+        (int(start), int(stop))
+        for start, stop in zip(edges[::2], edges[1::2], strict=True)
+        if stop - start >= min_len
+    ]
 
 
 def detect_sense_artifacts(
@@ -120,81 +148,36 @@ def detect_sense_artifacts(
     if n == 0:
         return df
 
-    sense_hr = df["Sense_HR"].values
-    h10_hr = df["H10_HR"].values
+    sense_hr = pd.to_numeric(df["Sense_HR"], errors="coerce").to_numpy(dtype=float)
+    h10_hr = pd.to_numeric(df["H10_HR"], errors="coerce").to_numpy(dtype=float)
 
     artifact_mask = np.zeros(n, dtype=bool)
     artifact_layers: list[str | None] = [None] * n
 
-    # 1. Symmetric plateau detection (constant non-zero value for >= min_plateau_sec while reference varies)
-    def _check_and_mark_plateau(
-        sig_a: np.ndarray, sig_b: np.ndarray, label: str
-    ) -> None:
-        curr_val: float | None = None
-        curr_start = 0
-        for i in range(n):
-            val = sig_a[i]
-            if np.isnan(val) or val <= 0:
-                if curr_val is not None and (i - curr_start) >= min_plateau_sec:
-                    sub_b = sig_b[curr_start:i]
-                    valid_b = sub_b[(~np.isnan(sub_b)) & (sub_b > 0)]
-                    if len(valid_b) > 0 and np.std(valid_b) > 0:
-                        artifact_mask[curr_start:i] = True
-                        for k in range(curr_start, i):
-                            artifact_layers[k] = label
-                curr_val = None
-            elif val == curr_val:
-                continue
-            else:
-                if curr_val is not None and (i - curr_start) >= min_plateau_sec:
-                    sub_b = sig_b[curr_start:i]
-                    valid_b = sub_b[(~np.isnan(sub_b)) & (sub_b > 0)]
-                    if len(valid_b) > 0 and np.std(valid_b) > 0:
-                        artifact_mask[curr_start:i] = True
-                        for k in range(curr_start, i):
-                            artifact_layers[k] = label
-                curr_val = val
-                curr_start = i
+    def _mark(start: int, stop: int, label: str, *, overwrite: bool) -> None:
+        artifact_mask[start:stop] = True
+        for k in range(start, stop):
+            if overwrite or artifact_layers[k] is None:
+                artifact_layers[k] = label
 
-        if curr_val is not None and (n - curr_start) >= min_plateau_sec:
-            sub_b = sig_b[curr_start:n]
-            valid_b = sub_b[(~np.isnan(sub_b)) & (sub_b > 0)]
-            if len(valid_b) > 0 and np.std(valid_b) > 0:
-                artifact_mask[curr_start:n] = True
-                for k in range(curr_start, n):
-                    artifact_layers[k] = label
-
-    _check_and_mark_plateau(sense_hr, h10_hr, "plateau_sense")
-    _check_and_mark_plateau(h10_hr, sense_hr, "plateau_h10")
+    # 1. Symmetric plateau detection (one sensor stuck on a value while the other varies)
+    for sig_a, sig_b, label in (
+        (sense_hr, h10_hr, "plateau_sense"),
+        (h10_hr, sense_hr, "plateau_h10"),
+    ):
+        for start, stop in _constant_runs(sig_a, min_plateau_sec):
+            other = sig_b[start:stop]
+            valid_other = other[(~np.isnan(other)) & (other > 0)]
+            if len(valid_other) > 0 and np.std(valid_other) > 0:
+                _mark(start, stop, label, overwrite=True)
 
     # 2. Sustained large diff detection
     diff = np.abs(sense_hr - h10_hr)
     large_diff = (
         (~np.isnan(diff)) & (diff > diff_threshold) & (sense_hr > 0) & (h10_hr > 0)
     )
-
-    diff_start: int | None = None
-    for i in range(n):
-        if large_diff[i]:
-            if diff_start is None:
-                diff_start = i
-        else:
-            if diff_start is not None:
-                length = i - diff_start
-                if length >= min_diff_sec:
-                    for idx in range(diff_start, i):
-                        artifact_mask[idx] = True
-                        if artifact_layers[idx] is None:
-                            artifact_layers[idx] = "diff"
-            diff_start = None
-
-    if diff_start is not None:
-        length = n - diff_start
-        if length >= min_diff_sec:
-            for idx in range(diff_start, n):
-                artifact_mask[idx] = True
-                if artifact_layers[idx] is None:
-                    artifact_layers[idx] = "diff"
+    for start, stop in _true_runs(large_diff, min_diff_sec):
+        _mark(start, stop, "diff", overwrite=False)
 
     # 3. Device-reported PPI quality
     contact_col = "PPI_SkinContact"
@@ -203,28 +186,12 @@ def detect_sense_artifacts(
         poor = np.zeros(n, dtype=bool)
         if contact_col in df.columns:
             contact = pd.to_numeric(df[contact_col], errors="coerce")
-            poor |= contact.notna() & (contact == 0)
+            poor |= (contact.notna() & (contact == 0)).to_numpy()
         if err_col in df.columns:
             err = pd.to_numeric(df[err_col], errors="coerce")
-            poor |= err.notna() & (err > min_error_ms)
-
-        run_start: int | None = None
-        for i in range(n):
-            if poor[i]:
-                if run_start is None:
-                    run_start = i
-            else:
-                if run_start is not None and (i - run_start) >= min_contact_sec:
-                    for idx in range(run_start, i):
-                        artifact_mask[idx] = True
-                        if artifact_layers[idx] is None:
-                            artifact_layers[idx] = "ppi_quality"
-                run_start = None
-        if run_start is not None and (n - run_start) >= min_contact_sec:
-            for idx in range(run_start, n):
-                artifact_mask[idx] = True
-                if artifact_layers[idx] is None:
-                    artifact_layers[idx] = "ppi_quality"
+            poor |= (err.notna() & (err > min_error_ms)).to_numpy()
+        for start, stop in _true_runs(poor, min_contact_sec):
+            _mark(start, stop, "ppi_quality", overwrite=False)
 
     df["artifact"] = artifact_mask
     df["artifact_layer"] = artifact_layers

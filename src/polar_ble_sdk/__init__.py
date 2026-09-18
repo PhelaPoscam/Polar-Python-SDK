@@ -2,9 +2,10 @@
 
 An open-source Python SDK for connecting, monitoring, and capturing raw physiological
 and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches).
-"""
 
-from __future__ import annotations
+Research helpers (``polar_ble_sdk.research``) need the optional research extras
+(pandas, numpy, scipy, matplotlib) and are imported from that subpackage directly.
+"""
 
 from typing import Any
 
@@ -14,7 +15,6 @@ from polar_ble_sdk.connector.ble_discovery import (
     discover_polar_device,
     discover_polar_devices,
 )
-from polar_ble_sdk.connector.schemas import SignalPacket
 from polar_ble_sdk.connector.stream import create_polar_connector
 from polar_ble_sdk.lsl.bridge import PolarLSLBridge
 from polar_ble_sdk.metrics.hrv import (
@@ -62,7 +62,6 @@ __all__ = [
     "PolarAdapter",
     "PolarLSLBridge",
     # Data Models
-    "SignalPacket",
     "DeviceMetadata",
     "SessionMetadata",
     "SessionManager",
@@ -70,7 +69,7 @@ __all__ = [
     "calculate_rmssd",
     "calculate_sdnn",
     "calculate_pnn50",
-    # Research & Audit
+    # Research & Audit (Lazy Loaded)
     "load_session",
     "verify_session_integrity",
     "PolarSessionData",

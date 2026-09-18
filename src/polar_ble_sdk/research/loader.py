@@ -127,6 +127,31 @@ def _parse_wide_ecg_csv(path: Path) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def _read_stream_csv(csv_path: Path, stream: str | None = None) -> pd.DataFrame:
+    """Parse one raw stream CSV, routing wide PPG/ECG frames to their unrollers.
+
+    ``stream`` overrides the name taken from the filename, for callers that know
+    the stream but read it from an arbitrarily named file.
+    """
+    stream_name = (stream or csv_path.stem).lower()
+    if stream_name == "ppg":
+        return _parse_wide_ppg_csv(csv_path)
+    if stream_name == "ecg":
+        return _parse_wide_ecg_csv(csv_path)
+
+    df = pd.read_csv(csv_path)
+    if "Timestamp_s" in df.columns:
+        df["Timestamp_s"] = pd.to_numeric(df["Timestamp_s"], errors="coerce")
+    # Vector magnitude for 3-axis streams
+    if {"X_mG", "Y_mG", "Z_mG"}.issubset(df.columns):
+        df["ACC_Mag_mG"] = (df["X_mG"] ** 2 + df["Y_mG"] ** 2 + df["Z_mG"] ** 2) ** 0.5
+    if {"X_dps", "Y_dps", "Z_dps"}.issubset(df.columns):
+        df["GYRO_Mag_dps"] = (
+            df["X_dps"] ** 2 + df["Y_dps"] ** 2 + df["Z_dps"] ** 2
+        ) ** 0.5
+    return df
+
+
 def _load_single_device_dir(device_dir: Path) -> PolarSessionData:
     """Load summary and raw streams from a single device folder."""
     session_id = device_dir.name
@@ -157,28 +182,8 @@ def _load_single_device_dir(device_dir: Path) -> PolarSessionData:
     streams: dict[str, pd.DataFrame] = {}
     if raw_dir.exists():
         for csv_path in raw_dir.glob("*.csv"):
-            stream_name = csv_path.stem.lower()
             try:
-                if stream_name == "ppg":
-                    streams[stream_name] = _parse_wide_ppg_csv(csv_path)
-                elif stream_name == "ecg":
-                    streams[stream_name] = _parse_wide_ecg_csv(csv_path)
-                else:
-                    df = pd.read_csv(csv_path)
-                    if "Timestamp_s" in df.columns:
-                        df["Timestamp_s"] = pd.to_numeric(
-                            df["Timestamp_s"], errors="coerce"
-                        )
-                    # Calculate vector magnitude for 3-axis streams
-                    if {"X_mG", "Y_mG", "Z_mG"}.issubset(df.columns):
-                        df["ACC_Mag_mG"] = (
-                            df["X_mG"] ** 2 + df["Y_mG"] ** 2 + df["Z_mG"] ** 2
-                        ) ** 0.5
-                    if {"X_dps", "Y_dps", "Z_dps"}.issubset(df.columns):
-                        df["GYRO_Mag_dps"] = (
-                            df["X_dps"] ** 2 + df["Y_dps"] ** 2 + df["Z_dps"] ** 2
-                        ) ** 0.5
-                    streams[stream_name] = df
+                streams[csv_path.stem.lower()] = _read_stream_csv(csv_path)
             except Exception as e:
                 logger.warning("Failed to load stream CSV %s: %s", csv_path, e)
 
@@ -253,20 +258,4 @@ def load_raw_stream(raw_path_or_dir: Path | str, stream_name: str) -> pd.DataFra
     )
     if not csv_path.exists():
         raise FileNotFoundError(f"Raw stream file not found: {csv_path}")
-
-    s_name = stream_name.lower()
-    if s_name == "ppg":
-        return _parse_wide_ppg_csv(csv_path)
-    if s_name == "ecg":
-        return _parse_wide_ecg_csv(csv_path)
-
-    df = pd.read_csv(csv_path)
-    if "Timestamp_s" in df.columns:
-        df["Timestamp_s"] = pd.to_numeric(df["Timestamp_s"], errors="coerce")
-    if {"X_mG", "Y_mG", "Z_mG"}.issubset(df.columns):
-        df["ACC_Mag_mG"] = (df["X_mG"] ** 2 + df["Y_mG"] ** 2 + df["Z_mG"] ** 2) ** 0.5
-    if {"X_dps", "Y_dps", "Z_dps"}.issubset(df.columns):
-        df["GYRO_Mag_dps"] = (
-            df["X_dps"] ** 2 + df["Y_dps"] ** 2 + df["Z_dps"] ** 2
-        ) ** 0.5
-    return df
+    return _read_stream_csv(csv_path, stream_name)

@@ -7,8 +7,7 @@ import asyncio
 import contextlib
 import sys
 import time
-from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -17,26 +16,26 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
-from .connector import PolarAdapter
+from .cli_common import (
+    LOG_TOGGLE,
+    add_common_args,
+    build_stream_callbacks,
+    run_dashboard,
+    stream_setting_kwargs,
+)
+from .connector.adapter import PolarAdapter
 from .connector.ble_discovery import discover_dual_polar_devices
 from .diagnostics.battery import read_battery, update_battery_loop
 from .diagnostics.rssi import FrameCountLogger, rssi_loop
 from .input.keyboard import NonBlockingKeyboardReader, parse_marker_specs
 from .lsl.bridge import HAS_PYLSL, PolarLSLBridge
 from .metrics.hrv import calculate_rmssd
-from .metrics.rate_tracker import RateTracker, print_hz_summary, update_hz_for_state
+from .metrics.rate_tracker import RateTracker, print_hz_summary
 from .session.session import DeviceMetadata, SessionManager
 from .session.state import (
-    feed_hr,
-    make_callback,
     make_device_state,
     reset_device_state_on_disconnect,
     unwrap_vector,
-)
-from .storage.frame_logger import (
-    make_frame_callback,
-    make_hr_callback,
-    make_ppi_callback,
 )
 from .storage.summary_logger import CsvLogger
 from .ui.components import device_panel, header_bar, info_bar
@@ -74,152 +73,92 @@ SENSE_SUMMARY_COLS = [
     "MAG_Z",
 ]
 
+_H10_STREAMS = ("hr", "ecg", "acc")
+
+
+def _sense_streams(args: argparse.Namespace) -> list[str]:
+    """Sense streams for this run: PPG + ACC, plus whatever the flags add."""
+    streams = ["ppg", "acc"]
+    if args.sense_gyro:
+        streams.append("gyro")
+    if args.sense_mag:
+        streams.append("mag")
+    if args.no_sdk_mode and not args.no_ppi:
+        streams += ["hr", "ppi"]
+    return streams
+
 
 def _make_grid(
     state_h10: dict[str, Any],
     state_sense: dict[str, Any],
-    start: float,
-    h10_ts: tuple[deque[tuple[float, int]], deque[tuple[float, int]]],
-    sense_ts: tuple[
-        deque[tuple[float, int]],
-        deque[tuple[float, int]],
-        deque[tuple[float, int]],
-        deque[tuple[float, int]],
-        deque[tuple[float, int]],
-    ],
-    log_panel: LogPanel | None = None,
-    lsl_active: bool = False,
+    elapsed: float,
+    log_panel: LogPanel,
+    lsl_active: bool,
 ) -> Panel:
-    now = time.time()
-    elapsed = now - start
-    update_hz_for_state(state_h10, ("acc", h10_ts[0]), ("ecg", h10_ts[1]), now=now)
-    update_hz_for_state(
-        state_sense,
-        ("ppg", sense_ts[0]),
-        ("acc", sense_ts[1]),
-        ("gyro", sense_ts[2]),
-        ("mag", sense_ts[3]),
-        ("ppi", sense_ts[4]),
-        now=now,
-    )
-
-    def _styled_panel(st: dict[str, Any], is_h10: bool) -> Panel:
-        border = "green" if "connected" in st.get("status", "").lower() else "yellow"
+    def _column(state: dict[str, Any], label: str, is_h10: bool) -> Panel:
+        border = "green" if "connected" in state.get("status", "").lower() else "yellow"
         return Panel(
-            device_panel(st, is_h10=is_h10),
-            border_style=border,
+            Group(
+                header_bar(
+                    device_name=label,
+                    device_addr=state.get("address", ""),
+                    status=state.get("status", ""),
+                ),
+                Panel(
+                    device_panel(state, is_h10=is_h10),
+                    border_style=border,
+                    expand=True,
+                ),
+                info_bar(
+                    elapsed,
+                    battery=state.get("battery", "-"),
+                    csv_path=state.get("csv_path", ""),
+                    csv_rows=state.get("csv_rows_written", 0),
+                    log_level=log_panel.level,
+                ),
+            ),
+            border_style="cyan",
             expand=True,
         )
-
-    def _info(st: dict[str, Any]) -> Panel:
-        return info_bar(
-            elapsed,
-            battery=st.get("battery", "-"),
-            csv_path=st.get("csv_path", ""),
-            csv_rows=st.get("csv_rows_written", 0),
-            log_level=log_panel.level if log_panel else "moderate",
-        )
-
-    h10_header = header_bar(
-        device_name="H10",
-        device_addr=state_h10.get("address", ""),
-        status=state_h10.get("status", ""),
-    )
-    sense_header = header_bar(
-        device_name="Sense",
-        device_addr=state_sense.get("address", ""),
-        status=state_sense.get("status", ""),
-    )
 
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1)
     grid.add_column(ratio=1)
     grid.add_row(
-        Panel(
-            Group(
-                h10_header,
-                _styled_panel(state_h10, True),
-                _info(state_h10),
-            ),
-            border_style="cyan",
-            expand=True,
-        ),
-        Panel(
-            Group(
-                sense_header,
-                _styled_panel(state_sense, False),
-                _info(state_sense),
-            ),
-            border_style="cyan",
-            expand=True,
-        ),
+        _column(state_h10, "H10", True),
+        _column(state_sense, "Sense", False),
     )
 
     parts: list[Any] = [grid]
-    if log_panel and log_panel.level != "minimal":
+    if log_panel.level != "minimal":
         parts.append(log_panel.render())
 
-    title = (
-        "Dual Polar Dashboard (LSL Active)" if lsl_active else "Dual Polar Dashboard"
-    )
     return Panel(
         Group(*parts),
-        title=title,
+        title=(
+            "Dual Polar Dashboard (LSL Active)"
+            if lsl_active
+            else "Dual Polar Dashboard"
+        ),
         border_style="cyan",
     )
 
 
-async def main(argv: Sequence[str] | None = None) -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Dual Polar Terminal Dashboard")
     parser.add_argument("--h10", type=str, default=None, help="MAC/Name of H10")
     parser.add_argument(
         "--sense", type=str, default=None, help="MAC/Name of Verity Sense"
     )
-    parser.add_argument("--no-log", action="store_true", help="Disable all CSV logging")
     parser.add_argument(
         "--no-ppi",
         action="store_true",
         help="Disable Sense PPI stream (only relevant with --no-sdk-mode).",
     )
     parser.add_argument(
-        "--sdk-mode",
-        action="store_true",
-        help="Enable SDK mode on the Sense (required for PPG > 55 Hz). Default is ON.",
-    )
-    parser.add_argument(
-        "--no-sdk-mode",
-        action="store_true",
-        help="Disable SDK mode on the Sense: PPG falls back to 55 Hz and HR/PPI become available.",
-    )
-    parser.add_argument(
         "--no-log-full",
         action="store_true",
         help="Disable full-resolution CSV logs (default is ON).",
-    )
-    parser.add_argument(
-        "--markers",
-        type=str,
-        default=None,
-        help="Custom hotkeys: KEY=LABEL,KEY2=LABEL2",
-    )
-    parser.add_argument(
-        "--duration",
-        type=int,
-        default=None,
-        help="Recording duration in seconds (stops automatically when reached).",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        choices=["minimal", "moderate", "verbose"],
-        default="moderate",
-        help="Terminal log verbosity: minimal, moderate (default), verbose.",
-    )
-    parser.add_argument(
-        "--data-dir",
-        type=str,
-        default=None,
-        help="Custom root directory for recorded session data (default: ./data).",
     )
     parser.add_argument(
         "--watchdog",
@@ -263,27 +202,19 @@ async def main(argv: Sequence[str] | None = None) -> None:
         default=False,
         help="Broadcast all active sensor streams and markers over Lab Streaming Layer (LSL).",
     )
-    for opt in (
-        "acc-rate",
-        "acc-range",
-        "gyro-rate",
-        "gyro-range",
-        "mag-rate",
-        "ppg-rate",
-        "ecg-rate",
-    ):
-        parser.add_argument(f"--{opt}", type=int, default=None, help=f"Custom {opt}")
+    add_common_args(parser)
+    return parser
+
+
+async def main(argv: Sequence[str] | None = None) -> None:
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     state_h10 = make_device_state("Polar H10")
     state_sense = make_device_state("Polar Sense")
 
     base_dir = Path(args.data_dir) if args.data_dir else Path("./data")
-    session_mgr = SessionManager(
-        base_dir=base_dir,
-        device_type="dual",
-        is_dual=True,
-    )
+    session_mgr = SessionManager(base_dir=base_dir, device_type="dual", is_dual=True)
     session_mgr.init_event_log(prefix="dual")
     log_panel = LogPanel()
     log_panel.set_level(args.log_level)
@@ -292,7 +223,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         hotkeys = parse_marker_specs(args.markers)
     except ValueError as e:
         parser.error(str(e))
-    hotkeys["L"] = "__toggle_log__"
+    hotkeys["L"] = LOG_TOGGLE
     reader = NonBlockingKeyboardReader(hotkeys)
 
     print("Scanning for Polar H10 and Verity Sense...")
@@ -303,128 +234,70 @@ async def main(argv: Sequence[str] | None = None) -> None:
     )
 
     if not h10_dev or not sense_dev:
-        missing = []
-        if not h10_dev:
-            missing.append("Polar H10")
-        if not sense_dev:
-            missing.append("Polar Verity Sense")
+        missing = [
+            label
+            for label, dev in (
+                ("Polar H10", h10_dev),
+                ("Polar Verity Sense", sense_dev),
+            )
+            if not dev
+        ]
         print(f"Error: Missing devices: {', '.join(missing)}")
         return
 
-    h10_name = getattr(h10_dev, "name", "") or "Polar H10"
-    h10_addr = getattr(h10_dev, "address", "") or "-"
-    sense_name = getattr(sense_dev, "name", "") or "Polar Verity Sense"
-    sense_addr = getattr(sense_dev, "address", "") or "-"
-
-    state_h10["name"] = h10_name
-    state_h10["address"] = h10_addr
-    state_h10["status"] = "Connecting..."
-
-    state_sense["name"] = sense_name
-    state_sense["address"] = sense_addr
-    state_sense["status"] = "Connecting..."
+    for state, dev, fallback in (
+        (state_h10, h10_dev, "Polar H10"),
+        (state_sense, sense_dev, "Polar Verity Sense"),
+    ):
+        state["name"] = getattr(dev, "name", "") or fallback
+        state["address"] = getattr(dev, "address", "") or "-"
+        state["status"] = "Connecting..."
 
     session_mgr.metadata.devices["h10"] = DeviceMetadata(
-        name=h10_name, address=h10_addr, device_type="h10"
+        name=state_h10["name"], address=state_h10["address"], device_type="h10"
     )
     session_mgr.metadata.devices["sense"] = DeviceMetadata(
-        name=sense_name, address=sense_addr, device_type="sense"
+        name=state_sense["name"], address=state_sense["address"], device_type="sense"
     )
 
-    h10_acc_ts: deque[tuple[float, int]] = deque(maxlen=20)
-    h10_ecg_ts: deque[tuple[float, int]] = deque(maxlen=20)
-    sense_ppg_ts: deque[tuple[float, int]] = deque(maxlen=20)
-    sense_acc_ts: deque[tuple[float, int]] = deque(maxlen=20)
-    sense_gyro_ts: deque[tuple[float, int]] = deque(maxlen=20)
-    sense_mag_ts: deque[tuple[float, int]] = deque(maxlen=20)
-    sense_ppi_ts: deque[tuple[float, int]] = deque(maxlen=20)
+    # ── Streams & callbacks ───────────────────────────────────────────
+    h10_streams = list(_H10_STREAMS)
+    sense_streams = _sense_streams(args)
+    log_full = not args.no_log_full and not args.no_log
 
-    def _raw_h10_hr_cb(data: Any) -> None:
-        feed_hr(data, state_h10)
-
-    _h10_hr_cb: Callable[[Any], None] = _raw_h10_hr_cb
-    _h10_acc_cb = make_callback(state_h10, h10_acc_ts, "acc")
-    _h10_ecg_cb = make_callback(state_h10, h10_ecg_ts, "ecg")
-
-    def _raw_sense_hr_cb(data: Any) -> None:
-        feed_hr(data, state_sense)
-
-    _sense_hr_cb: Callable[[Any], None] = _raw_sense_hr_cb
-    _sense_ppg_cb = make_callback(state_sense, sense_ppg_ts, "ppg")
-    _sense_acc_cb = make_callback(state_sense, sense_acc_ts, "acc")
-    _sense_gyro_cb: Callable[[Any], None] | None = (
-        make_callback(state_sense, sense_gyro_ts, "gyro") if args.sense_gyro else None
+    rate_tracker = RateTracker()
+    h10_cbs = build_stream_callbacks(
+        h10_streams,
+        state_h10,
+        rate_tracker,
+        session_mgr=session_mgr if log_full else None,
+        sub_device="h10",
+        key_prefix="h10",
     )
-    _sense_mag_cb: Callable[[Any], None] | None = (
-        make_callback(state_sense, sense_mag_ts, "mag") if args.sense_mag else None
+    sense_cbs = build_stream_callbacks(
+        sense_streams,
+        state_sense,
+        rate_tracker,
+        session_mgr=session_mgr if log_full else None,
+        sub_device="sense",
+        key_prefix="sense",
     )
-    _sense_ppi_cb = make_callback(state_sense, sense_ppi_ts, "ppi")
-
-    if not args.no_log_full and not args.no_log:
-        fl_h10_hr = session_mgr.create_frame_logger("hr", sub_device="h10")
-        fl_h10_ecg = session_mgr.create_frame_logger("ecg", sub_device="h10")
-        fl_h10_acc = session_mgr.create_frame_logger("acc", sub_device="h10")
-
-        _h10_hr_cb = make_hr_callback(_h10_hr_cb, fl_h10_hr)
-        _h10_ecg_cb = make_frame_callback(_h10_ecg_cb, fl_h10_ecg)
-        _h10_acc_cb = make_frame_callback(_h10_acc_cb, fl_h10_acc)
-
-        fl_sense_ppg = session_mgr.create_frame_logger("ppg", sub_device="sense")
-        fl_sense_acc = session_mgr.create_frame_logger("acc", sub_device="sense")
-        _sense_ppg_cb = make_frame_callback(_sense_ppg_cb, fl_sense_ppg)
-        _sense_acc_cb = make_frame_callback(_sense_acc_cb, fl_sense_acc)
-
-        if args.sense_gyro and _sense_gyro_cb is not None:
-            fl_sense_gyro = session_mgr.create_frame_logger("gyro", sub_device="sense")
-            _sense_gyro_cb = make_frame_callback(_sense_gyro_cb, fl_sense_gyro)
-
-        if args.sense_mag and _sense_mag_cb is not None:
-            fl_sense_mag = session_mgr.create_frame_logger("mag", sub_device="sense")
-            _sense_mag_cb = make_frame_callback(_sense_mag_cb, fl_sense_mag)
-
-        if args.no_sdk_mode and not args.no_ppi:
-            fl_sense_hr = session_mgr.create_frame_logger("hr", sub_device="sense")
-            fl_sense_ppi = session_mgr.create_frame_logger("ppi", sub_device="sense")
-            _sense_hr_cb = make_hr_callback(_sense_hr_cb, fl_sense_hr)
-            _sense_ppi_cb = make_ppi_callback(_sense_ppi_cb, fl_sense_ppi)
-
-    h10_kwargs: dict[str, Any] = {}
-    if args.acc_rate:
-        h10_kwargs["acc_sample_rate"] = args.acc_rate
-    if args.acc_range:
-        h10_kwargs["acc_range"] = args.acc_range
-    if args.ecg_rate:
-        h10_kwargs["ecg_sample_rate"] = args.ecg_rate
-
-    sense_kwargs: dict[str, Any] = {"sdk_mode": not args.no_sdk_mode}
-    if args.ppg_rate:
-        sense_kwargs["ppg_sample_rate"] = args.ppg_rate
-    if args.acc_rate:
-        sense_kwargs["acc_sample_rate"] = args.acc_rate
-    if args.acc_range:
-        sense_kwargs["acc_range"] = args.acc_range
-    if args.gyro_rate:
-        sense_kwargs["gyro_sample_rate"] = args.gyro_rate
-    if args.gyro_range:
-        sense_kwargs["gyro_range"] = args.gyro_range
-    if args.mag_rate:
-        sense_kwargs["mag_sample_rate"] = args.mag_rate
 
     def polar_status_callback(dev_label: str, msg: str) -> None:
+        msg_lower = msg.lower()
         sev = (
             "warning"
-            if ("Reconnecting" in msg or "failed" in msg or "stalled" in msg)
-            else ("success" if "Connected" in msg else "info")
+            if any(
+                w in msg_lower for w in ("reconnecting", "failed", "stalled", "lost")
+            )
+            else ("success" if "connected" in msg_lower else "info")
         )
         log_event(log_panel, msg, sev, device=dev_label, log_file=session_mgr.log_file)
-        if dev_label == "H10":
-            state_h10["status"] = msg
-            if "Disconnected" in msg or "Reconnecting" in msg:
-                reset_device_state_on_disconnect(state_h10)
-        elif dev_label == "Sense":
-            state_sense["status"] = msg
-            if "Disconnected" in msg or "Reconnecting" in msg:
-                reset_device_state_on_disconnect(state_sense)
+        if dev_label in ("H10", "Sense"):
+            state = state_h10 if dev_label == "H10" else state_sense
+            state["status"] = msg
+            if any(w in msg_lower for w in ("disconnected", "reconnecting", "lost")):
+                reset_device_state_on_disconnect(state)
 
     lsl_bridge: PolarLSLBridge | None = None
     if args.lsl:
@@ -437,25 +310,16 @@ async def main(argv: Sequence[str] | None = None) -> None:
             )
         else:
             try:
-                ppg_rate_val = 55.0 if args.no_sdk_mode else 135.0
                 lsl_bridge = PolarLSLBridge(
                     h10_id=args.h10 or "H10",
                     sense_id=args.sense or "Sense",
                     enable_sense_gyro=args.sense_gyro,
                     enable_sense_mag=args.sense_mag,
-                    ppg_rate=ppg_rate_val,
+                    ppg_rate=55.0 if args.no_sdk_mode else 135.0,
                 )
-                _h10_hr_cb = lsl_bridge.wrap_callback("h10_hr", _h10_hr_cb)
-                _h10_ecg_cb = lsl_bridge.wrap_callback("h10_ecg", _h10_ecg_cb)
-                _h10_acc_cb = lsl_bridge.wrap_callback("h10_acc", _h10_acc_cb)
-                _sense_ppg_cb = lsl_bridge.wrap_callback("sense_ppg", _sense_ppg_cb)
-                _sense_acc_cb = lsl_bridge.wrap_callback("sense_acc", _sense_acc_cb)
-                if _sense_gyro_cb is not None:
-                    _sense_gyro_cb = lsl_bridge.wrap_callback(
-                        "sense_gyro", _sense_gyro_cb
-                    )
-                if _sense_mag_cb is not None:
-                    _sense_mag_cb = lsl_bridge.wrap_callback("sense_mag", _sense_mag_cb)
+                for cbs, prefix in ((h10_cbs, "h10"), (sense_cbs, "sense")):
+                    for stream, cb in list(cbs.items()):
+                        cbs[stream] = lsl_bridge.wrap_callback(f"{prefix}_{stream}", cb)
                 log_event(
                     log_panel,
                     "LSL outlets active and broadcasting.",
@@ -475,19 +339,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
         sense_target=args.sense,
         enable_sense_gyro=args.sense_gyro,
         enable_sense_mag=args.sense_mag,
-        h10_callbacks={
-            "hr": _h10_hr_cb,
-            "ecg": _h10_ecg_cb,
-            "acc": _h10_acc_cb,
-        },
-        sense_callbacks={
-            "hr": _sense_hr_cb if args.no_sdk_mode else None,
-            "ppi": _sense_ppi_cb if (args.no_sdk_mode and not args.no_ppi) else None,
-            "ppg": _sense_ppg_cb,
-            "acc": _sense_acc_cb,
-            "gyro": _sense_gyro_cb,
-            "mag": _sense_mag_cb,
-        },
+        h10_callbacks=h10_cbs,
+        sense_callbacks=sense_cbs,
         status_callback=polar_status_callback,
         enable_watchdog=args.watchdog,
         watchdog_interval=args.watchdog_interval,
@@ -496,17 +349,18 @@ async def main(argv: Sequence[str] | None = None) -> None:
             "log_callback": lambda msg, sev="info": log_event(
                 log_panel, msg, sev, device="H10", log_file=session_mgr.log_file
             ),
-            **h10_kwargs,
+            **stream_setting_kwargs(args, h10_streams),
         },
         sense_kwargs={
             "log_callback": lambda msg, sev="info": log_event(
                 log_panel, msg, sev, device="Sense", log_file=session_mgr.log_file
             ),
-            **sense_kwargs,
+            "sdk_mode": not args.no_sdk_mode,
+            **stream_setting_kwargs(args, sense_streams),
         },
     )
-    adapter.h10_dev = h10_dev
-    adapter.sense_dev = sense_dev
+    adapter.h10.dev = h10_dev
+    adapter.sense.dev = sense_dev
 
     h10_frame_counter = FrameCountLogger(
         log_panel, device="H10", log_file=session_mgr.log_file
@@ -515,44 +369,81 @@ async def main(argv: Sequence[str] | None = None) -> None:
         log_panel, device="Sense", log_file=session_mgr.log_file
     )
 
-    pp_h10 = session_mgr.get_post_processed_dir("h10")
-    pp_sense = session_mgr.get_post_processed_dir("sense")
-
     csv_h10 = None
     csv_sense = None
     if not args.no_log:
-        csv_h10 = CsvLogger(pp_h10 / "summary.csv", H10_SUMMARY_COLS)
+        csv_h10 = CsvLogger(
+            session_mgr.get_post_processed_dir("h10") / "summary.csv", H10_SUMMARY_COLS
+        )
         csv_h10.write_header()
-        csv_sense = CsvLogger(pp_sense / "summary.csv", SENSE_SUMMARY_COLS)
+        csv_sense = CsvLogger(
+            session_mgr.get_post_processed_dir("sense") / "summary.csv",
+            SENSE_SUMMARY_COLS,
+        )
         csv_sense.write_header()
         state_h10["csv_path"] = csv_h10.path_str
         state_sense["csv_path"] = csv_sense.path_str
 
-    batt_h10_task = None
-    batt_sense_task = None
-    rssi_h10_task = None
-    rssi_sense_task = None
-
+    background_tasks: list[asyncio.Task[Any]] = []
     start = time.time()
-    last_log = 0.0
-    last_frame_log = 0.0
+
+    h10_hz = [(s, f"h10_{s}") for s in h10_streams if s != "hr"]
+    sense_hz = [(s, f"sense_{s}") for s in sense_streams if s != "hr"]
 
     def build() -> Panel:
+        now = time.time()
+        rate_tracker.refresh_state_hz(state_h10, h10_hz, now=now)
+        rate_tracker.refresh_state_hz(state_sense, sense_hz, now=now)
         return _make_grid(
             state_h10,
             state_sense,
-            start,
-            (h10_acc_ts, h10_ecg_ts),
-            (
-                sense_ppg_ts,
-                sense_acc_ts,
-                sense_gyro_ts,
-                sense_mag_ts,
-                sense_ppi_ts,
-            ),
-            log_panel=log_panel,
-            lsl_active=(lsl_bridge is not None),
+            now - start,
+            log_panel,
+            lsl_bridge is not None,
         )
+
+    def write_rows(_active_marker: str) -> None:
+        ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        if csv_h10:
+            csv_h10.write_row(
+                [
+                    ts_str,
+                    state_h10["hr"],
+                    calculate_rmssd(state_h10["rr_history"]),
+                    state_h10.get("battery"),
+                    state_h10.get("ecg_last_sample"),
+                    *unwrap_vector(state_h10, "acc_raw"),
+                ]
+            )
+            state_h10["csv_rows_written"] = csv_h10.rows_written
+        if csv_sense:
+            sense_intervals = (
+                state_sense["ppi_history"]
+                if state_sense["ppi_history"]
+                else state_sense["rr_history"]
+            )
+            csv_sense.write_row(
+                [
+                    ts_str,
+                    state_sense["hr"],
+                    calculate_rmssd(sense_intervals),
+                    state_sense.get("battery"),
+                    state_sense.get("ppg_last_sample"),
+                    *unwrap_vector(state_sense, "acc_raw"),
+                    *unwrap_vector(state_sense, "gyro_raw"),
+                    *unwrap_vector(state_sense, "mag_raw"),
+                ]
+            )
+            state_sense["csv_rows_written"] = csv_sense.rows_written
+
+    def on_marker(marker: str) -> None:
+        session_mgr.register_marker(marker)
+        if lsl_bridge:
+            lsl_bridge.push_marker(marker)
+
+    def frame_check() -> None:
+        h10_frame_counter.check(state_h10, h10_streams)
+        sense_frame_counter.check(state_sense, sense_streams)
 
     try:
         log_event(
@@ -576,184 +467,69 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
         if h10_ok:
             state_h10["status"] = "Connected! Streaming."
-        if sense_ok and not args.no_sdk_mode:
+        if sense_ok:
             state_sense["status"] = (
-                "Connected! Streaming (SDK Mode: 135Hz PPG, HR disabled)."
+                "Connected! Streaming."
+                if args.no_sdk_mode
+                else "Connected! Streaming (SDK Mode: 135Hz PPG, HR disabled)."
             )
-        elif sense_ok:
-            state_sense["status"] = "Connected! Streaming."
 
-        state_h10["battery"] = await read_battery(adapter.proxy_h10)
-        log_event(
-            log_panel,
-            f"H10 battery: {state_h10['battery']}",
-            "info",
-            device="H10",
-            log_file=session_mgr.log_file,
-        )
-
-        state_sense["battery"] = await read_battery(adapter.proxy_sense)
-        log_event(
-            log_panel,
-            f"Sense battery: {state_sense['battery']}",
-            "info",
-            device="Sense",
-            log_file=session_mgr.log_file,
-        )
-
-        batt_h10_task = asyncio.create_task(
-            update_battery_loop(adapter.proxy_h10, state_h10)
-        )
-        batt_sense_task = asyncio.create_task(
-            update_battery_loop(adapter.proxy_sense, state_sense)
-        )
-
-        rssi_h10_task = asyncio.create_task(
-            rssi_loop(
-                adapter.proxy_h10,
+        for label, proxy, state in (
+            ("H10", adapter.h10, state_h10),
+            ("Sense", adapter.sense, state_sense),
+        ):
+            state["battery"] = await read_battery(proxy)
+            log_event(
                 log_panel,
-                device="H10",
+                f"{label} battery: {state['battery']}",
+                "info",
+                device=label,
                 log_file=session_mgr.log_file,
             )
-        )
-        rssi_sense_task = asyncio.create_task(
-            rssi_loop(
-                adapter.proxy_sense,
-                log_panel,
-                device="Sense",
-                log_file=session_mgr.log_file,
+            background_tasks.append(
+                asyncio.create_task(update_battery_loop(proxy, state))
             )
-        )
+            background_tasks.append(
+                asyncio.create_task(
+                    rssi_loop(
+                        proxy, log_panel, device=label, log_file=session_mgr.log_file
+                    )
+                )
+            )
 
         with Live(build(), refresh_per_second=10) as live:
-            while True:
-                for m in reader.poll_markers():
-                    if m == "__toggle_log__":
-                        lvl = log_panel.cycle_level()
-                        log_event(
-                            log_panel,
-                            f"Log level: {lvl}",
-                            "info",
-                            log_file=session_mgr.log_file,
-                        )
-                        continue
-                    session_mgr.register_marker(m)
-                    if lsl_bridge:
-                        lsl_bridge.push_marker(m)
-                    log_event(
-                        log_panel, f"Marker: {m}", "info", log_file=session_mgr.log_file
-                    )
-
-                now = time.time()
-                if not args.no_log and (now - last_log) >= 1.0:
-                    last_log = now
-                    ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
-                    if csv_h10:
-                        h10_rmssd = calculate_rmssd(state_h10["rr_history"])
-                        ax, ay, az = unwrap_vector(state_h10, "acc_raw", "acc_count")
-                        csv_h10.write_row(
-                            [
-                                ts_str,
-                                state_h10["hr"],
-                                h10_rmssd,
-                                state_h10.get("battery"),
-                                state_h10.get("ecg_last_sample"),
-                                ax,
-                                ay,
-                                az,
-                            ]
-                        )
-                        state_h10["csv_rows_written"] = csv_h10.rows_written
-
-                    if csv_sense:
-                        sense_rmssd = calculate_rmssd(state_sense["rr_history"])
-                        sax, say, saz = unwrap_vector(
-                            state_sense, "acc_raw", "acc_count"
-                        )
-                        gx, gy, gz = unwrap_vector(
-                            state_sense, "gyro_raw", "gyro_count"
-                        )
-                        mx, my, mz = unwrap_vector(state_sense, "mag_raw", "mag_count")
-                        csv_sense.write_row(
-                            [
-                                ts_str,
-                                state_sense["hr"],
-                                sense_rmssd,
-                                state_sense.get("battery"),
-                                state_sense.get("ppg_last_sample"),
-                                sax,
-                                say,
-                                saz,
-                                gx,
-                                gy,
-                                gz,
-                                mx,
-                                my,
-                                mz,
-                            ]
-                        )
-                        state_sense["csv_rows_written"] = csv_sense.rows_written
-
-                if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
-                    last_frame_log = now
-                    h10_frame_counter.check(state_h10, ["ecg", "acc"])
-                    sense_streams = ["ppg", "acc"]
-                    if args.sense_gyro:
-                        sense_streams.append("gyro")
-                    if args.sense_mag:
-                        sense_streams.append("mag")
-                    if args.no_sdk_mode and not args.no_ppi:
-                        sense_streams.append("ppi")
-                    sense_frame_counter.check(state_sense, sense_streams)
-
-                if args.duration and (now - start) >= args.duration:
-                    log_event(
-                        log_panel,
-                        f"Target duration ({args.duration}s) reached.",
-                        "info",
-                        log_file=session_mgr.log_file,
-                    )
-                    break
-
-                live.update(build())
-                await asyncio.sleep(0.1)
+            await run_dashboard(
+                live,
+                build,
+                reader=reader,
+                log_panel=log_panel,
+                log_file=session_mgr.log_file,
+                start=start,
+                duration=args.duration,
+                on_marker=on_marker,
+                write_rows=write_rows,
+                frame_check=frame_check,
+            )
 
     except asyncio.CancelledError:
         pass
     except Exception as e:
         log_event(log_panel, f"Error: {e}", "error", log_file=session_mgr.log_file)
     finally:
-        if batt_h10_task:
-            batt_h10_task.cancel()
-        if batt_sense_task:
-            batt_sense_task.cancel()
-        if rssi_h10_task:
-            rssi_h10_task.cancel()
-        if rssi_sense_task:
-            rssi_sense_task.cancel()
+        for task in background_tasks:
+            task.cancel()
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
 
         if lsl_bridge:
             lsl_bridge.close()
 
         await adapter.disconnect()
 
-        rate_tracker = RateTracker()
-
-        def _accumulate(st: dict[str, Any], prefix: str) -> None:
-            for s_name, s_acc in st.get("_session_streams", {}).items():
-                key = f"{prefix}_{s_name}"
-                rate_tracker.track(key, s_acc["samples"], timestamp=s_acc["last_ts"])
-                if key in rate_tracker.accumulators:
-                    rate_tracker.accumulators[key].first_ts = s_acc["first_ts"]
-
-        _accumulate(state_h10, "h10")
-        _accumulate(state_sense, "sense")
-
-        ppg_expected_rate = 55 if args.no_sdk_mode else 135
         configured_rates: dict[str, int] = {
             "h10_ecg": 130,
             "h10_acc": 200,
-            "sense_ppg": ppg_expected_rate,
+            "sense_ppg": 55 if args.no_sdk_mode else 135,
             "sense_acc": 52,
         }
         if args.sense_gyro:
@@ -766,25 +542,15 @@ async def main(argv: Sequence[str] | None = None) -> None:
             configured_rates=configured_rates,
         )
 
-        print_hz_summary({"ecg": 130, "acc": 200}, state_h10)
-        sense_hz_check: dict[str, int] = {
-            "ppg": ppg_expected_rate,
-            "acc": 52,
-        }
-        if args.sense_gyro:
-            sense_hz_check["gyro"] = 52
-        if args.sense_mag:
-            sense_hz_check["mag"] = 20
-
         print_hz_summary(
-            sense_hz_check,
-            state_sense,
-            extra_streams=(["ppi"] if (args.no_sdk_mode and not args.no_ppi) else None),
+            configured_rates,
+            rate_tracker,
+            extra_streams=["sense_ppi"] if "ppi" in sense_streams else None,
         )
-        state_h10["status"] = "Disconnected."
-        reset_device_state_on_disconnect(state_h10)
-        state_sense["status"] = "Disconnected."
-        reset_device_state_on_disconnect(state_sense)
+
+        for state in (state_h10, state_sense):
+            state["status"] = "Disconnected."
+            reset_device_state_on_disconnect(state)
 
 
 def _entrypoint() -> None:

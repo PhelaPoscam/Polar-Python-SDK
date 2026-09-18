@@ -25,10 +25,10 @@ jobs:
         python -m pip install --upgrade pip setuptools
         python -m pip install -e ".[dev,research]"
 
-    - name: Check formatting (Black)
+    - name: Check formatting (Ruff)
       if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
       run: |
-        black --check src/ scripts/ tests/ examples/
+        ruff format --check src/ scripts/ tests/ examples/
 
     - name: Lint (Ruff)
       if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'

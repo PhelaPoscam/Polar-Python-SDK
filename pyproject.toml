@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "polar-ble-sdk"
-version = "1.0.0"
+version = "1.1.0"
 authors = [
     { name = "Aleph Campos da Silveira", email = "aleph.camposdasilveira@tuni.fi" }
 ]
@@ -33,18 +33,6 @@ where = ["src"]
 [tool.setuptools.package-data]
 "polar_ble_sdk" = ["py.typed"]
 
-[tool.black]
-line-length = 88
-target-version = ["py310", "py311"]
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-  \.venv
-  | \.venv313
-  | __pycache__
-)/
-'''
-
 [project.optional-dependencies]
 lsl = [
     "pylsl>=1.16.0",
@@ -56,20 +44,12 @@ research = [
     "matplotlib",
 ]
 dev = [
+    "polar-ble-sdk[lsl,research]",
     "pytest>=7",
     "pytest-asyncio",
-    "black",
     "mypy",
     "ruff",
     "pre-commit",
-    "pip-audit",
-    "vulture",
-    "radon",
-    "numpy",
-    "pandas",
-    "scipy",
-    "matplotlib",
-    "pylsl>=1.16.0",
 ]
 
 [tool.ruff]
@@ -90,7 +70,7 @@ select = [
     "SIM", # flake8-simplify
 ]
 ignore = [
-    "E501",  # line too long — handled by black
+    "E501",  # line too long — handled by the formatter
 ]
 
 [tool.ruff.lint.isort]
