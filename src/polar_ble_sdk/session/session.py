@@ -82,7 +82,12 @@ class SessionManager:
         self.session_id = session_id or time.strftime("%Y%m%d_%H%M%S")
 
         # Root session folder: e.g. data/h10/20260818_120000 or data/dual/20260818_120000
-        self.session_dir = self.base_dir / "data" / self.device_type / self.session_id
+        if self.base_dir.name == "data":
+            self.session_dir = self.base_dir / self.device_type / self.session_id
+        else:
+            self.session_dir = (
+                self.base_dir / "data" / self.device_type / self.session_id
+            )
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
         # Metadata structure

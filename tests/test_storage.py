@@ -87,3 +87,10 @@ class TestSessionManager:
         assert "clock_zero_points" in data
         assert "host_epoch_ns" in data["clock_zero_points"]
         assert data["host_epoch_start_ns"] > 0
+
+    def test_session_base_dir_ending_in_data_does_not_nest(self, tmp_path: Path):
+        data_dir = tmp_path / "data"
+        mgr = SessionManager(
+            base_dir=data_dir, device_type="dual", session_id="test_dual", is_dual=True
+        )
+        assert mgr.session_dir == data_dir / "dual" / "test_dual"
