@@ -12,6 +12,7 @@ import json
 import logging
 import platform
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -45,6 +46,7 @@ class SessionMetadata:
 
     schema_version: str = MANIFEST_SCHEMA_VERSION
     session_id: str = ""
+    participant_id: str = ""
     session_type: str = "single"  # "single" | "dual"
     start_time_iso: str = ""
     start_time_epoch_ns: int = 0
@@ -82,12 +84,8 @@ class SessionManager:
         self.session_id = session_id or time.strftime("%Y%m%d_%H%M%S")
 
         # Root session folder: e.g. data/h10/20260818_120000 or data/dual/20260818_120000
-        if self.base_dir.name == "data":
-            self.session_dir = self.base_dir / self.device_type / self.session_id
-        else:
-            self.session_dir = (
-                self.base_dir / "data" / self.device_type / self.session_id
-            )
+        # base_dir is the data root itself; callers default it to ./data.
+        self.session_dir = self.base_dir / self.device_type / self.session_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
 
         # Metadata structure
@@ -109,6 +107,9 @@ class SessionManager:
 
         self._log_file: Any = None
         self._frame_loggers: dict[str, StreamFrameLogger] = {}
+        # close_all may race with an emergency save on console close.
+        self._close_lock = threading.Lock()
+        self._saved = False
 
     def init_event_log(self, prefix: str = "monitor") -> Path:
         """Create and open the plain-text session event log file."""
@@ -175,9 +176,40 @@ class SessionManager:
         self,
         rate_tracker: RateTracker | None = None,
         configured_rates: dict[str, int] | None = None,
+        *,
+        keep_log: bool = False,
     ) -> None:
-        """Flush and close all open frame loggers, event logs, and write session_meta.json."""
+        """Flush and close all frame loggers and write session_meta.json (once).
+
+        Callers save *before* the slow BLE teardown so a second Ctrl+C cannot
+        lose the manifest; ``keep_log=True`` leaves the event log open for the
+        teardown messages (close it with :meth:`close_log`).
+        """
+        with self._close_lock:
+            if not self._saved:
+                self._save(rate_tracker, configured_rates)
+                self._saved = True
+        if not keep_log:
+            self.close_log()
+
+    def close_log(self) -> None:
+        """Close the plain-text event log."""
+        if self._log_file:
+            with contextlib.suppress(OSError):
+                self._log_file.close()
+            self._log_file = None
+
+    def _save(
+        self,
+        rate_tracker: RateTracker | None,
+        configured_rates: dict[str, int] | None,
+    ) -> None:
         for key, fl in self._frame_loggers.items():
+            # Recorded even without a device timestamp (Sense PPI frames carry 0).
+            if fl.first_host_ns is not None:
+                self.metadata.clock_zero_points[f"{key}_host_epoch_ns"] = (
+                    fl.first_host_ns
+                )
             if fl.first_ts_ns is not None:
                 self.metadata.clock_zero_points[key] = fl.first_ts_ns
                 if "_" in key:
@@ -190,11 +222,6 @@ class SessionManager:
                     for dev in self.metadata.devices.values():
                         dev.clock_zero_points[key] = fl.first_ts_ns
             fl.close()
-
-        if self._log_file:
-            with contextlib.suppress(OSError):
-                self._log_file.close()
-            self._log_file = None
 
         # Finalize metadata
         now_dt = datetime.now(timezone.utc)

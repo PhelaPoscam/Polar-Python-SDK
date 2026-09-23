@@ -157,3 +157,20 @@ def test_lsl_missing_raises_import_error() -> None:
         pytest.raises(ImportError, match="pylsl is required for LSL streaming"),
     ):
         PolarLSLBridge()
+
+
+def test_burst_clock_learns_device_spacing_and_skips_gaps() -> None:
+    from polar_ble_sdk.lsl.bridge import BurstClock
+
+    clock = BurstClock(nominal_hz=200.0)  # flag said 200 Hz, device runs at 52
+    dt = 1 / 52
+    ts = 10**12
+    clock.times(0.0, 10, ts)
+    for k in range(1, 20):
+        clock.times(0.0, 10, ts + int(k * 10 * dt * 1e9))
+    assert clock.dt == pytest.approx(dt, rel=1e-3)
+    clock.times(0.0, 10, ts + int(60 * 10 * dt * 1e9))  # 40 frames lost
+    assert clock.dt == pytest.approx(dt, rel=1e-3)
+    times = clock.times(5.0, 3, ts + int(61 * 10 * dt * 1e9))
+    assert times[-1] == 5.0
+    assert times[1] - times[0] == pytest.approx(dt, rel=1e-3)

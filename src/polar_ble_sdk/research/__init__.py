@@ -2,26 +2,19 @@
 
 from .audit import StreamAudit, audit_csv_stream, verify_session_integrity
 from .loader import PolarSessionData, load_session
-from .ppg import (
-    bandpass_filter,
-    clean_ibi,
-    derive_ppg_hr_epochs,
-    detect_peaks_epoch,
-    epoch_hr_from_fft,
-    epoch_hr_from_zc,
-    ibi_to_hr,
-    ibi_to_rmssd,
-)
+from .ppg import bandpass_filter, detect_beats, spectral_hr, spectral_sqi
 from .report import generate_markdown_report, generate_validation_plots
 from .validation import (
-    bootstrap_ci,
-    build_epochs,
+    agreement,
+    block_bootstrap_ci,
     calculate_icc_2_1,
     calculate_lins_ccc,
-    compute_validation_metrics,
-    detect_sense_artifacts,
-    grade_metrics,
+    calculate_wscv,
+    grade,
+    repeated_measures_agreement,
+    validate_windows,
 )
+from .windows import build_windows
 
 __all__ = [
     "PolarSessionData",
@@ -29,21 +22,19 @@ __all__ = [
     "StreamAudit",
     "audit_csv_stream",
     "verify_session_integrity",
-    "calculate_lins_ccc",
-    "calculate_icc_2_1",
-    "bootstrap_ci",
-    "detect_sense_artifacts",
-    "build_epochs",
-    "compute_validation_metrics",
-    "grade_metrics",
     "bandpass_filter",
-    "epoch_hr_from_zc",
-    "epoch_hr_from_fft",
-    "detect_peaks_epoch",
-    "clean_ibi",
-    "ibi_to_hr",
-    "ibi_to_rmssd",
-    "derive_ppg_hr_epochs",
+    "detect_beats",
+    "spectral_hr",
+    "spectral_sqi",
+    "build_windows",
+    "agreement",
+    "block_bootstrap_ci",
+    "calculate_icc_2_1",
+    "calculate_lins_ccc",
+    "calculate_wscv",
+    "grade",
+    "repeated_measures_agreement",
+    "validate_windows",
     "generate_validation_plots",
     "generate_markdown_report",
 ]

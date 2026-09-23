@@ -67,8 +67,23 @@ class TestResearchLoaderAndAudit:
 
         acc_audit = report["streams"]["acc"]
         assert acc_audit["sample_count"] == 3
-        assert acc_audit["average_hz"] == pytest.approx(75.0, rel=1e-1)
+        # 3 samples 20 ms apart: 50 Hz
+        assert acc_audit["average_hz"] == pytest.approx(50.0, rel=1e-2)
         assert acc_audit["gap_count"] == 0
+
+    def test_audit_merges_per_sample_rows_into_packets(self, tmp_path: Path):
+        from polar_ble_sdk.research.audit import audit_csv_stream
+
+        rows = ["Timestamp_s,X_mG,Y_mG,Z_mG"]
+        for pkt in range(10):  # 10 packets of 4 samples, 80 ms apart = 50 Hz
+            rows += [f"{pkt * 0.08:.3f},0,0,1000"] * 4
+        csv_path = tmp_path / "acc.csv"
+        csv_path.write_text("\n".join(rows), encoding="utf-8")
+
+        audit = audit_csv_stream(csv_path)
+        assert audit.packet_count == 10
+        assert audit.gap_count == 0
+        assert audit.average_hz == pytest.approx(50.0, rel=1e-2)
 
     def test_lazy_research_symbols_from_top_level(self):
         import polar_ble_sdk
@@ -77,3 +92,39 @@ class TestResearchLoaderAndAudit:
         assert hasattr(polar_ble_sdk, "verify_session_integrity")
         assert hasattr(polar_ble_sdk, "PolarSessionData")
         assert polar_ble_sdk.load_session is load_session
+
+
+def test_validation_plots_with_artifacts(tmp_path: Path):
+    import pandas as pd
+
+    from polar_ble_sdk.research.report import generate_validation_plots
+
+    w = pd.DataFrame(
+        {
+            "start": pd.date_range("2026-01-01", periods=5, freq="60s"),
+            "ref_hr": [60.0, 61, 62, 63, 64],
+            "ppg_hr": [60.0, 61, 90, 63, 64],
+            "ref_rmssd": [40.0, 42, 41, 39, 45],
+            "ppg_rmssd": [41.0, 42, 80, 40, 44],
+            "ref_ok": True,
+            "artifact": [False, False, True, False, False],
+        }
+    )
+    paths = generate_validation_plots(w, tmp_path)
+    assert {p.name for p in paths} == {
+        "bland_altman_hr.png",
+        "bland_altman_rmssd.png",
+        "time_series.png",
+    }
+
+
+def test_loader_maps_raw_streams_to_host_time(sample_session_dir: Path):
+    meta_path = sample_session_dir / "session_meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["clock_zero_points"] = {"acc_host_epoch_ns": 1_790_000_000 * 10**9}
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    acc = load_session(sample_session_dir).get_stream("acc")
+    assert acc is not None
+    gap = acc["Host_Time"].iloc[2] - acc["Host_Time"].iloc[0]
+    assert gap.total_seconds() == pytest.approx(0.04)

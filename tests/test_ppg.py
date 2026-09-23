@@ -7,80 +7,59 @@ import pytest
 
 from polar_ble_sdk.research.ppg import (
     bandpass_filter,
-    clean_ibi,
-    epoch_hr_from_fft,
-    epoch_hr_from_zc,
-    ibi_to_hr,
-    ibi_to_rmssd,
-    zero_crossing_rate,
+    beat_intervals,
+    detect_beats,
+    spectral_hr,
+    spectral_sqi,
+    split_segments,
 )
 
 
+def pulse_wave(beats: np.ndarray, t: np.ndarray, width: float = 0.08) -> np.ndarray:
+    return np.sum(np.exp(-0.5 * ((t[:, None] - beats[None, :]) / width) ** 2), axis=1)
+
+
 class TestPpgSignalProcessing:
-    def test_zero_crossing_rate(self) -> None:
-        fs = 100.0
-        # 1 Hz sine wave for 5 seconds -> 10 zero crossings -> rate = 1.0 Hz
-        t = np.linspace(0, 5, 500, endpoint=False)
-        sin_wave = np.sin(2 * np.pi * 1.0 * t)
-        zc = zero_crossing_rate(sin_wave, fs)
-        assert pytest.approx(zc, rel=0.05) == 1.0
-
-    def test_epoch_hr_from_zc(self) -> None:
-        fs = 100.0
-        # 1.2 Hz wave (72 BPM)
-        t = np.linspace(0, 10, 1000, endpoint=False)
-        wave = np.sin(2 * np.pi * 1.2 * t)
-        hr = epoch_hr_from_zc(wave, fs)
-        assert pytest.approx(hr, rel=0.05) == 72.0
-
-    def test_epoch_hr_from_fft(self) -> None:
+    def test_spectral_hr(self) -> None:
         fs = 55.0
-        t = np.linspace(0, 10, int(10 * fs), endpoint=False)
-        # 1.5 Hz wave (90 BPM)
-        wave = np.sin(2 * np.pi * 1.5 * t)
-        hr = epoch_hr_from_fft(wave, fs)
-        assert pytest.approx(hr, abs=2.0) == 90.0
+        t = np.arange(0, 30, 1 / fs)
+        wave = np.sin(2 * np.pi * 1.2 * t) + 0.3 * np.sin(2 * np.pi * 2.4 * t)
+        assert spectral_hr(wave, fs) == pytest.approx(72.0, abs=1.0)
 
-    @pytest.mark.parametrize("target_bpm", [60.0, 72.0, 85.0, 120.0, 150.0])
-    def test_fft_resolution_across_rates_at_135hz(self, target_bpm: float) -> None:
-        """Verify sub-BPM FFT accuracy at 135 Hz without bin quantization collapse."""
-        fs = 135.0
-        duration_s = 10.0
-        freq_hz = target_bpm / 60.0
-        t = np.linspace(0, duration_s, int(duration_s * fs), endpoint=False)
-        wave = np.sin(2 * np.pi * freq_hz * t)
-        measured_hr = epoch_hr_from_fft(wave, fs)
-        assert abs(measured_hr - target_bpm) < 0.5
-
-    def test_bandpass_filter(self) -> None:
+    def test_spectral_hr_prefers_fundamental_over_strong_harmonic(self) -> None:
         fs = 100.0
-        t = np.linspace(0, 10, 1000, endpoint=False)
-        # 1 Hz signal + 20 Hz high frequency noise
-        signal = np.sin(2 * np.pi * 1.0 * t) + 0.5 * np.sin(2 * np.pi * 20.0 * t)
-        filtered = bandpass_filter(signal, fs, lo=0.5, hi=4.0)
-        assert len(filtered) == len(signal)
-        # High frequency power should be greatly attenuated
-        assert np.std(filtered) < np.std(signal)
+        t = np.arange(0, 30, 1 / fs)
+        wave = 0.8 * np.sin(2 * np.pi * 1.0 * t) + np.sin(2 * np.pi * 2.0 * t)
+        assert spectral_hr(wave, fs) == pytest.approx(60.0, abs=1.5)
 
-    def test_clean_ibi(self) -> None:
-        # Standard intervals with one double interval (missed beat)
-        ibis = np.array([0.8, 0.82, 1.62, 0.81, 0.79])
-        cleaned = clean_ibi(ibis)
-        # 1.62 should be split into two ~0.81 intervals
-        assert len(cleaned) == 6
-        assert all(0.75 <= v <= 0.85 for v in cleaned)
+    def test_beats_are_subsample_precise(self) -> None:
+        """At 55 Hz a bare sample index would be off by up to 9 ms."""
+        fs = 55.0
+        true_beats = np.cumsum(np.full(30, 0.8537))
+        t = np.arange(0, true_beats[-1] + 1, 1 / fs)
+        x = bandpass_filter(pulse_wave(true_beats, t), fs)
+        found = detect_beats(x, t, fs)
+        ibi = np.diff(found) * 1000
+        assert np.std(ibi[2:-2]) < 3.0  # true IBI is constant
+        assert np.mean(ibi[2:-2]) == pytest.approx(853.7, abs=1.0)
 
-    def test_clean_ibi_with_max_s_gating(self) -> None:
-        # Missed beat 1.62s with max_s=1.0: doubling repair must occur before max_s filtering
-        ibis = np.array([0.8, 0.82, 1.62, 0.81, 0.79])
-        cleaned = clean_ibi(ibis, max_s=1.0)
-        assert len(cleaned) == 6
-        assert all(v <= 1.0 for v in cleaned)
+    def test_no_interval_spans_a_gap(self) -> None:
+        fs = 100.0
+        beats = np.cumsum(np.full(40, 0.8))
+        t = np.arange(0, beats[-1] + 1, 1 / fs)
+        keep = (t < 12) | (t > 15)  # 3 s of lost packets
+        t, x = t[keep], pulse_wave(beats, t)[keep]
+        segs = split_segments(t, fs)
+        assert len(segs) == 2
+        by_seg = [(bandpass_filter(x[s], fs), t[s]) for s in segs]
+        _, ibi = beat_intervals(by_seg, fs)
+        assert None in ibi
+        assert max(v for v in ibi if v is not None) < 900
 
-    def test_ibi_to_hr_and_rmssd(self) -> None:
-        ibis_s = np.array([0.8, 0.8, 0.8, 0.8])  # 75 BPM
-        assert pytest.approx(ibi_to_hr(ibis_s), 1e-2) == 75.0
-
-        ibis_ms = np.array([800.0, 850.0, 810.0, 860.0])
-        rmssd = ibi_to_rmssd(ibis_ms)
-        assert rmssd > 0
+    def test_sqi_separates_clean_pulse_from_noise(self) -> None:
+        fs = 135.0
+        t = np.arange(0, 60, 1 / fs)
+        clean = bandpass_filter(pulse_wave(np.arange(0.5, 60, 0.9), t), fs)
+        noise = bandpass_filter(np.random.default_rng(0).normal(size=len(t)), fs)
+        assert spectral_sqi(clean, fs) > 0.5
+        assert spectral_sqi(noise, fs) < 0.3

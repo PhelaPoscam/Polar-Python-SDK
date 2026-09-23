@@ -4,7 +4,7 @@ from pathlib import Path
 
 # Dynamically add the 'src' directory to sys.path so 'polar_ble_sdk' is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 try:
     from polar_ble_sdk.connector.ble_discovery import discover_polar_device

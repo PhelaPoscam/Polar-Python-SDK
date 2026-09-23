@@ -17,6 +17,17 @@ from polar_ble_sdk.connector.stream.base import (
 )
 
 
+def _stoppable_conn() -> MagicMock:
+    """A connected connector whose stop_notify really disconnects its client."""
+    conn = _connected_conn()
+
+    async def stop() -> None:
+        conn.polar_device._client.is_connected = False
+
+    conn.stop_notify = AsyncMock(side_effect=stop)
+    return conn
+
+
 def _connected_conn() -> MagicMock:
     conn = MagicMock()
     conn.polar_device._client.is_connected = True
@@ -179,8 +190,7 @@ class TestPolarAdapter:
         adapter._running = True
         adapter.h10.dev = MagicMock()
 
-        mock_conn = MagicMock()
-        mock_conn.stop_notify = AsyncMock()
+        mock_conn = _stoppable_conn()
         mock_conn.start_notify = AsyncMock()
         adapter.h10.conn = mock_conn
 
@@ -236,8 +246,7 @@ class TestDisconnectReason:
         adapter._running = True
         adapter.h10.dev = MagicMock()
 
-        mock_conn = MagicMock()
-        mock_conn.stop_notify = AsyncMock()
+        mock_conn = _stoppable_conn()
         mock_conn.start_notify = AsyncMock(
             side_effect=Exception("Authentication Required (5)")
         )
@@ -250,3 +259,112 @@ class TestDisconnectReason:
 
         guidance = DISCONNECT_INFO[DisconnectReason.BOND_BROKEN][1]
         assert any(dev == "H10" and guidance in msg for dev, msg in statuses)
+
+
+class TestStreamSettingOverrides:
+    @pytest.mark.asyncio
+    async def test_unsupported_override_falls_back_to_device_value(self) -> None:
+        from types import SimpleNamespace
+
+        from polar_ble_sdk._pmd.constants import PmdMeasurementType, PmdSettingType
+        from polar_ble_sdk.connector.stream.base import BasePolarDevice
+
+        calls: list[dict] = []
+
+        class FakePmd:
+            async def request_stream_settings(self, _mt):
+                return SimpleNamespace(
+                    settings=[
+                        SimpleNamespace(type=PmdSettingType.SAMPLE_RATE, values=[52])
+                    ]
+                )
+
+            async def start_acc_stream(self, _handler, **kwargs):
+                calls.append(kwargs)
+
+        warnings: list[str] = []
+        dev = BasePolarDevice(
+            None,
+            verbose=False,
+            acc_sample_rate=200,  # H10-only rate sent to a Sense in dual mode
+            log_callback=lambda m, s: warnings.append(m) if s == "warning" else None,
+        )
+        dev.polar_device = FakePmd()
+        ok = await dev._start_pmd_stream(
+            lambda _d: None,
+            PmdMeasurementType.ACC,
+            "start_acc_stream",
+            lambda _d: None,
+            [PmdMeasurementType.ACC],
+            {"sample_rate": 52},
+            "ACC",
+        )
+        assert ok
+        assert calls == [{"sample_rate": 52}]
+        assert any("unsupported" in w for w in warnings)
+
+
+class TestWatchdogHealth:
+    def test_one_frozen_stream_is_detected_while_others_flow(self) -> None:
+        adapter = PolarAdapter(
+            sense_callbacks={"ppg": lambda _d: None, "acc": lambda _d: None}
+        )
+        link = adapter.sense
+        link.conn = _connected_conn()
+        link.mark_started()
+        link.callbacks["ppg"](None)
+        link.callbacks["acc"](None)
+        now = time.monotonic()
+        link.last_packet["ppg"] = now - 20.0  # PPG froze, ACC still arriving
+        assert (
+            link.stall_reason(now, freeze_timeout=8.0) is DisconnectReason.STREAM_FROZEN
+        )
+        assert link.frozen_streams == ["ppg"]
+
+    def test_slow_streams_get_a_longer_budget(self) -> None:
+        adapter = PolarAdapter(sense_callbacks={"ppi": lambda _d: None})
+        link = adapter.sense
+        link.conn = _connected_conn()
+        link.mark_started()
+        link.callbacks["ppi"](None)
+        now = time.monotonic()
+        link.last_packet["ppi"] = now - 12.0
+        link.last_packet_time = now
+        assert link.stall_reason(now, freeze_timeout=8.0) is None
+
+    @pytest.mark.asyncio
+    async def test_no_second_connection_while_old_client_is_stuck(self) -> None:
+        statuses: list[str] = []
+        adapter = PolarAdapter(
+            status_callback=lambda _d, m: statuses.append(m), reconnect_cooldown=0
+        )
+        adapter._running = True
+        adapter.h10.dev = MagicMock()
+        stuck = _connected_conn()
+        stuck.stop_notify = AsyncMock(side_effect=asyncio.TimeoutError)
+        stuck.polar_device._client.disconnect = AsyncMock()  # never flips the flag
+        adapter.h10.conn = stuck
+        built: list[bool] = []
+        with patch.object(adapter.h10, "build", lambda: built.append(True)):
+            await adapter._reconnect(adapter.h10)
+        assert not built
+        assert any("still open" in m for m in statuses)
+        assert adapter.h10.reconnecting is False
+
+    @pytest.mark.asyncio
+    async def test_add_link_manages_a_single_device(self) -> None:
+        conn = _connected_conn()
+        conn.start_notify = AsyncMock()
+        factory = MagicMock(return_value=conn)
+        adapter = PolarAdapter(enable_watchdog=False)
+        link = adapter.add_link(
+            "device",
+            "Sense",
+            MagicMock(address="AA"),
+            factory,
+            {"ppg": lambda _d: None},
+        )
+        assert await adapter.start() == {"h10": False, "sense": False, "device": True}
+        assert link.conn is conn
+        assert "ppg_callback" in factory.call_args.kwargs
+        await adapter.disconnect()

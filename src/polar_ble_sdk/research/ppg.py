@@ -1,32 +1,31 @@
-"""PPG-to-HR and HRV analysis: derive HR and RMSSD from raw Verity Sense optical signals.
+"""PPG signal processing: filtering, beat detection and signal quality for Verity Sense PPG.
 
-Extracts pulse waves, computes zero-crossing rates, FFT fundamentals, adaptive peak detection,
-IBI cleaning, and RMSSD calculation.
+Beats are the maxima of the band-passed pulse wave, refined to sub-sample
+precision with parabolic interpolation: at 55 Hz a bare sample index quantises
+each beat to 18 ms, which adds ~13 ms of noise to RMSSD. Gaps in the sample
+stream (lost BLE packets) split the signal into segments that are filtered and
+searched separately, so no inter-beat interval ever spans a gap.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
 
-from polar_ble_sdk.research.loader import _parse_wide_ppg_csv
-
-EPOCH_SECONDS = 10
 HR_MIN_BPM = 30.0
 HR_MAX_BPM = 240.0
 BANDPASS = (0.5, 4.0)  # Hz ~ 30-240 BPM
-PEAK_MIN_DIST_S = 0.20
-PEAK_THRESH_K = 0.5
+PEAK_MIN_DIST_S = 0.25  # 240 BPM
+PEAK_MIN_PROMINENCE_SD = 1.0  # beat prominence vs local signal SD
+MIN_SEGMENT_S = 5.0
+GAP_FACTOR = 3.0  # a sample spacing > 3x nominal is a gap
 
 
 def bandpass_filter(
     x: np.ndarray, fs: float, lo: float = BANDPASS[0], hi: float = BANDPASS[1]
 ) -> np.ndarray:
-    """Butterworth bandpass filter for physiological HR frequency range."""
+    """Zero-phase Butterworth band-pass for the physiological HR frequency range."""
     if fs <= 0 or len(x) < 16:
         return x
     nyq = fs / 2.0
@@ -40,29 +39,65 @@ def bandpass_filter(
     return sp_signal.filtfilt(b, a, x)
 
 
-def zero_crossing_rate(x: np.ndarray, fs: float) -> float:
-    """Fundamental oscillation rate (Hz) via zero-crossing count."""
-    if len(x) < 8 or fs <= 0:
-        return float("nan")
-    crossings = np.sum(np.diff(np.sign(x)) != 0)
-    return float(crossings / (2.0 * len(x) / fs))
+def estimate_fs(t_s: np.ndarray) -> float:
+    """Nominal sampling rate from the median sample spacing."""
+    dt = np.diff(t_s)
+    dt = dt[dt > 0]
+    return float(1.0 / np.median(dt)) if len(dt) else float("nan")
 
 
-def epoch_hr_from_zc(x: np.ndarray, fs: float) -> float:
-    """Heart rate (BPM) from the zero-crossing rate."""
-    zc = zero_crossing_rate(x, fs)
-    if not np.isfinite(zc) or zc <= 0:
-        return float("nan")
-    hr = zc * 60.0
-    return float(hr) if HR_MIN_BPM <= hr <= HR_MAX_BPM else float("nan")
+def split_segments(t_s: np.ndarray, fs: float) -> list[slice]:
+    """Contiguous runs of samples, split wherever the spacing exceeds GAP_FACTOR/fs."""
+    breaks = np.flatnonzero(np.diff(t_s) > GAP_FACTOR / fs) + 1
+    edges = np.concatenate(([0], breaks, [len(t_s)]))
+    return [slice(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:], strict=True)]
 
 
-def epoch_hr_from_fft(x: np.ndarray, fs: float) -> float:
-    """Heart rate (BPM) from Welch PSD, tracking the fundamental frequency."""
+def detect_beats(x: np.ndarray, t_s: np.ndarray, fs: float) -> np.ndarray:
+    """Sub-sample beat times (s) in one contiguous, band-passed segment."""
+    if len(x) < int(MIN_SEGMENT_S * fs):
+        return np.array([], dtype=float)
+    pk, props = sp_signal.find_peaks(
+        x, distance=max(int(PEAK_MIN_DIST_S * fs), 1), prominence=0
+    )
+    win = max(int(5 * fs), 3)
+    local_sd = pd.Series(x).rolling(win, center=True, min_periods=1).std().to_numpy()
+    pk = pk[props["prominences"] >= PEAK_MIN_PROMINENCE_SD * local_sd[pk]]
+    pk = pk[(pk > 0) & (pk < len(x) - 1)]
+    y0, y1, y2 = x[pk - 1], x[pk], x[pk + 1]
+    denom = y0 - 2 * y1 + y2
+    delta = np.where(denom != 0, 0.5 * (y0 - y2) / np.where(denom != 0, denom, 1), 0.0)
+    delta = np.clip(delta, -0.5, 0.5)
+    return t_s[pk] + delta * (1.0 / fs)
+
+
+def beat_intervals(
+    signal_by_segment: list[tuple[np.ndarray, np.ndarray]], fs: float
+) -> tuple[list[float], list[float | None]]:
+    """Beat times and inter-beat intervals (ms), with ``None`` at every gap.
+
+    ``times[i]`` is the time of the beat that ends ``ibi[i]``.
+    """
+    times: list[float] = []
+    ibi: list[float | None] = []
+    for x, t in signal_by_segment:
+        beats = detect_beats(x, t, fs)
+        if len(beats) < 2:
+            continue
+        if ibi:
+            times.append(float(beats[0]))
+            ibi.append(None)  # not adjacent to the previous segment's last beat
+        times.extend(beats[1:].tolist())
+        ibi.extend((np.diff(beats) * 1000.0).tolist())
+    return times, ibi
+
+
+def spectral_hr(x: np.ndarray, fs: float) -> float:
+    """HR (BPM) at the Welch PSD peak, with a check for a dominant 2nd/3rd harmonic."""
     if len(x) < 64 or fs <= 0:
         return float("nan")
     nfft = max(4096, 8 * len(x))
-    nperseg = min(len(x), max(256, int(4.0 * fs)))
+    nperseg = min(len(x), max(256, int(8.0 * fs)))
     freqs, psd = sp_signal.welch(x, fs=fs, nperseg=nperseg, nfft=nfft)
     band = (freqs >= HR_MIN_BPM / 60.0) & (freqs <= HR_MAX_BPM / 60.0)
     if band.sum() == 0:
@@ -77,7 +112,6 @@ def epoch_hr_from_fft(x: np.ndarray, fs: float) -> float:
     else:
         f_peak = f[i_peak]
 
-    # Check if the highest peak is a harmonic (e.g. 2x, 3x) of a true fundamental peak
     peaks, _ = sp_signal.find_peaks(p, height=0.6 * p[i_peak])
     for pk in peaks:
         if pk != i_peak and f[pk] < f_peak:
@@ -90,187 +124,20 @@ def epoch_hr_from_fft(x: np.ndarray, fs: float) -> float:
     return float(hr) if HR_MIN_BPM <= hr <= HR_MAX_BPM else float("nan")
 
 
-def detect_peaks_epoch(
-    x: np.ndarray, fs: float, min_dist_s: float = PEAK_MIN_DIST_S
-) -> np.ndarray:
-    """Find pulse-wave peaks in a single epoch of filtered PPG using rolling MAD thresholding."""
-    if len(x) < 32 or fs <= 0:
-        return np.array([], dtype=int)
-    min_dist = max(int(min_dist_s * fs), 1)
+def spectral_sqi(x: np.ndarray, fs: float) -> float:
+    """Signal quality 0..1: share of in-band power at the pulse fundamental and 2nd harmonic.
 
-    win = max(int(1.5 * fs), 7)
-    if win % 2 == 0:
-        win += 1
-    baseline = pd.Series(x).rolling(win, center=True, min_periods=1).median().to_numpy()
-    resid = x - baseline
-    mad = np.median(np.abs(resid - np.median(resid)))
-    if mad <= 0:
-        mad = resid.std()
-    thr = np.median(resid) + PEAK_THRESH_K * mad
-    peaks, _ = sp_signal.find_peaks(resid, distance=min_dist, height=thr)
-    return peaks
-
-
-def clean_ibi(ibi_s: np.ndarray, min_s: float = 0.25, max_s: float = 2.0) -> np.ndarray:
-    """Reject physiological outliers and repair missed-beat intervals (~2x median)."""
-    ibi_s = np.asarray(ibi_s, dtype=float)
-    ibi_s = ibi_s[ibi_s >= min_s]
-    if len(ibi_s) < 2:
-        return ibi_s[ibi_s <= max_s]
-
-    med = np.median(ibi_s)
-    out_list: list[float] = []
-    for v in ibi_s:
-        if 1.5 * med < v <= 2.5 * med:
-            out_list.extend([v / 2.0, v / 2.0])
-        elif v <= max_s:
-            out_list.append(v)
-
-    if not out_list:
-        return np.array([], dtype=float)
-
-    out_arr = np.array(out_list)
-    med2 = np.median(out_arr)
-    mad2 = np.median(np.abs(out_arr - med2))
-    cutoff = max(3.0 * mad2, 0.25 * med2)
-    out_arr = out_arr[np.abs(out_arr - med2) <= cutoff]
-    return out_arr[out_arr <= max_s]
-
-
-def ibi_to_hr(ibi_s: np.ndarray) -> float:
-    """Mean HR (BPM) from inter-beat intervals in seconds."""
-    if len(ibi_s) == 0:
+    A clean pulse wave concentrates its power there; motion spreads it out.
+    Uses only the PPG itself, never the reference device.
+    """
+    if len(x) < 64 or fs <= 0:
         return float("nan")
-    valid_ibi = ibi_s[(ibi_s > 60.0 / HR_MAX_BPM) & (ibi_s < 60.0 / HR_MIN_BPM)]
-    if len(valid_ibi) == 0:
+    nperseg = min(len(x), max(256, int(8.0 * fs)))
+    freqs, psd = sp_signal.welch(x, fs=fs, nperseg=nperseg, nfft=max(4096, 8 * len(x)))
+    band = (freqs >= BANDPASS[0]) & (freqs <= BANDPASS[1])
+    total = psd[band].sum()
+    if total <= 0:
         return float("nan")
-    return float(60.0 / np.mean(valid_ibi))
-
-
-def ibi_to_rmssd(ibi_ms: np.ndarray) -> float:
-    """RMSSD (ms) from inter-beat intervals in milliseconds."""
-    if len(ibi_ms) < 2:
-        return float("nan")
-    diffs = np.diff(ibi_ms)
-    return float(np.sqrt(np.mean(diffs**2)))
-
-
-def derive_ppg_hr_epochs(session_dir: Path) -> pd.DataFrame:
-    """Derive per-epoch HR and RMSSD from raw PPG and compare to H10 ECG reference."""
-    ppg_csv = session_dir / "sense" / "raw" / "ppg.csv"
-    if not ppg_csv.exists():
-        return pd.DataFrame()
-
-    df = _parse_wide_ppg_csv(ppg_csv)
-    if df.empty:
-        return pd.DataFrame()
-
-    diffs = df["Timestamp_s"].diff().dropna()
-    fs = float(1.0 / diffs.median()) if len(diffs) > 0 and diffs.median() > 0 else 80.0
-
-    h10_csv = session_dir / "h10" / "post-processed" / "summary.csv"
-    sense_csv = session_dir / "sense" / "post-processed" / "summary.csv"
-
-    h10 = (
-        pd.read_csv(h10_csv, parse_dates=["Timestamp"])
-        if h10_csv.exists()
-        else pd.DataFrame()
-    )
-    sense = (
-        pd.read_csv(sense_csv, parse_dates=["Timestamp"])
-        if sense_csv.exists()
-        else pd.DataFrame()
-    )
-
-    if h10.empty or "Timestamp" not in h10.columns:
-        return pd.DataFrame()
-
-    has_sense = not sense.empty and "Timestamp" in sense.columns
-
-    first_ts = h10["Timestamp"].min()
-    last_ts = h10["Timestamp"].max()
-    epoch_start = pd.date_range(
-        first_ts.floor(f"{EPOCH_SECONDS}s"),
-        last_ts.ceil(f"{EPOCH_SECONDS}s"),
-        freq=f"{EPOCH_SECONDS}s",
-    )
-    ppg_t_abs = first_ts + pd.to_timedelta(df["Timestamp_s"], unit="s")
-
-    chans = ["ch1", "ch2", "ch3", "ch4"]
-    xf = {
-        c: bandpass_filter(df[c].to_numpy(dtype=float), fs, BANDPASS[0], BANDPASS[1])
-        for c in chans
-        if c in df.columns
-    }
-
-    rows: list[dict[str, Any]] = []
-    for i in range(len(epoch_start) - 1):
-        a, b = epoch_start[i], epoch_start[i + 1]
-        in_ep = (ppg_t_abs >= a) & (ppg_t_abs < b)
-        idx = np.where(in_ep)[0]
-        if len(idx) < int(5 * fs):
-            continue
-
-        hr_cands: list[float] = []
-        rmssd_cands: list[float] = []
-        npeak_cands: list[int] = []
-        for c in xf:
-            seg = xf[c][idx]
-            hr = epoch_hr_from_fft(seg, fs)
-            if not np.isfinite(hr):
-                hr = epoch_hr_from_zc(seg, fs)
-            if not np.isfinite(hr):
-                continue
-            hr_cands.append(hr)
-            period_s = 60.0 / hr
-            pk = detect_peaks_epoch(seg, fs)
-            if len(pk) >= 3:
-                pk_indices = idx[pk]
-                peak_ts = df["Timestamp_s"].iloc[pk_indices].to_numpy()
-                ibi = np.diff(peak_ts)
-                ibi_cleaned = clean_ibi(ibi, max_s=period_s * 1.8)
-                if len(ibi_cleaned) >= 2:
-                    rmssd_cands.append(ibi_to_rmssd(ibi_cleaned * 1000.0))
-                    npeak_cands.append(len(pk))
-
-        if not hr_cands:
-            continue
-
-        hr = float(np.median(hr_cands))
-        rmssd = float(np.median(rmssd_cands)) if rmssd_cands else float("nan")
-        n_peaks = int(np.median(npeak_cands)) if npeak_cands else 0
-
-        h10_ep = h10[(h10["Timestamp"] >= a) & (h10["Timestamp"] < b)]
-        h10_hr = (
-            float(h10_ep.loc[h10_ep["HeartRate_BPM"] > 0, "HeartRate_BPM"].mean())
-            if len(h10_ep)
-            and "HeartRate_BPM" in h10_ep.columns
-            and (h10_ep["HeartRate_BPM"] > 0).any()
-            else float("nan")
-        )
-        if has_sense:
-            sense_ep = sense[(sense["Timestamp"] >= a) & (sense["Timestamp"] < b)]
-            sense_hr = (
-                float(
-                    sense_ep.loc[sense_ep["HeartRate_BPM"] > 0, "HeartRate_BPM"].mean()
-                )
-                if len(sense_ep)
-                and "HeartRate_BPM" in sense_ep.columns
-                and (sense_ep["HeartRate_BPM"] > 0).any()
-                else float("nan")
-            )
-        else:
-            sense_hr = float("nan")
-
-        rows.append(
-            {
-                "epoch_start": a,
-                "ppg_hr": hr,
-                "ppg_rmssd": rmssd,
-                "h10_hr": h10_hr,
-                "sense_hr": sense_hr,
-                "n_peaks": n_peaks,
-            }
-        )
-
-    return pd.DataFrame(rows)
+    f0 = freqs[band][int(np.argmax(psd[band]))]
+    near = (np.abs(freqs - f0) <= 0.1) | (np.abs(freqs - 2 * f0) <= 0.1)
+    return float(psd[band & near].sum() / total)

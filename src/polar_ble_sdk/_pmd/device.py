@@ -99,20 +99,30 @@ class PolarDevice:
         point and PMD data characteristics.
         """
         await self._client.connect()
-        await self._client.start_notify(
-            PolarCharacteristic.PMD_CONTROL_POINT.value, self._handle_pmd_control
-        )
-        await self._client.start_notify(
-            PolarCharacteristic.PMD_DATA.value, self._handle_pmd_data
-        )
+        try:
+            await self._client.start_notify(
+                PolarCharacteristic.PMD_CONTROL_POINT.value, self._handle_pmd_control
+            )
+            await self._client.start_notify(
+                PolarCharacteristic.PMD_DATA.value, self._handle_pmd_data
+            )
+        except BaseException:
+            # __aexit__ never runs when __aenter__ raises; don't leak the link.
+            with contextlib.suppress(Exception):
+                await self._client.disconnect()
+            raise
 
-    async def disconnect(self) -> None:
-        """Disconnects from the Polar BLE device."""
+    def _drain_control_queue(self) -> None:
+        """Drop queued control-point replies, e.g. a late reply to a timed-out request."""
         while not self._queue_pmd_control.empty():
             try:
                 self._queue_pmd_control.get_nowait()
             except asyncio.QueueEmpty:
                 break
+
+    async def disconnect(self) -> None:
+        """Disconnects from the Polar BLE device."""
+        self._drain_control_queue()
         await self._client.disconnect()
 
     async def __aenter__(self):
@@ -192,7 +202,35 @@ class PolarDevice:
                 and response[1] == op
                 and (measurement_type is None or response[2] == measurement_type)
             ):
-                return response
+                return await self._read_continuations(response, deadline)
+
+    async def _read_continuations(
+        self, first: bytearray, deadline: float
+    ) -> bytearray | None:
+        """Append continuation packets while the reply's "more" flag is set.
+
+        As in the official Polar SDK, byte 4 of the first packet and byte 0 of
+        each continuation say whether another packet follows; a continuation's
+        payload starts at byte 1. Returns None if the reply is incomplete.
+        """
+        merged = bytearray(first)
+        more = len(merged) > 4 and merged[4] != 0
+        loop = asyncio.get_running_loop()
+        while more:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return None
+            try:
+                part = await asyncio.wait_for(self._queue_pmd_control.get(), remaining)
+            except asyncio.TimeoutError:
+                return None
+            if not part or part[0] == 0xF0:  # a new reply: this one was cut short
+                return None
+            merged += part[1:]
+            more = part[0] != 0
+        if len(merged) > 4:
+            merged[4] = 0
+        return merged
 
     async def request_stream_settings(
         self, measurement_type: PmdMeasurementType
@@ -209,6 +247,7 @@ class PolarDevice:
             exceptions.ControlPointResponseError: If the device does not answer.
         """
         async with self._control_lock:
+            self._drain_control_queue()
             await self._client.write_gatt_char(
                 PolarCharacteristic.PMD_CONTROL_POINT.value,
                 bytearray([PmdControlOperationCode.GET, measurement_type.value]),
@@ -220,7 +259,16 @@ class PolarDevice:
                 raise exceptions.ControlPointResponseError(
                     f"No settings response for {measurement_type.name}"
                 )
-            return MeasurementSettings.from_bytes(response)
+            settings = MeasurementSettings.from_bytes(response)
+            if (
+                settings.error_code is not None
+                and settings.error_code != PmdControlPointErrorCode.SUCCESS
+            ):
+                raise exceptions.ControlPointResponseError(
+                    f"Device rejected settings request for "
+                    f"{measurement_type.name}: {settings.error_code.name}"
+                )
+            return settings
 
     async def start_stream(self, settings: MeasurementSettings) -> None:
         """Starts a generic PMD stream based on the provided settings.
@@ -236,6 +284,7 @@ class PolarDevice:
                 or rejects the requested settings.
         """
         async with self._control_lock:
+            self._drain_control_queue()
             await self._client.write_gatt_char(
                 PolarCharacteristic.PMD_CONTROL_POINT.value, settings.to_bytes()
             )
@@ -310,6 +359,7 @@ class PolarDevice:
         SDK-mode status is the first parameter byte (index 5); non-zero = enabled.
         """
         async with self._control_lock:
+            self._drain_control_queue()
             await self._client.write_gatt_char(
                 PolarCharacteristic.PMD_CONTROL_POINT.value,
                 bytearray([0x06]),  # GET_SDK_MODE_STATUS
@@ -596,14 +646,15 @@ class PolarDevice:
     def _handle_pmd_control(
         self, _: BleakGATTCharacteristic | int, data: bytearray
     ) -> None:
-        """Queue only PMD control point responses.
+        """Queue PMD control point responses and their continuation packets.
 
-        All control-point responses start with 0xF0 (the response code). On
+        Responses start with 0xF0 (the response code); continuation packets of
+        a multi-packet reply start with their "more" flag (0x00 or 0x01). On
         BlueZ, reading the PMD control point while notifications are enabled can
         also surface the feature packet as a notification; those start with
         0x0F and must not be mixed into the response queue.
         """
-        if not data or data[0] != 0xF0:
+        if not data or data[0] not in (0xF0, 0x00, 0x01):
             return
 
         self._queue_pmd_control.put_nowait(data)

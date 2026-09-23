@@ -19,8 +19,11 @@ from rich.table import Table
 from .cli_common import (
     LOG_TOGGLE,
     add_common_args,
+    apply_rate_overrides,
     build_stream_callbacks,
+    run_cli,
     run_dashboard,
+    save_on_console_close,
     stream_setting_kwargs,
 )
 from .connector.adapter import PolarAdapter
@@ -54,6 +57,7 @@ H10_SUMMARY_COLS = [
     "ACC_X",
     "ACC_Y",
     "ACC_Z",
+    "Marker",
 ]
 
 SENSE_SUMMARY_COLS = [
@@ -71,6 +75,7 @@ SENSE_SUMMARY_COLS = [
     "MAG_X",
     "MAG_Y",
     "MAG_Z",
+    "Marker",
 ]
 
 _H10_STREAMS = ("hr", "ecg", "acc")
@@ -96,7 +101,9 @@ def _make_grid(
     lsl_active: bool,
 ) -> Panel:
     def _column(state: dict[str, Any], label: str, is_h10: bool) -> Panel:
-        border = "green" if "connected" in state.get("status", "").lower() else "yellow"
+        status = state.get("status", "").lower()
+        live = "connected" in status and "disconnect" not in status
+        border = "green" if live else "yellow"
         return Panel(
             Group(
                 header_bar(
@@ -161,24 +168,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable full-resolution CSV logs (default is ON).",
     )
     parser.add_argument(
-        "--watchdog",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable link watchdog and auto-reconnect on freeze or disconnection (default: ON).",
-    )
-    parser.add_argument(
-        "--freeze-timeout",
-        type=float,
-        default=8.0,
-        help="Watchdog silent freeze timeout in seconds (default: 8.0).",
-    )
-    parser.add_argument(
-        "--watchdog-interval",
-        type=float,
-        default=3.0,
-        help="Watchdog poll interval in seconds (default: 3.0).",
-    )
-    parser.add_argument(
         "--scan-timeout",
         type=float,
         default=15.0,
@@ -213,9 +202,6 @@ async def main(argv: Sequence[str] | None = None) -> None:
     state_h10 = make_device_state("Polar H10")
     state_sense = make_device_state("Polar Sense")
 
-    base_dir = Path(args.data_dir) if args.data_dir else Path("./data")
-    session_mgr = SessionManager(base_dir=base_dir, device_type="dual", is_dual=True)
-    session_mgr.init_event_log(prefix="dual")
     log_panel = LogPanel()
     log_panel.set_level(args.log_level)
 
@@ -245,6 +231,13 @@ async def main(argv: Sequence[str] | None = None) -> None:
         print(f"Error: Missing devices: {', '.join(missing)}")
         return
 
+    # Created only once both devices are found, so a failed scan leaves no
+    # empty session folder behind.
+    base_dir = Path(args.data_dir) if args.data_dir else Path("./data")
+    session_mgr = SessionManager(base_dir=base_dir, device_type="dual", is_dual=True)
+    session_mgr.metadata.participant_id = args.participant
+    session_mgr.init_event_log(prefix="dual")
+
     for state, dev, fallback in (
         (state_h10, h10_dev, "Polar H10"),
         (state_sense, sense_dev, "Polar Verity Sense"),
@@ -266,6 +259,23 @@ async def main(argv: Sequence[str] | None = None) -> None:
     log_full = not args.no_log_full and not args.no_log
 
     rate_tracker = RateTracker()
+    configured_rates: dict[str, int] = {
+        "h10_ecg": 130,
+        "h10_acc": 200,
+        "sense_ppg": 55 if args.no_sdk_mode else 135,
+        "sense_acc": 52,
+    }
+    if args.sense_gyro:
+        configured_rates["sense_gyro"] = 52
+    if args.sense_mag:
+        configured_rates["sense_mag"] = 20
+    apply_rate_overrides(configured_rates, args, prefixes=("h10_", "sense_"))
+
+    save_on_console_close(
+        lambda: session_mgr.close_all(
+            rate_tracker=rate_tracker, configured_rates=configured_rates
+        )
+    )
     h10_cbs = build_stream_callbacks(
         h10_streams,
         state_h10,
@@ -288,7 +298,8 @@ async def main(argv: Sequence[str] | None = None) -> None:
         sev = (
             "warning"
             if any(
-                w in msg_lower for w in ("reconnecting", "failed", "stalled", "lost")
+                w in msg_lower
+                for w in ("reconnecting", "failed", "stalled", "lost", "disconnect")
             )
             else ("success" if "connected" in msg_lower else "info")
         )
@@ -315,7 +326,11 @@ async def main(argv: Sequence[str] | None = None) -> None:
                     sense_id=args.sense or "Sense",
                     enable_sense_gyro=args.sense_gyro,
                     enable_sense_mag=args.sense_mag,
-                    ppg_rate=55.0 if args.no_sdk_mode else 135.0,
+                    ppg_rate=args.ppg_rate or (55.0 if args.no_sdk_mode else 135.0),
+                    acc_rate_h10=args.acc_rate or 200.0,
+                    ecg_rate=args.ecg_rate or 130.0,
+                    gyro_rate=args.gyro_rate or 52.0,
+                    mag_rate=args.mag_rate or 20.0,
                 )
                 for cbs, prefix in ((h10_cbs, "h10"), (sense_cbs, "sense")):
                     for stream, cb in list(cbs.items()):
@@ -402,7 +417,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
             lsl_bridge is not None,
         )
 
-    def write_rows(_active_marker: str) -> None:
+    def write_rows(active_marker: str) -> None:
         ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
         if csv_h10:
             csv_h10.write_row(
@@ -411,8 +426,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
                     state_h10["hr"],
                     calculate_rmssd(state_h10["rr_history"]),
                     state_h10.get("battery"),
-                    state_h10.get("ecg_last_sample"),
+                    state_h10.get("ecg_last_uv"),
                     *unwrap_vector(state_h10, "acc_raw"),
+                    active_marker,
                 ]
             )
             state_h10["csv_rows_written"] = csv_h10.rows_written
@@ -432,6 +448,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
                     *unwrap_vector(state_sense, "acc_raw"),
                     *unwrap_vector(state_sense, "gyro_raw"),
                     *unwrap_vector(state_sense, "mag_raw"),
+                    active_marker,
                 ]
             )
             state_sense["csv_rows_written"] = csv_sense.rows_written
@@ -524,23 +541,14 @@ async def main(argv: Sequence[str] | None = None) -> None:
         if lsl_bridge:
             lsl_bridge.close()
 
-        await adapter.disconnect()
-
-        configured_rates: dict[str, int] = {
-            "h10_ecg": 130,
-            "h10_acc": 200,
-            "sense_ppg": 55 if args.no_sdk_mode else 135,
-            "sense_acc": 52,
-        }
-        if args.sense_gyro:
-            configured_rates["sense_gyro"] = 52
-        if args.sense_mag:
-            configured_rates["sense_mag"] = 20
-
+        # Save before the BLE teardown (see cli.py).
         session_mgr.close_all(
             rate_tracker=rate_tracker,
             configured_rates=configured_rates,
+            keep_log=True,
         )
+        await adapter.disconnect()
+        session_mgr.close_log()
 
         print_hz_summary(
             configured_rates,
@@ -555,5 +563,4 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
 def _entrypoint() -> None:
     """Console script entry point handling Ctrl-C cleanly."""
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(main())
+    run_cli(main)

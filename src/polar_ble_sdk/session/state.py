@@ -40,6 +40,7 @@ def make_device_state(name: str = "Polar Device") -> dict[str, Any]:
         "ecg_count": 0,
         "ecg_hz": 0.0,
         "ecg_last_sample": "-",
+        "ecg_last_uv": None,
         "mag_count": 0,
         "mag_hz": 0.0,
         "mag_last_sample": "-",
@@ -120,7 +121,7 @@ def feed_mag(
         last_val = samples[-1]
         state["mag_raw"] = (last_val[0], last_val[1], last_val[2])
         state["mag_last_sample"] = (
-            f"({last_val[0]:+3.1f}, {last_val[1]:+3.1f}, {last_val[2]:+3.1f}) uT"
+            f"({last_val[0]:+3.1f}, {last_val[1]:+3.1f}, {last_val[2]:+3.1f}) G"
         )
 
 
@@ -132,6 +133,7 @@ def feed_ecg(
     state["ecg_count"] += len(samples)
     tracker.track(key, len(samples))
     if samples:
+        state["ecg_last_uv"] = samples[-1]
         state["ecg_last_sample"] = f"{samples[-1]:+5d} µV"
 
 
@@ -162,10 +164,17 @@ def feed_ppi(
     else:
         state["ppi_last_sample"] = f"PPI={last[1]} ms"
 
-    ppi_ms = [float(s[1]) for s in data if len(s) > 1 and s[1] is not None and s[1] > 0]
+    # None marks an invalid PPI so RMSSD never differences across it.
+    history = [
+        None
+        if len(s) < 2 or s[1] is None or s[1] <= 0 or (len(s) >= 7 and s[6])
+        else float(s[1])
+        for s in data
+    ]
+    ppi_ms = [v for v in history if v is not None]
+    state["ppi_history"].extend(history)
     if ppi_ms:
         state["ppi_intervals"] = ppi_ms
-        state["ppi_history"].extend(ppi_ms)
         if not state["rr_history"]:
             state["rr_intervals"] = ppi_ms
 

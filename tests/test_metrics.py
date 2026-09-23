@@ -6,6 +6,8 @@ from polar_ble_sdk.metrics.hrv import (
     calculate_pnn50,
     calculate_rmssd,
     calculate_sdnn,
+    rr_valid_mask,
+    successive_differences,
 )
 from polar_ble_sdk.metrics.rate_tracker import (
     RateTracker,
@@ -25,10 +27,19 @@ class TestHrvCalculations:
         assert math.isnan(calculate_rmssd([]))
         assert math.isnan(calculate_rmssd([800.0]))
 
-    def test_rmssd_filters_invalid_zero_and_none(self):
-        assert calculate_rmssd([0.0, 800.0, None, 820.0, -10.0]) == pytest.approx(
-            20.0, rel=1e-4
+    def test_rmssd_never_differences_across_a_gap(self):
+        # 800 and 820 are not adjacent (a missing beat sits between them)
+        assert math.isnan(calculate_rmssd([0.0, 800.0, None, 820.0, -10.0]))
+        assert calculate_rmssd([800.0, 810.0, None, 820.0, 840.0]) == pytest.approx(
+            math.sqrt((10**2 + 20**2) / 2)
         )
+
+    def test_ectopic_beat_is_excluded_not_differenced(self):
+        # A premature beat (500) followed by a compensatory pause (1100)
+        rr = [800.0, 810.0, 800.0, 805.0, 500.0, 1100.0, 800.0, 810.0, 805.0, 800.0]
+        diffs = successive_differences(rr)
+        assert all(abs(d) <= 10 for d in diffs)
+        assert rr_valid_mask(rr)[4:6] == [False, False]
 
     def test_sdnn_standard_sequence(self):
         # Intervals: 800, 820, 840 ms -> Mean: 820 -> Variance: (( -20)^2 + 0 + 20^2)/2 = 400 -> SD: 20 ms
@@ -48,7 +59,8 @@ class TestRateTracker:
         acc.add(130, timestamp=101.0)
         assert acc.samples == 260
         assert acc.duration == pytest.approx(1.0)
-        assert acc.average_hz == pytest.approx(260.0)
+        # The first batch's samples predate first_ts: 130 samples over 1 s.
+        assert acc.average_hz == pytest.approx(130.0)
 
     def test_sliding_window_rate_tracker(self):
         tracker = RateTracker(sliding_window_s=1.5)
@@ -56,14 +68,15 @@ class TestRateTracker:
         tracker.track("ecg", 65, timestamp=10.5)
         tracker.track("ecg", 65, timestamp=11.0)
 
-        # With now=11.0: span = 11.0 - 10.0 = 1.0s, total = 195 samples -> 195 Hz
-        hz = tracker.get_instantaneous_hz("ecg", now=11.0)
-        assert hz == pytest.approx(195.0, rel=1e-2)
+        # Batches at 10.5 and 11.0 carry 130 samples over 1.0 s -> 130 Hz
+        hz = tracker.get_instantaneous_hz("ecg", now=11.2)
+        assert hz == pytest.approx(130.0, rel=1e-2)
 
     def test_verify_all(self):
         tracker = RateTracker()
         tracker.track("ecg", 130, timestamp=0.0)
-        tracker.track("ecg", 130, timestamp=2.0)  # 260 samples over 2s = 130 Hz
+        tracker.track("ecg", 130, timestamp=1.0)
+        tracker.track("ecg", 130, timestamp=2.0)  # 260 samples after t=0 over 2s
 
         results = tracker.verify_all({"ecg": 130})
         assert len(results) == 1

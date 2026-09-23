@@ -44,7 +44,11 @@ class NonBlockingKeyboardReader:
                 if ch in ("\r", "\n"):
                     line = self._buffer.strip()
                     self._buffer = ""
-                    if line:
+                    if line.startswith("/"):
+                        # "/text" is always free text, even if it starts with a hotkey.
+                        if line[1:].strip():
+                            markers.append(line[1:].strip())
+                    elif line:
                         line_upper = line.upper()
                         if line_upper in self._hotkeys:
                             markers.append(self._hotkeys[line_upper])
@@ -53,6 +57,9 @@ class NonBlockingKeyboardReader:
                     continue
 
                 if not self._buffer:
+                    if ch == "/":
+                        self._buffer = ch
+                        continue
                     if ch == " ":
                         now = time.monotonic()
                         if (now - self._last_space_ts) >= 0.2:

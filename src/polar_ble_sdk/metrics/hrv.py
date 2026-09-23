@@ -7,6 +7,14 @@ Physiological Reference:
     - Task Force of the European Society of Cardiology & North American Society
       of Pacing and Electrophysiology (1996). Heart rate variability: standards
       of measurement, physiological interpretation, and clinical use.
+
+Artifact handling: intervals are validated with a physiological range check and
+a local-median check (an interval deviating > 20 % from the median of its
+neighbours is an ectopic beat or a missed/extra detection). Invalid intervals
+are *excluded*, never interpolated or split, and successive differences are
+only taken between two intervals that are adjacent in the original series and
+both valid, so a removed beat never produces a difference between beats that
+were not consecutive. ``None`` (or <= 0) in the input marks a known gap.
 """
 
 from __future__ import annotations
@@ -15,62 +23,89 @@ import math
 import statistics
 from collections.abc import Sequence
 
+RR_MIN_MS = 300.0  # 200 BPM
+RR_MAX_MS = 2000.0  # 30 BPM
+LOCAL_DEVIATION = 0.20
+LOCAL_HALF_WINDOW = 5
+
+
+def rr_valid_mask(rr_list: Sequence[float | int | None]) -> list[bool]:
+    """Per-interval validity: in range and within 20 % of the local median.
+
+    The local median uses up to ``LOCAL_HALF_WINDOW`` in-range neighbours on
+    each side (not the interval itself); with fewer than 3 neighbours only the
+    range check applies.
+    """
+    vals = [
+        float(v) if v is not None and RR_MIN_MS <= v <= RR_MAX_MS else None
+        for v in rr_list
+    ]
+    mask = []
+    for i, v in enumerate(vals):
+        if v is None:
+            mask.append(False)
+            continue
+        lo, hi = max(0, i - LOCAL_HALF_WINDOW), i + LOCAL_HALF_WINDOW + 1
+        neigh = [n for n in vals[lo:i] + vals[i + 1 : hi] if n is not None]
+        if len(neigh) >= 3:
+            med = statistics.median(neigh)
+            mask.append(abs(v - med) <= LOCAL_DEVIATION * med)
+        else:
+            mask.append(True)
+    return mask
+
+
+def _valid_values(rr_list: Sequence[float | int | None]) -> list[float]:
+    mask = rr_valid_mask(rr_list)
+    return [float(v) for v, ok in zip(rr_list, mask, strict=True) if ok and v]
+
+
+def successive_differences(rr_list: Sequence[float | int | None]) -> list[float]:
+    """Differences between adjacent intervals that are both valid."""
+    mask = rr_valid_mask(rr_list)
+    return [
+        float(rr_list[i + 1]) - float(rr_list[i])  # type: ignore[arg-type]
+        for i in range(len(rr_list) - 1)
+        if mask[i] and mask[i + 1]
+    ]
+
 
 def calculate_rmssd(rr_list: Sequence[float | int | None]) -> float:
-    """Calculate the Root Mean Square of Successive Differences (RMSSD) in milliseconds.
+    """Root Mean Square of Successive Differences (RMSSD) in milliseconds.
 
-    RMSSD reflects the beat-to-beat variance in heart rate and is the primary
-    time-domain measure used to estimate vagally mediated changes in HRV.
+    RMSSD reflects beat-to-beat variance in heart rate and is the primary
+    time-domain estimate of vagally mediated HRV.
 
-    Formula:
+    Formula (over the M valid adjacent pairs):
         .. math::
-            \\text{RMSSD} = \\sqrt{ \\frac{1}{N-1} \\sum_{i=1}^{N-1} (RR_{i+1} - RR_i)^2 }
+            \\text{RMSSD} = \\sqrt{ \\frac{1}{M} \\sum (RR_{i+1} - RR_i)^2 }
 
-    Args:
-        rr_list: A sequence of RR or PPI interval values in milliseconds. Non-positive
-            and None values are automatically filtered out.
-
-    Returns:
-        float: The calculated RMSSD in milliseconds, or NaN if fewer than 2 valid
-            intervals are provided.
+    Returns NaN if there is no valid adjacent pair.
     """
-    vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
-    if len(vals) < 2:
+    diffs = successive_differences(rr_list)
+    if not diffs:
         return float("nan")
-    diffs = [vals[i + 1] - vals[i] for i in range(len(vals) - 1)]
     return float(math.sqrt(sum(d * d for d in diffs) / len(diffs)))
 
 
 def calculate_sdnn(rr_list: Sequence[float | int | None]) -> float:
-    """Calculate the Standard Deviation of NN/RR intervals (SDNN) in milliseconds.
+    """Standard deviation of the valid NN intervals (SDNN) in milliseconds.
 
-    SDNN reflects all the cyclic components responsible for variability in the
-    recording period (both sympathetic and parasympathetic influences).
-
-    Args:
-        rr_list: A sequence of RR or PPI interval values in milliseconds.
-
-    Returns:
-        float: The calculated SDNN in milliseconds, or NaN if fewer than 2 valid intervals.
+    SDNN reflects all cyclic components of variability in the recording period.
+    Returns NaN with fewer than 2 valid intervals.
     """
-    vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
+    vals = _valid_values(rr_list)
     if len(vals) < 2:
         return float("nan")
     return statistics.stdev(vals)
 
 
 def calculate_pnn50(rr_list: Sequence[float | int | None]) -> float:
-    """Calculate the percentage of successive RR intervals differing by > 50 ms (pNN50).
+    """Percentage of valid successive differences larger than 50 ms (pNN50).
 
-    Args:
-        rr_list: A sequence of RR or PPI interval values in milliseconds.
-
-    Returns:
-        float: The pNN50 percentage (0.0 to 100.0), or NaN if fewer than 2 valid intervals.
+    Returns NaN if there is no valid adjacent pair.
     """
-    vals = [float(rr) for rr in rr_list if rr is not None and rr > 0]
-    if len(vals) < 2:
+    diffs = successive_differences(rr_list)
+    if not diffs:
         return float("nan")
-    diffs = [abs(vals[i + 1] - vals[i]) for i in range(len(vals) - 1)]
-    nn50 = sum(1 for d in diffs if d > 50.0)
-    return float((nn50 / len(diffs)) * 100.0)
+    return float(sum(1 for d in diffs if abs(d) > 50.0) / len(diffs) * 100.0)

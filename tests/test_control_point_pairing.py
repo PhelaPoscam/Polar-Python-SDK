@@ -7,6 +7,7 @@ with the previous request's reply, which silently masked a rejected ACC start:
 the Verity Sense needs CHANNELS=3, and a start sent without it is refused.
 """
 
+import asyncio
 from typing import Any
 from unittest.mock import patch
 
@@ -168,3 +169,73 @@ class TestControlPointPairing:
             pytest.raises(ControlPointResponseError, match="No settings response"),
         ):
             await device.request_stream_settings(PmdMeasurementType.ACC)
+
+
+class TestControlPointErrors:
+    @pytest.mark.asyncio
+    async def test_short_error_reply_raises_library_error(self) -> None:
+        device, client = make_device()
+        client.reply = lambda _p: bytearray(
+            [0xF0, PmdControlOperationCode.START, PmdMeasurementType.ACC]
+        )
+        with pytest.raises(ControlPointResponseError):
+            await device.start_acc_stream(lambda _d: None, 52, 16, 8)
+
+    @pytest.mark.asyncio
+    async def test_unknown_error_code_raises_library_error(self) -> None:
+        device, client = make_device()
+        client.reply = lambda _p: bytearray(
+            [0xF0, PmdControlOperationCode.GET, PmdMeasurementType.ACC, 0xEE]
+        )
+        with pytest.raises(ControlPointResponseError):
+            await device.request_stream_settings(PmdMeasurementType.ACC)
+
+    @pytest.mark.asyncio
+    async def test_rejected_settings_request_raises(self) -> None:
+        device, client = make_device()
+        client.reply = lambda _p: response(
+            PmdControlOperationCode.GET,
+            PmdMeasurementType.ACC,
+            error=PmdControlPointErrorCode.ERROR_NOT_SUPPORTED,
+        )
+        with pytest.raises(ControlPointResponseError, match="ERROR_NOT_SUPPORTED"):
+            await device.request_stream_settings(PmdMeasurementType.ACC)
+
+
+class TestMultiPacketReplies:
+    @pytest.mark.asyncio
+    async def test_settings_spread_over_two_packets_are_merged(self) -> None:
+        device, client = make_device()
+        first = response(
+            PmdControlOperationCode.GET,
+            PmdMeasurementType.ACC,
+            settings=((PmdSettingType.SAMPLE_RATE, [26, 52]),),
+        )
+        first[4] = 0x01  # more packets follow
+        second = bytearray([0x00])  # last continuation
+        for setting_type, values in ((PmdSettingType.RANGE, [2, 4, 8]),):
+            second.append(setting_type.value)
+            second.append(len(values))
+            for value in values:
+                second.extend(value.to_bytes(setting_type.field_size, "little"))
+
+        def reply(_payload: bytearray) -> bytearray:
+            device._queue_pmd_control.put_nowait(first)
+            return second
+
+        client.reply = reply
+        settings = await device.request_stream_settings(PmdMeasurementType.ACC)
+        by_type = {s.type: s.values for s in settings.settings}
+        assert by_type[PmdSettingType.SAMPLE_RATE] == [26, 52]
+        assert by_type[PmdSettingType.RANGE] == [2, 4, 8]
+
+    @pytest.mark.asyncio
+    async def test_missing_continuation_is_an_error_not_a_truncation(self) -> None:
+        device, client = make_device()
+        first = response(PmdControlOperationCode.GET, PmdMeasurementType.ACC)
+        first[4] = 0x01
+        client.reply = lambda _p: first
+        with pytest.raises(ControlPointResponseError):
+            await asyncio.wait_for(
+                device.request_stream_settings(PmdMeasurementType.ACC), 10
+            )

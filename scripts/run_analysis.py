@@ -1,7 +1,13 @@
 """Dual-Device cross-validation analysis CLI (Polar H10 vs Polar Verity Sense).
 
 Usage:
-    python scripts/run_analysis.py [session_dir]
+    python scripts/run_analysis.py [session_dir] [--window 60]
+    python scripts/run_analysis.py --pool SESSION_DIR [SESSION_DIR ...]
+
+Per session: fixed windows on the host clock, Verity Sense PPG/PPI against the
+H10 RR reference, metrics on all windows (primary) and artifact-free windows
+(sensitivity). ``--pool`` adds Bland-Altman (2007) repeated-measures limits
+across participants (``participant_id`` in session_meta.json, else session id).
 """
 
 from __future__ import annotations
@@ -11,7 +17,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
@@ -20,12 +26,16 @@ from rich.panel import Panel  # noqa: E402
 from rich.table import Table  # noqa: E402
 
 from polar_ble_sdk.research import (  # noqa: E402
-    compute_validation_metrics,
+    build_windows,
     generate_markdown_report,
     generate_validation_plots,
     load_session,
+    repeated_measures_agreement,
+    validate_windows,
     verify_session_integrity,
 )
+from polar_ble_sdk.research.validation import COMPARISONS  # noqa: E402
+from polar_ble_sdk.research.windows import WINDOW_S  # noqa: E402
 
 
 def find_latest_session_dir() -> Path | None:
@@ -50,9 +60,22 @@ def main() -> None:
         default=None,
         help="Path to session directory",
     )
+    parser.add_argument(
+        "--window", type=int, default=WINDOW_S, help="Window length in seconds."
+    )
+    parser.add_argument(
+        "--pool",
+        nargs="+",
+        default=None,
+        metavar="SESSION_DIR",
+        help="Pool several sessions (repeated-measures limits of agreement).",
+    )
     args = parser.parse_args()
 
     console = Console()
+    if args.pool:
+        _pooled_analysis([Path(p).resolve() for p in args.pool], args.window, console)
+        return
 
     if args.session_dir:
         session_path = Path(args.session_dir).resolve()
@@ -109,227 +132,26 @@ def main() -> None:
         console.print(audit_table)
         console.print()
 
-    # 3. Merged Summary & Cross-Validation
-    df_merged = pd.DataFrame()
-    if (
-        session.is_dual
-        and "h10" in session.dual_sessions
-        and "sense" in session.dual_sessions
-    ):
-        h10_sum = session.dual_sessions["h10"].summary.copy()
-        sense_sum = session.dual_sessions["sense"].summary.copy()
-        if not h10_sum.empty and not sense_sum.empty:
-            h10_sum = h10_sum.rename(
-                columns={"HeartRate_BPM": "H10_HR", "HRV_RMSSD_ms": "H10_RMSSD"}
-            )
-            sense_sum = sense_sum.rename(
-                columns={"HeartRate_BPM": "Sense_HR", "HRV_RMSSD_ms": "Sense_RMSSD"}
-            )
-            if "Timestamp" in h10_sum.columns and "Timestamp" in sense_sum.columns:
-                h10_sum["_dt"] = pd.to_datetime(h10_sum["Timestamp"], errors="coerce")
-                sense_sum["_dt"] = pd.to_datetime(
-                    sense_sum["Timestamp"], errors="coerce"
-                )
-                h10_clean = h10_sum.dropna(subset=["_dt"]).sort_values("_dt")
-                sense_clean = sense_sum.dropna(subset=["_dt"]).sort_values("_dt")
-                if not h10_clean.empty and not sense_clean.empty:
-                    df_merged = (
-                        pd.merge_asof(
-                            h10_clean,
-                            sense_clean,
-                            on="_dt",
-                            tolerance=pd.Timedelta(milliseconds=500),
-                            direction="nearest",
-                            suffixes=("", "_sense"),
-                        )
-                        .drop(columns=["_dt"], errors="ignore")
-                        .reset_index(drop=True)
-                    )
-                else:
-                    df_merged = (
-                        pd.merge(h10_sum, sense_sum, on="Timestamp", how="outer")
-                        .sort_values("Timestamp")
-                        .reset_index(drop=True)
-                    )
-            else:
-                df_merged = (
-                    pd.merge(h10_sum, sense_sum, on="Timestamp", how="outer")
-                    .sort_values("Timestamp")
-                    .reset_index(drop=True)
-                )
+    # 3. Window-level validation against the H10 RR reference
+    windows = build_windows(session_path, window_s=args.window)
+    if windows.empty:
+        console.print(
+            "[bold red]No overlapping H10 RR and Sense data (needs raw hr.csv and "
+            "ppg.csv or ppi.csv, plus host zero points from a v1.1+ recording).[/bold red]"
+        )
+        sys.exit(1)
+    results = validate_windows(windows)
+    _print_results(console, results, windows, args.window)
 
-    # 4. PPG Optical Waveform Derivation (if raw PPG is recorded)
-    ppg_epochs = pd.DataFrame()
-    ppg_csv = session_path / "sense" / "raw" / "ppg.csv"
-    if ppg_csv.exists():
-        from polar_ble_sdk.research.ppg import derive_ppg_hr_epochs
-
-        ppg_epochs = derive_ppg_hr_epochs(session_path)
-
-    if (
-        not df_merged.empty
-        and "H10_HR" in df_merged.columns
-        and "Sense_HR" in df_merged.columns
-    ):
-        metrics = compute_validation_metrics(df_merged)
-
-        def _val_str(v: float, unit: str = "") -> str:
-            import numpy as np
-
-            return f"{v:.2f}{unit}" if not np.isnan(v) else "-"
-
-        def _grade_fmt(grade: str) -> str:
-            if grade == "valid":
-                return "[bold green]EXCELLENT[/bold green]"
-            if grade == "acceptable":
-                return "[yellow]ACCEPTABLE[/yellow]"
-            if grade == "poor":
-                return "[red]POOR[/red]"
-            return "[dim]N/A[/dim]"
-
-        if metrics["n_samples"] > 0:
-            val_table = Table(
-                title="Cross-Validation Agreement & Reliability (Reported HR)",
-                title_style="bold green",
-            )
-            val_table.add_column("Metric", style="bold")
-            val_table.add_column("Value", justify="right")
-            val_table.add_column("Grade", justify="center")
-            val_table.add_column("Reference Target", justify="left")
-
-            val_table.add_row(
-                "Mean Absolute Error (MAE)",
-                _val_str(metrics["mae"], " BPM"),
-                _grade_fmt(metrics["mae_grade"]),
-                "< 5.0 BPM",
-            )
-            val_table.add_row(
-                "Mean Absolute % Error (MAPE)",
-                _val_str(metrics["mape"], " %"),
-                _grade_fmt(metrics["mape_grade"]),
-                "< 5.0 %",
-            )
-            val_table.add_row(
-                "Systematic Bias",
-                _val_str(metrics["bias"], " BPM"),
-                _grade_fmt(metrics["bias_grade"]),
-                "|Bias| < 2.0 BPM",
-            )
-            val_table.add_row(
-                "Lin's CCC",
-                _val_str(metrics["lins_ccc"]),
-                _grade_fmt(metrics["ccc_grade"]),
-                "> 0.90",
-            )
-            val_table.add_row(
-                "ICC (2,1) Agreement",
-                _val_str(metrics["icc_2_1"]),
-                _grade_fmt(metrics["icc_grade"]),
-                "> 0.75",
-            )
-            val_table.add_row(
-                "Pearson r",
-                _val_str(metrics["pearson_r"]),
-                _grade_fmt(metrics["r_grade"]),
-                "> 0.90",
-            )
-            val_table.add_row(
-                "Within-Subject CV",
-                _val_str(metrics["wscv"], " %"),
-                _grade_fmt(metrics["cv_grade"]),
-                "< 5.0 %",
-            )
-            val_table.add_row(
-                "Dropout Rate",
-                _val_str(metrics["dropout_rate"], " %"),
-                _grade_fmt(metrics["dropout_grade"]),
-                "< 5.0 %",
-            )
-
-            console.print(val_table)
-            console.print()
-
-    if not ppg_epochs.empty:
-        valid_ep = ppg_epochs.dropna(subset=["h10_hr", "ppg_hr"])
-        if len(valid_ep) > 0:
-            ppg_diff = valid_ep["ppg_hr"] - valid_ep["h10_hr"]
-            ppg_mae = float(np.mean(np.abs(ppg_diff)))
-            ppg_bias = float(np.mean(ppg_diff))
-            ppg_r = (
-                float(valid_ep["h10_hr"].corr(valid_ep["ppg_hr"]))
-                if len(valid_ep) > 1
-                else float("nan")
-            )
-
-            ppg_table = Table(
-                title="Optical PPG Raw Waveform vs H10 ECG (10s Epochs)",
-                title_style="bold magenta",
-            )
-            ppg_table.add_column("Metric", style="bold")
-            ppg_table.add_column("Value", justify="right")
-            ppg_table.add_column("Status / Assessment", justify="left")
-
-            ppg_table.add_row(
-                "Total 10s Epochs", str(len(ppg_epochs)), "Full recording analyzed"
-            )
-            ppg_table.add_row(
-                "Valid Optical Epochs",
-                str(len(valid_ep)),
-                f"{len(valid_ep) / len(ppg_epochs) * 100:.1f}% tracking rate",
-            )
-            ppg_table.add_row(
-                "PPG Derived MAE",
-                f"{ppg_mae:.2f} BPM",
-                (
-                    "[bold green]Strong agreement[/bold green]"
-                    if ppg_mae < 5
-                    else "[yellow]Moderate[/yellow]"
-                ),
-            )
-            ppg_table.add_row(
-                "PPG Derived Bias", f"{ppg_bias:+.2f} BPM", "Optical fundamental offset"
-            )
-            ppg_table.add_row(
-                "Correlation (r)",
-                f"{ppg_r:.3f}",
-                (
-                    "[bold green]High linear correlation[/bold green]"
-                    if ppg_r > 0.85
-                    else "[yellow]Moderate[/yellow]"
-                ),
-            )
-
-            ppg_metrics_dict = {
-                "total_epochs": len(ppg_epochs),
-                "valid_epochs": len(valid_ep),
-                "tracking_rate": len(valid_ep) / len(ppg_epochs) * 100.0,
-                "mae": ppg_mae,
-                "bias": ppg_bias,
-                "r": ppg_r,
-            }
-
-            console.print(ppg_table)
-            console.print()
-        else:
-            ppg_metrics_dict = None
-    else:
-        ppg_metrics_dict = None
-
-    # 5. Generate Reports & Plots
+    # 4. Reports & plots
     reports_dir = session_path / "reports"
-    plots = (
-        generate_validation_plots(df_merged, reports_dir) if not df_merged.empty else []
+    plots = generate_validation_plots(windows, reports_dir)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    (reports_dir / "validation_report.md").write_text(
+        generate_markdown_report(results, session_path.name, windows, args.window),
+        encoding="utf-8",
     )
-    report_md = generate_markdown_report(
-        metrics if "metrics" in locals() else {},
-        session_path.name,
-        ppg_metrics=ppg_metrics_dict,
-    )
-    if report_md:
-        report_file = reports_dir / "validation_report.md"
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        with report_file.open("w", encoding="utf-8") as f:
-            f.write(report_md)
+    windows.to_csv(reports_dir / "windows.csv", index=False)
 
     plot_info = f"\nPlots Generated: [cyan]{len(plots)} figures[/cyan]" if plots else ""
     console.print(
@@ -341,6 +163,108 @@ def main() -> None:
             border_style="green",
         )
     )
+
+
+def _fmt(v: float, spec: str = ".2f") -> str:
+    return format(v, spec) if v is not None and np.isfinite(v) else "-"
+
+
+def _print_results(
+    console: Console, results: list[dict], windows: pd.DataFrame, window_s: int
+) -> None:
+    n_art = int(windows["artifact"].sum()) if "artifact" in windows else 0
+    console.print(
+        f"[bold]{len(windows)} windows x {window_s} s[/bold], "
+        f"{int(windows['ref_ok'].sum())} with a complete reference, "
+        f"{n_art} Sense artifact windows\n"
+    )
+    for key, title in (
+        ("all", "Primary: all windows"),
+        ("clean", "Sensitivity: artifact-free"),
+    ):
+        table = Table(title=f"{title} (vs H10 RR)", title_style="bold cyan")
+        for col in (
+            "Comparison",
+            "n",
+            "Bias [95% CI]",
+            "LoA",
+            "MAE",
+            "MAPE",
+            "CCC",
+            "ICC",
+        ):
+            table.add_column(col, justify="left" if col == "Comparison" else "right")
+        for res in results:
+            r = res.get(key)
+            if not r or r.get("n", 0) < 3:
+                continue
+            u = "x" if r["log_ratio"] else ""
+            table.add_row(
+                res["label"],
+                str(r["n"]),
+                f"{_fmt(r['bias'])}{u} [{_fmt(r['bias_ci_low'])}, {_fmt(r['bias_ci_high'])}]",
+                f"{_fmt(r['loa_lower'])}{u} to {_fmt(r['loa_upper'])}{u}",
+                _fmt(r["mae"]),
+                f"{_fmt(r['mape'])} %",
+                _fmt(r["lins_ccc"], ".3f"),
+                _fmt(r["icc_2_1"], ".3f"),
+            )
+        console.print(table)
+        console.print()
+
+
+def _pooled_analysis(sessions: list[Path], window_s: int, console: Console) -> None:
+    frames = []
+    for path in sessions:
+        w = build_windows(path, window_s=window_s)
+        if w.empty:
+            console.print(f"[yellow]Skipping {path.name}: no usable windows[/yellow]")
+            continue
+        meta = load_session(path).metadata
+        w["participant"] = meta.get("participant_id") or path.name
+        frames.append(w)
+    if not frames:
+        console.print("[bold red]No usable sessions.[/bold red]")
+        sys.exit(1)
+    all_w = pd.concat(frames, ignore_index=True)
+    all_w = all_w[all_w["ref_ok"]]
+    pooled = []
+    for label, ref_col, test_col, art_col, log_ratio in COMPARISONS:
+        if test_col not in all_w:
+            continue
+        subsets = [("all", all_w)]
+        if art_col and art_col in all_w:
+            subsets.append(("clean", all_w[~all_w[art_col].astype(bool)]))
+        for subset, rows in subsets:
+            res = repeated_measures_agreement(
+                rows, "participant", ref_col, test_col, log_ratio=log_ratio
+            )
+            res["label"] = f"{label} ({subset})"
+            pooled.append(res)
+
+    table = Table(title="Pooled over participants (Bland & Altman 2007)")
+    for col in (
+        "Comparison",
+        "Participants",
+        "Windows",
+        "Bias [95% CI]",
+        "LoA [95% CI]",
+    ):
+        table.add_column(col)
+    for p in pooled:
+        if "bias" not in p:
+            continue
+        u = "x" if p["log_ratio"] else ""
+        table.add_row(
+            p["label"],
+            str(p["n_subjects"]),
+            str(p["n_windows"]),
+            f"{_fmt(p['bias'])}{u} [{_fmt(p['bias_ci_low'])}, {_fmt(p['bias_ci_high'])}]",
+            f"{_fmt(p['loa_lower'])}{u} [{_fmt(p['loa_lower_ci_low'])}, "
+            f"{_fmt(p['loa_lower_ci_high'])}] to {_fmt(p['loa_upper'])}{u} "
+            f"[{_fmt(p['loa_upper_ci_low'])}, {_fmt(p['loa_upper_ci_high'])}]",
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

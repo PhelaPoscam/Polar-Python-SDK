@@ -18,10 +18,14 @@ from rich.panel import Panel
 from polar_ble_sdk.cli_common import (
     LOG_TOGGLE,
     add_common_args,
+    apply_rate_overrides,
     build_stream_callbacks,
+    run_cli,
     run_dashboard,
+    save_on_console_close,
     stream_setting_kwargs,
 )
+from polar_ble_sdk.connector.adapter import PolarAdapter
 from polar_ble_sdk.connector.ble_discovery import (
     discover_polar_device,
     discover_polar_devices,
@@ -103,7 +107,7 @@ def _make_row(state: dict[str, Any], rmssd: float, active_marker: str) -> list[A
         state["hr"],
         rmssd,
         state.get("battery"),
-        state.get("ecg_last_sample"),
+        state.get("ecg_last_uv"),
         *unwrap_vector(state, "acc_raw"),
         *unwrap_vector(state, "gyro_raw"),
         *unwrap_vector(state, "mag_raw"),
@@ -146,7 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ppi",
         action="store_true",
-        help="Enable the PPI stream on the Sense (implied by --no-sdk-mode).",
+        help="Record the Sense PPI stream, also with --streams (needs --no-sdk-mode).",
     )
     add_common_args(parser)
     return parser
@@ -210,13 +214,13 @@ async def main() -> None:
                 parser.error(f"Unknown stream: {s}")
     else:
         requested_streams = None
-        if args.ppi:
-            if args.type == "h10":
-                parser.error("--ppi is only supported on Verity Sense devices.")
-            if not args.no_sdk_mode:
-                parser.error(
-                    "--ppi is unavailable in SDK mode (SDK mode disables HR/PPI). Use --no-sdk-mode."
-                )
+    if args.ppi:
+        if args.type == "h10":
+            parser.error("--ppi is only supported on Verity Sense devices.")
+        if not args.no_sdk_mode:
+            parser.error(
+                "--ppi is unavailable in SDK mode (SDK mode disables HR/PPI). Use --no-sdk-mode."
+            )
 
     try:
         hotkeys = parse_marker_specs(args.markers)
@@ -241,6 +245,8 @@ async def main() -> None:
     device_address = getattr(device, "address", "") or ""
     is_h10 = args.type == "h10" if args.type else _is_h10_name(device_name)
     enabled_streams = requested_streams or _default_streams(is_h10, args.no_sdk_mode)
+    if args.ppi and "ppi" not in enabled_streams:
+        enabled_streams.append("ppi")
     device_type = "h10" if is_h10 else "sense"
 
     # ── Session & Storage Setup ───────────────────────────────────────
@@ -250,6 +256,7 @@ async def main() -> None:
         device_type=device_type,
         is_dual=False,
     )
+    session_mgr.metadata.participant_id = args.participant
     session_mgr.init_event_log(prefix="monitor")
     pp_dir = session_mgr.get_post_processed_dir()
 
@@ -283,20 +290,43 @@ async def main() -> None:
     if not is_h10:
         custom_kwargs["sdk_mode"] = not args.no_sdk_mode
 
-    conn = create_polar_connector(
+    def on_link_status(_label: str, msg: str) -> None:
+        msg_lower = msg.lower()
+        lost = any(
+            w in msg_lower for w in ("reconnecting", "lost", "frozen", "still open")
+        )
+        log_event(
+            log_panel,
+            msg,
+            "warning" if lost else "success",
+            device=device_name,
+            log_file=session_mgr.log_file,
+        )
+        state["status"] = msg
+        if lost:
+            # Don't keep writing the last values as if they were live.
+            reset_device_state_on_disconnect(state)
+
+    # The adapter's watchdog reconnects on link loss or a frozen stream; `conn`
+    # is the link handle and follows the connector across reconnects.
+    adapter = PolarAdapter(
+        status_callback=on_link_status,
+        enable_watchdog=args.watchdog,
+        watchdog_interval=args.watchdog_interval,
+        freeze_timeout=args.freeze_timeout,
+    )
+    conn = adapter.add_link(
+        "device",
+        device_name or device_type,
         device,
-        callback=callbacks.get("hr"),
-        ecg_callback=callbacks.get("ecg"),
-        ppi_callback=callbacks.get("ppi"),
-        ppg_callback=callbacks.get("ppg"),
-        acc_callback=callbacks.get("acc"),
-        gyro_callback=callbacks.get("gyro"),
-        mag_callback=callbacks.get("mag"),
-        verbose=False,
-        log_callback=lambda msg, sev="info": log_event(
-            log_panel, msg, sev, device=device_name, log_file=session_mgr.log_file
-        ),
-        **custom_kwargs,
+        create_polar_connector,
+        callbacks,
+        kwargs={
+            "log_callback": lambda msg, sev="info": log_event(
+                log_panel, msg, sev, device=device_name, log_file=session_mgr.log_file
+            ),
+            **custom_kwargs,
+        },
     )
 
     frame_count_logger = FrameCountLogger(
@@ -310,6 +340,12 @@ async def main() -> None:
         configured_rates["acc"] = 200
     if "ppg" in enabled_streams:
         configured_rates["ppg"] = 55 if args.no_sdk_mode else 135
+    apply_rate_overrides(configured_rates, args)
+    save_on_console_close(
+        lambda: session_mgr.close_all(
+            rate_tracker=rate_tracker, configured_rates=configured_rates
+        )
+    )
 
     start = time.time()
     hz_streams = [(s, s) for s in enabled_streams if s != "hr"]
@@ -345,7 +381,8 @@ async def main() -> None:
 
         try:
             _log("Starting connection...")
-            await conn.start_notify()
+            if not (await adapter.start())["device"]:
+                raise RuntimeError(conn.last_error or "could not start streaming")
 
             if conn.stream_errors:
                 failed = ", ".join(conn.stream_errors.keys())
@@ -422,20 +459,23 @@ async def main() -> None:
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
 
-            try:
-                await asyncio.wait_for(conn.stop_notify(), timeout=4.0)
-            except Exception as e:
-                logger.debug("Error stopping notifications: %s", e)
-
+            # Save before the BLE teardown, which can take seconds: a second
+            # Ctrl+C during it must not lose the session manifest.
             session_mgr.metadata.devices[device_type].battery_end = state.get(
                 "battery", "-"
             )
-            _log("Disconnected", "success")
-
             session_mgr.close_all(
                 rate_tracker=rate_tracker,
                 configured_rates=configured_rates,
+                keep_log=True,
             )
+
+            try:
+                await asyncio.wait_for(adapter.disconnect(), timeout=6.0)
+            except Exception as e:
+                logger.debug("Error stopping notifications: %s", e)
+            _log("Disconnected", "success")
+            session_mgr.close_log()
 
             state["status"] = "Disconnected."
             reset_device_state_on_disconnect(state)
@@ -447,5 +487,4 @@ async def main() -> None:
 
 
 def _entrypoint() -> None:
-    with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(main())
+    run_cli(main)

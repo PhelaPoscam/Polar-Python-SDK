@@ -369,6 +369,7 @@ class BasePolarDevice:
             # Build resolved settings: start from defaults, select closest
             # available value from device, then apply custom overrides.
             resolved: dict[str, object] = {}
+            supported: dict[str, list[int]] = {}
             for key, desired in defaults.items():
                 # Find the matching setting type from the device response
                 pmd_key = None
@@ -387,6 +388,7 @@ class BasePolarDevice:
 
                 if pmd_key is not None and available[pmd_key]:
                     values = available[pmd_key]
+                    supported[key] = values
                     if desired is None:
                         # No preference from defaults — use device's first value
                         # (e.g. Verity Sense ACC needs channels=3, H10 ACC won't
@@ -404,7 +406,17 @@ class BasePolarDevice:
                     custom_key in self.custom_settings
                     and self.custom_settings[custom_key] is not None
                 ):
-                    resolved[key] = self.custom_settings[custom_key]
+                    override = self.custom_settings[custom_key]
+                    # Dual mode sends e.g. --acc-rate to both devices; a value one
+                    # of them doesn't support would make the whole start fail.
+                    if key in supported and override not in supported[key]:
+                        self._emit(
+                            f"{label} {key}={override} unsupported "
+                            f"(device offers {supported[key]}); using {resolved[key]}",
+                            "warning",
+                        )
+                        continue
+                    resolved[key] = override
             method = getattr(self.polar_device, method_name)
             await method(handler, **resolved)
             self._active_streams.add(measurement_type)

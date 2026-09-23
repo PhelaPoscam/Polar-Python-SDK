@@ -63,7 +63,7 @@ Polar-Python-SDK/
 │   │   └── stream/                   # Device modules (Base, H10, VeritySense)
 │   ├── session/                      # Session Lifecycle & Metadata Management
 │   │   ├── session.py                # SessionManager & SessionMetadata (writes session_meta.json)
-│   │   └── state.py                  # Thread-safe in-memory device state containers
+│   │   └── state.py                  # In-memory device state (event-loop only, no locks)
 │   ├── storage/                      # High-Speed Data Logging
 │   │   ├── frame_logger.py           # StreamFrameLogger: full-resolution raw CSV logs
 │   │   └── summary_logger.py         # CsvLogger: 1 Hz post-processed summary CSV logs
@@ -81,8 +81,9 @@ Polar-Python-SDK/
 │   └── research/                     # Research & Data Science Tools
 │       ├── loader.py                 # load_session(): auto-load CSVs + metadata into pandas DataFrames
 │       ├── audit.py                  # verify_session_integrity(): dropouts, jitter, rate verification
-│       ├── validation.py             # compute_validation_metrics(): Lin's CCC, ICC(2,1), Bland-Altman LoA, WSCV
-│       ├── ppg.py                    # Optical PPG filtering, zero-crossing, Welch FFT, and adaptive beat detection
+│       ├── windows.py                # build_windows(): host-clock windows, H10 RR reference, PPG/PPI beats, artifact flags
+│       ├── validation.py             # agreement(): LoA with CIs, proportional bias, CCC, ICC(2,1), block bootstrap, repeated measures
+│       ├── ppg.py                    # PPG band-pass, gap-aware sub-sample beat detection, spectral HR and signal quality
 │       └── report.py                 # Automated Markdown cross-validation report and diagnostic Matplotlib figures
 ├── examples/
 │   └── connect_polar.py              # Minimal example connecting and receiving raw stream callbacks
@@ -223,11 +224,12 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--type` | Force device type (`h10` or `sense`) and default stream sets. | `monitor-polar --type h10` |
 | `--streams` | Comma-separated list of streams to enable (`hr,ecg,acc,ppg,ppi,gyro,mag`). | `--streams hr,ecg,acc` |
 | `--no-sdk-mode` | **Disable** SDK mode (now the default): PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-polar --no-sdk-mode` |
-| `--ppi` | Ask for the Sense PPI stream. Only valid with `--no-sdk-mode`, which already enables it; SDK mode disables HR/PPI. | `monitor-polar --no-sdk-mode --ppi` |
+| `--ppi` | Record the Sense PPI stream, also when `--streams` is given. Needs `--no-sdk-mode` (SDK mode disables HR/PPI). | `monitor-polar --no-sdk-mode --streams ppg,acc --ppi` |
+| `--sdk-mode` | Keep SDK mode on (the default); overrides an earlier `--no-sdk-mode`. | `monitor-polar --sdk-mode` |
 | `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
 | `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
 | `--no-log` | Disable CSV logging completely. | `monitor-polar --no-log` |
-| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=Event, S=Start, B=Baseline, R=Recovery`. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
+| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=marker, S=stimulus_on, B=baseline_start, R=rest_start`. Type `/text` + Enter for a free-text marker that starts with a hotkey letter. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
 | `--log-level` | Terminal log verbosity: `minimal` (errors only), `moderate` (default, connection + stream events + RSSI), `verbose` (adds per-frame counts, frequent RSSI). Press **L** during monitoring to toggle at runtime. | `monitor-polar --log-level verbose` |
 | `--<sensor>-rate` | Override specific sensor sampling rate (e.g., `--ecg-rate 130`, `--acc-rate 200`). | `--ecg-rate 130` |
 
@@ -305,22 +307,24 @@ Configured rates come from the device's actual settings (e.g. H10 ECG 130 Hz, H1
 
 ### Post-Session Analysis & Cross-Validation
 
-#### 1. Cross-Device Agreement & Statistical Validation (`run_analysis.py`)
-Run the unified research validation CLI to audit packet integrity, compute clinical validation metrics (Lin's CCC, ICC(2,1), Bland-Altman LoA, WSCV, MAE, MAPE), extract optical pulse beats, and generate visual markdown reports + diagnostic figures:
+#### 1. Cross-Device Agreement (`run_analysis.py`)
+Validates the Verity Sense against the H10 **RR intervals** (ECG-derived on the device), not against Polar's smoothed HR output:
 
 ```bash
-# Auto-detect latest dual session
-python scripts/run_analysis.py
-
-# Analyze a specific session
-python scripts/run_analysis.py data/dual/20260818_132922
+python scripts/run_analysis.py                                   # latest dual session
+python scripts/run_analysis.py data/dual/20260923_115103 --window 60
+python scripts/run_analysis.py --pool data/dual/A data/dual/B ...  # several participants
 ```
 
-Outputs are automatically saved to `data/dual/<session_id>/reports/`:
-- `validation_report.md` (Executive summary, limits of agreement, device distribution)
-- `bland_altman.png` (95% Bland-Altman Limits of Agreement)
-- `time_series_hr.png` (Time-synchronized ECG vs PPG tracking)
-- `scatter_correlation.png` (Identity line scatter correlation)
+Method:
+- **One clock.** All streams are mapped to host time with the per-stream zero points in `session_meta.json` (device clocks are unusable: the H10's is typically unset, the Sense's can be minutes off). Raw streams loaded with `load_session()` get a `Host_Time` column.
+- **Fixed, non-overlapping windows** (default 60 s; RMSSD from shorter windows is "ultra-short").
+- **Reference:** H10 RR intervals, cleaned (300–2000 ms, ±20 % of the local median). Invalid beats are excluded, never interpolated or split, and successive differences are only taken between adjacent valid intervals. The same cleaning applies to PPG beats and the Sense PPI stream.
+- **PPG beats:** band-pass 0.5–4 Hz per gap-free segment, sub-sample (parabolic) peak times, best of ch1–ch3 per window by spectral signal quality (ch4 is ambient light).
+- **Artifacts** are flagged from the Sense's own data only (accelerometer motion, PPG signal quality and coverage, PPI skin contact), never from the reference.
+- **Statistics:** results on *all* windows are primary; artifact-free windows are a sensitivity analysis. Bias and limits of agreement come with 95 % CIs, proportional bias is tested, RMSSD uses log-ratio limits, MAE CIs use a moving-block bootstrap, and `--pool` gives Bland & Altman (2007) repeated-measures limits with a participant-level bootstrap (`--participant` when recording). Grades only where a published standard exists (MAPE: ANSI/CTA-2065; CCC: McBride 2005; ICC: Koo & Li 2016).
+
+Outputs in `<session>/reports/`: `validation_report.md`, `windows.csv` (every window with its artifact reason), `bland_altman_hr.png`, `bland_altman_rmssd.png`, `time_series.png`.
 
 #### 2. Sampling Rate & Frame Integrity Audit (`analyze_hz.py`)
 For a fast summary of packet intervals, mean frequencies, and frame gaps:
@@ -338,39 +342,13 @@ python scripts/analyze_hz.py data/dual/20260818_132922
 
 ## Known Issues & TODO
 
-### TODO — Offline PPG-derived HR/RMSSD analysis (**VALIDATED at 135 Hz**)
+### Validation status
 
-**Status: WORKING for HR.** The research pipeline (`polar_ble_sdk.research.ppg` and `scripts/run_analysis.py`) derives HR
-from the raw Verity Sense PPG signal and cross-validates against the Polar H10.
+Numbers published in earlier versions of this README (e.g. "zero-crossing HR MAE 2.46 BPM") were produced by a loader that mis-timed PPG samples: it derived the sample spacing from the first frame's size, but delta-compressed PPG frames vary from 31 to 52 samples. Measured PPG HR came out ~9 % high at 135 Hz, and the spacing error left a periodic artifact at every frame boundary. The "fixed ~104 BPM artifact at 55 Hz, pulse not recoverable" reported here before was that artifact: with the corrected loader, 55 Hz PPG tracks the H10 at rest (session `20260923_123331`: HR within ~1 BPM per 30 s window, RMSSD within ~1-6 ms, noisier than at 135 Hz as the coarser beat timing predicts).
 
-**Key finding — 55 Hz sampling was the root cause of earlier failures.** At
-55 Hz (the non-SDK-mode default), the raw PPG is dominated by a fixed ~104 BPM
-(1.73 Hz) beat artifact and the cardiac pulse is not recoverable — every
-estimator (FFT, zero-crossing, autocorrelation, peak detection) failed to track
-the H10. At **135 Hz** (requires SDK mode) the artifact disappears and the pulse
-is clearly present: **zero-crossing HR matches the H10 ECG to MAE 2.46 BPM,
-MAPE 3.57%, bias −0.73 BPM** (session `20260811_150741`, n=29 epochs).
+First result with the corrected pipeline (session `20260923_115103`, one participant, 135 Hz, seated rest): PPG-beat HR within 0.1 BPM and RMSSD within ~1 ms of the H10 RR reference per 60 s window. During arm movement, PPG is unusable and all such windows were flagged by the Sense accelerometer. A validation claim still needs several participants, conditions with HR change, and pooled analysis (`--pool`).
 
-**SDK-mode trade-off (Polar-documented):** 135 Hz PPG requires SDK mode, which
-**disables the Sense's own HR and PPI streams**. SDK mode is now the default for
-Sense monitoring; use `--no-sdk-mode` to fall back to 55 Hz PPG + the Sense's
-HR/PPI (needed for RR-interval/RMSSD from the device).
-
-**Remaining work:**
-1. Validate on a session with **HR variation** (light activity) to confirm the
-   zero-crossing estimator tracks changing HR, not just rest.
-2. Improve the PPG-derived RMSSD (peak-based; currently MAE ~26 BPM vs H10).
-3. Distinguish "raw optical signal good but firmware locks" (our-PPG-HR tracks
-   H10 while Sense-reported HR deviates) from "signal itself bad" (both deviate)
-   using the 135 Hz raw PPG — now that the signal is decodable.
-
-**Related state:**
-- `scripts/run_analysis.py` (powered by `polar_ble_sdk.research`) performs
-  cross-validation metrics + artifact detection; the artifact detector catches the Sense's half-rate
-  lock (exact-constant and staircase variants). It also has a raw-PPG-vs-ECG
-  section (FFT/ZC estimators) that flagged the 55 Hz failure.
-- The Sense PPI→RMSSD fix is in place and verified.
-- Default Sense monitoring now: **135 Hz PPG + ACC/GYRO/MAG via SDK mode**.
+**SDK-mode trade-off (Polar-documented):** 135 Hz PPG requires SDK mode, which disables the Sense's own HR and PPI streams. Use `--no-sdk-mode` for 55 Hz PPG plus the Sense's HR/PPI. The Sense's own reported HR froze at a constant value during arm movement in that session, so treat it as a test method like any other.
 
 ---
 

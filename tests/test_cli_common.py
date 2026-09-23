@@ -60,7 +60,7 @@ class TestStreamSettingKwargs:
         parser = argparse.ArgumentParser()
         add_common_args(parser)
         args = parser.parse_args(["--sdk-mode"])
-        assert args.sdk_mode is True
+        assert args.no_sdk_mode is False
 
 
 class TestBuildStreamCallbacks:
@@ -164,3 +164,26 @@ class TestRunDashboard:
             return live.updates
 
         assert asyncio.run(_cancel_after_a_few_ticks()) >= 2
+
+
+def test_apply_rate_overrides_follows_flags() -> None:
+    import argparse
+
+    from polar_ble_sdk.cli_common import apply_rate_overrides
+
+    args = argparse.Namespace(acc_rate=100, acc_range=None, ecg_rate=None)
+    rates = {"h10_acc": 200, "sense_acc": 52, "h10_ecg": 130}
+    apply_rate_overrides(rates, args, prefixes=("h10_", "sense_"))
+    assert rates == {"h10_acc": 100, "sense_acc": 100, "h10_ecg": 130}
+
+
+def test_sdk_mode_flags_last_one_wins() -> None:
+    import argparse
+
+    from polar_ble_sdk.cli_common import add_common_args
+
+    parser = argparse.ArgumentParser()
+    add_common_args(parser)
+    assert parser.parse_args([]).no_sdk_mode is False
+    assert parser.parse_args(["--no-sdk-mode"]).no_sdk_mode is True
+    assert parser.parse_args(["--no-sdk-mode", "--sdk-mode"]).no_sdk_mode is False

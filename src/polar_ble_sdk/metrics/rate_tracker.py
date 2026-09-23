@@ -21,6 +21,7 @@ class StreamAccumulator:
     """Session-level accumulator for tracking stream sample counts and time spans."""
 
     samples: int = 0
+    first_count: int = 0
     first_ts: float = 0.0
     last_ts: float = 0.0
     _has_started: bool = False
@@ -29,6 +30,7 @@ class StreamAccumulator:
         now = time.time() if timestamp is None else timestamp
         if not self._has_started:
             self.first_ts = now
+            self.first_count = count
             self._has_started = True
         self.samples += count
         self.last_ts = now
@@ -39,8 +41,9 @@ class StreamAccumulator:
 
     @property
     def average_hz(self) -> float:
+        # The first batch arrived at first_ts; its samples predate the span.
         dur = self.duration
-        return self.samples / dur if dur > 0.0 else 0.0
+        return (self.samples - self.first_count) / dur if dur > 0.0 else 0.0
 
 
 @dataclass
@@ -91,7 +94,12 @@ class RateTracker:
             return 0.0
 
         total_samples = sum(item[1] for item in recent)
-        time_span = curr_time - recent[0][0]
+        if len(recent) > 1:
+            # Samples of the oldest batch predate the span it opens.
+            time_span = recent[-1][0] - recent[0][0]
+            total_samples -= recent[0][1]
+        else:
+            time_span = curr_time - recent[0][0]
         return total_samples / time_span if time_span > 0.1 else 0.0
 
     def get_session_hz(self, stream: str) -> float:

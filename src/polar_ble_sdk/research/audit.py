@@ -26,7 +26,10 @@ class StreamAudit:
 def audit_csv_stream(csv_path: Path) -> StreamAudit:
     """Analyze timestamps in a raw stream CSV to compute sampling frequency and gap metrics."""
     stream_name = csv_path.stem.lower()
+    # One entry per packet: acc/gyro/mag write one row per sample, all sharing
+    # the frame timestamp, so consecutive equal timestamps are merged.
     timestamps: list[float] = []
+    packet_sizes: list[int] = []
     total_samples = 0
 
     with csv_path.open(newline="", encoding="utf-8") as f:
@@ -36,13 +39,16 @@ def audit_csv_stream(csv_path: Path) -> StreamAudit:
             if not row:
                 continue
             try:
-                timestamps.append(float(row[0]))
-                if stream_name in {"ecg", "ppg"}:
-                    total_samples += len(row) - 1
-                else:
-                    total_samples += 1
+                ts = float(row[0])
             except (ValueError, IndexError):
                 continue
+            n = len(row) - 1 if stream_name in {"ecg", "ppg"} else 1
+            total_samples += n
+            if timestamps and ts == timestamps[-1] and stream_name not in {"hr", "ppi"}:
+                packet_sizes[-1] += n
+            else:
+                timestamps.append(ts)
+                packet_sizes.append(n)
 
     if len(timestamps) < 2:
         return StreamAudit(
@@ -57,7 +63,8 @@ def audit_csv_stream(csv_path: Path) -> StreamAudit:
         )
 
     duration = timestamps[-1] - timestamps[0]
-    avg_hz = total_samples / duration if duration > 0 else 0.0
+    # The first packet's samples predate the span it opens.
+    avg_hz = (total_samples - packet_sizes[0]) / duration if duration > 0 else 0.0
 
     diffs = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)]
     # Frame packet interval

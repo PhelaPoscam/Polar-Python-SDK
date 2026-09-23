@@ -6,6 +6,7 @@ from ..constants import (
     PmdMeasurementType,
     PmdSettingType,
 )
+from ..exceptions import ControlPointResponseError
 
 
 @dataclass
@@ -52,12 +53,16 @@ class MeasurementSettings:
     @classmethod
     def from_bytes(cls, data: bytearray) -> "MeasurementSettings":
         """Parse PMD data from a bytearray (Response from device)."""
-        measurement_type_index = data[2]
-        error_code_index = data[3]
-        more_frames = data[4] != 0
-
-        measurement_type = PmdMeasurementType(measurement_type_index)
-        error_code = PmdControlPointErrorCode(error_code_index)
+        if len(data) < 4:
+            raise ControlPointResponseError(f"Control-point reply too short: {data!r}")
+        more_frames = len(data) > 4 and data[4] != 0
+        try:
+            measurement_type = PmdMeasurementType(data[2])
+            error_code = PmdControlPointErrorCode(data[3])
+        except ValueError as exc:
+            raise ControlPointResponseError(
+                f"Unknown control-point reply: {data!r}"
+            ) from exc
 
         settings = []
         index = 5

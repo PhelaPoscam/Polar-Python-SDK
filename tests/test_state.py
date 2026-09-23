@@ -43,8 +43,16 @@ class TestFeedPpiFeedsRrHistory:
     def test_ppi_ignores_invalid_zero_intervals(self):
         st, ts = self._make_state()
         feed_ppi([(1_000_000_000, 0.0), (1_000_850_000, 850.0)], st, ts)
-        assert len(st["ppi_history"]) == 1
-        assert st["ppi_history"][0] == 850.0
+        # The invalid interval stays as a gap marker so RMSSD won't bridge it
+        assert list(st["ppi_history"]) == [None, 850.0]
+        assert st["ppi_intervals"] == [850.0]
+
+    def test_ppi_flagged_invalid_breaks_adjacency(self):
+        st, ts = self._make_state()
+        ok = (0, 800.0, 10, 75, True, True, False)
+        bad = (0, 1200.0, 10, 75, True, True, True)
+        feed_ppi([ok, (0, 810.0, 10, 75, True, True, False), bad, ok], st, ts)
+        assert list(st["ppi_history"]) == [800.0, 810.0, None, 800.0]
 
     def test_hr_stream_with_empty_rr_leaves_rmssd_nan(self):
         """Regression: the Sense sends HR with empty RR — RMSSD must be NaN."""

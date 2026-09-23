@@ -38,6 +38,15 @@ class TestStorageLoggers:
         assert lines[1] == "0.000,100,200"
         assert lines[2] == "0.500,300,400"
 
+    def test_stream_frame_logger_flushes_multi_sample_frames(self, tmp_path: Path):
+        ecg_file = tmp_path / "ecg.csv"
+        logger = StreamFrameLogger(ecg_file, "ecg")
+        logger.open()
+        for i in range(2):  # 146 samples: never a multiple of 100
+            logger.write_frame(i * 500_000_000, list(range(73)))
+        assert len(ecg_file.read_text(encoding="utf-8").splitlines()) == 3
+        logger.close()
+
     def test_stream_frame_logger_hr(self, tmp_path: Path):
         hr_file = tmp_path / "hr.csv"
         logger = StreamFrameLogger(hr_file, "hr")
@@ -69,6 +78,7 @@ class TestSessionManager:
 
         rate_tracker = RateTracker()
         rate_tracker.track("ecg", 130, timestamp=0.0)
+        rate_tracker.track("ecg", 130, timestamp=1.0)
         rate_tracker.track("ecg", 130, timestamp=2.0)
 
         mgr.close_all(rate_tracker=rate_tracker, configured_rates={"ecg": 130})
@@ -94,3 +104,34 @@ class TestSessionManager:
             base_dir=data_dir, device_type="dual", session_id="test_dual", is_dual=True
         )
         assert mgr.session_dir == data_dir / "dual" / "test_dual"
+
+    def test_session_dir_uses_base_dir_as_data_root(self, tmp_path: Path):
+        root = tmp_path / "Recordings"
+        mgr = SessionManager(base_dir=root, device_type="h10", session_id="s1")
+        assert mgr.session_dir == root / "h10" / "s1"
+
+    def test_close_all_saves_once_and_can_keep_the_log_open(self, tmp_path: Path):
+        mgr = SessionManager(base_dir=tmp_path, device_type="h10", session_id="s1")
+        mgr.init_event_log()
+        mgr.close_all(keep_log=True)  # saved before the BLE teardown
+        meta = mgr.session_dir / "session_meta.json"
+        first = meta.read_text(encoding="utf-8")
+        assert mgr.log_file is not None  # teardown messages still get logged
+        mgr.register_marker("late")
+        mgr.close_all()  # e.g. the console-close handler firing as well
+        assert meta.read_text(encoding="utf-8") == first
+        assert mgr.log_file is None
+
+    def test_untimestamped_ppi_gets_host_anchor_and_beat_times(self, tmp_path: Path):
+        """Verity Sense PPI frames carry timestamp 0: cumulative clock, host-anchored."""
+        mgr = SessionManager(base_dir=tmp_path, device_type="dual", session_id="s")
+        fl = mgr.create_frame_logger("ppi", sub_device="sense")
+        fl.write_ppi_frames([(0, 800, 10, 75, 1, 1, 0), (0, 900, 10, 70, 1, 1, 0)])
+        fl.write_ppi_frames([(0, 850, 10, 72, 1, 1, 1)])
+        mgr.close_all()
+        rows = fl.path.read_text(encoding="utf-8").splitlines()
+        # Each row is stamped at its beat; the first frame's last beat is t=0
+        assert [r.split(",")[0] for r in rows[1:]] == ["-0.900", "0.000", "0.850"]
+        assert rows[3].endswith(",1")  # Invalid flag kept
+        meta = json.loads((mgr.session_dir / "session_meta.json").read_text("utf-8"))
+        assert "sense_ppi_host_epoch_ns" in meta["clock_zero_points"]

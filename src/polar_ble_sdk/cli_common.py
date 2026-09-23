@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import signal
+import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from typing import Any
 
 from rich.live import Live
@@ -56,6 +59,30 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         help="Custom hotkeys: KEY=LABEL,KEY2=LABEL2",
     )
     parser.add_argument(
+        "--watchdog",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable link watchdog and auto-reconnect on freeze or disconnection (default: ON).",
+    )
+    parser.add_argument(
+        "--freeze-timeout",
+        type=float,
+        default=8.0,
+        help="Watchdog silent freeze timeout in seconds (default: 8.0).",
+    )
+    parser.add_argument(
+        "--watchdog-interval",
+        type=float,
+        default=3.0,
+        help="Watchdog poll interval in seconds (default: 3.0).",
+    )
+    parser.add_argument(
+        "--participant",
+        type=str,
+        default="",
+        help="Participant ID stored in session_meta.json (pools sessions per person).",
+    )
+    parser.add_argument(
         "--data-dir",
         type=str,
         default=None,
@@ -81,9 +108,9 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--sdk-mode",
-        action="store_true",
-        default=True,
-        help="Explicitly enable SDK mode on the Sense (default).",
+        dest="no_sdk_mode",
+        action="store_false",
+        help="Keep SDK mode on (the default); overrides an earlier --no-sdk-mode.",
     )
     for opt in (
         "acc-rate",
@@ -97,6 +124,50 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(f"--{opt}", type=int, default=None, help=f"Custom {opt}")
 
 
+_console_handlers: list[Any] = []  # keep ctypes callbacks alive
+
+
+def save_on_console_close(save: Callable[[], None]) -> None:
+    """Windows: run ``save`` if the console window is closed or the user logs off.
+
+    Closing the window kills the process without running ``finally`` blocks;
+    Windows gives the handler ~5 s, enough to flush files and write the manifest.
+    Ctrl+C is left to Python (the handler passes it on).
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    close_events = {2, 5, 6}  # CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    def handler(event: int) -> bool:
+        if event in close_events:
+            with contextlib.suppress(Exception):
+                save()
+        return False
+
+    _console_handlers.append(handler)
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
+
+
+def run_cli(main: Callable[[], Coroutine[Any, Any, None]]) -> None:
+    """Console entry point: Ctrl+C, SIGTERM and SIGHUP all shut down cleanly."""
+
+    async def runner() -> None:
+        task = asyncio.current_task()
+        loop = asyncio.get_running_loop()
+        if task is not None and sys.platform != "win32":
+            for sig in (signal.SIGTERM, signal.SIGHUP):
+                with contextlib.suppress(NotImplementedError, RuntimeError):
+                    loop.add_signal_handler(sig, task.cancel)
+        await main()
+
+    with contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError):
+        asyncio.run(runner())
+
+
 def stream_setting_kwargs(
     args: argparse.Namespace, streams: Sequence[str]
 ) -> dict[str, Any]:
@@ -106,6 +177,18 @@ def stream_setting_kwargs(
         for stream, attr, kwarg in STREAM_SETTINGS
         if stream in streams and getattr(args, attr, None)
     }
+
+
+def apply_rate_overrides(
+    rates: dict[str, int], args: argparse.Namespace, prefixes: Sequence[str] = ("",)
+) -> None:
+    """Make the expected rates follow ``--acc-rate`` & co. instead of the defaults."""
+    for stream, attr, kwarg in STREAM_SETTINGS:
+        value = getattr(args, attr, None)
+        if value and kwarg.endswith("_sample_rate"):
+            for prefix in prefixes:
+                if f"{prefix}{stream}" in rates:
+                    rates[f"{prefix}{stream}"] = value
 
 
 def build_stream_callbacks(
@@ -163,50 +246,52 @@ async def run_dashboard(
     last_frame_log = start
     pending_markers: list[str] = []
 
-    while True:
-        for marker in reader.poll_markers():
-            if marker == LOG_TOGGLE:
+    try:
+        while True:
+            for marker in reader.poll_markers():
+                if marker == LOG_TOGGLE:
+                    log_event(
+                        log_panel,
+                        f"Log level: {log_panel.cycle_level()}",
+                        "info",
+                        device=device,
+                        log_file=log_file,
+                    )
+                    continue
+                pending_markers.append(marker)
+                on_marker(marker)
                 log_event(
                     log_panel,
-                    f"Log level: {log_panel.cycle_level()}",
+                    f"Marker: {marker}",
                     "info",
                     device=device,
                     log_file=log_file,
                 )
-                continue
-            pending_markers.append(marker)
-            on_marker(marker)
-            log_event(
-                log_panel,
-                f"Marker: {marker}",
-                "info",
-                device=device,
-                log_file=log_file,
-            )
 
-        now = time.time()
-        if (now - last_row) >= 1.0:
-            last_row = now
-            active_marker = ";".join(pending_markers) if pending_markers else ""
-            pending_markers.clear()
-            write_rows(active_marker)
-
-        if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
-            last_frame_log = now
-            frame_check()
-
-        if duration and (now - start) >= duration:
-            if pending_markers:
-                write_rows(";".join(pending_markers))
+            now = time.time()
+            if (now - last_row) >= 1.0:
+                last_row = now
+                active_marker = ";".join(pending_markers) if pending_markers else ""
                 pending_markers.clear()
-            log_event(
-                log_panel,
-                f"Target duration ({duration}s) reached.",
-                "info",
-                device=device,
-                log_file=log_file,
-            )
-            return
+                write_rows(active_marker)
 
-        live.update(build())
-        await asyncio.sleep(0.1)
+            if log_panel.level == "verbose" and (now - last_frame_log) >= 1.0:
+                last_frame_log = now
+                frame_check()
+
+            if duration and (now - start) >= duration:
+                log_event(
+                    log_panel,
+                    f"Target duration ({duration}s) reached.",
+                    "info",
+                    device=device,
+                    log_file=log_file,
+                )
+                return
+
+            live.update(build())
+            await asyncio.sleep(0.1)
+    finally:
+        # Markers wait up to 1 s for the next row; don't drop them on Ctrl+C.
+        if pending_markers:
+            write_rows(";".join(pending_markers))

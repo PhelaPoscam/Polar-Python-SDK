@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import logging
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -26,7 +27,7 @@ class StreamFrameLogger:
         - ``gyro``: ``Timestamp_s, X_dps, Y_dps, Z_dps`` (Degrees per second)
         - ``mag``: ``Timestamp_s, X_G, Y_G, Z_G`` (Gauss magnetic field)
         - ``hr``: ``Timestamp_s, HeartRate_BPM, RR_Intervals_ms`` (BPM & ms intervals)
-        - ``ppi``: ``Timestamp_s, PPI_ms, ErrEst_ms, HR_BPM, SkinContact, SkinContactSupported``
+        - ``ppi``: ``Timestamp_s, PPI_ms, ErrEst_ms, HR_BPM, SkinContact, SkinContactSupported, Invalid``
     """
 
     _COLUMNS: ClassVar[dict[str, list[str]]] = {
@@ -43,6 +44,7 @@ class StreamFrameLogger:
             "HR_BPM",
             "SkinContact",
             "SkinContactSupported",
+            "Invalid",
         ],
     }
 
@@ -54,8 +56,11 @@ class StreamFrameLogger:
         self._writer: Any = None
         self._file: Any = None
         self._first_ts_ns: int | None = None
+        # Host wall clock at the first frame: maps device time onto host time.
+        self.first_host_ns: int | None = None
         self._ppi_cumulative_s: float = 0.0
         self.samples_written = 0
+        self._flushed_at = 0
 
     @property
     def first_ts_ns(self) -> int | None:
@@ -76,6 +81,7 @@ class StreamFrameLogger:
 
         if self._first_ts_ns is None:
             self._first_ts_ns = timestamp_ns
+            self.first_host_ns = time.time_ns()
 
         rel_s = (timestamp_ns - self._first_ts_ns) / 1e9
 
@@ -91,8 +97,7 @@ class StreamFrameLogger:
             for sample in data:
                 self._writer.writerow([f"{rel_s:.3f}", *sample])
                 self.samples_written += 1
-        if self.samples_written % 100 == 0:
-            self.flush()
+        self._maybe_flush(100)
 
     def write_ppi_frames(self, data: list[Any]) -> None:
         """Write a batch of PPI samples with quality and skin-contact flags.
@@ -102,8 +107,19 @@ class StreamFrameLogger:
         to cumulative interval progression (_ppi_cumulative_s) to guarantee monotonic
         timeline continuity.
         """
-        if not self._writer:
+        if not self._writer or not data:
             return
+
+        if self.first_host_ns is None:
+            # The frame arrives with its *last* interval, so that beat is t=0 on
+            # both clocks. The Verity Sense sends PPI frames with timestamp 0.
+            self.first_host_ns = time.time_ns()
+            last_ts = data[-1][0] if data[-1] and data[-1][0] else 0
+            if last_ts > 0:
+                self._first_ts_ns = last_ts
+            self._ppi_cumulative_s = -sum(
+                float(s[1]) / 1000.0 for s in data if len(s) > 1 and s[1]
+            )
 
         for sample in data:
             ts_ns = (
@@ -111,9 +127,11 @@ class StreamFrameLogger:
                 if (sample and len(sample) > 0 and sample[0] is not None)
                 else 0
             )
-            if ts_ns > 0:
-                if self._first_ts_ns is None:
-                    self._first_ts_ns = ts_ns
+            ppi_now = sample[1] if len(sample) > 1 else None
+            if ppi_now is not None:
+                # Cumulative clock: the time at the *end* of each interval (its beat).
+                self._ppi_cumulative_s += float(ppi_now) / 1000.0
+            if ts_ns > 0 and self._first_ts_ns is not None:
                 rel_s = (ts_ns - self._first_ts_ns) / 1e9
             else:
                 rel_s = self._ppi_cumulative_s
@@ -124,26 +142,31 @@ class StreamFrameLogger:
                 hr = sample[3]
                 contact = sample[4] if len(sample) >= 5 else None
                 contact_sup = sample[5] if len(sample) >= 6 else None
+                invalid = sample[6] if len(sample) >= 7 else None
             else:
                 ppi = sample[1] if len(sample) > 1 else None
-                err_est = hr = contact = contact_sup = None
+                err_est = hr = contact = contact_sup = invalid = None
 
             self._writer.writerow(
                 [
-                    f"{rel_s:.3f}",
+                    f"{round(rel_s, 6) + 0.0:.3f}",  # no "-0.000"
                     ppi,
                     "" if err_est is None else err_est,
                     "" if hr is None else hr,
                     "" if contact is None else int(bool(contact)),
                     "" if contact_sup is None else int(bool(contact_sup)),
+                    "" if invalid is None else int(bool(invalid)),
                 ]
             )
-            if ppi is not None:
-                self._ppi_cumulative_s += float(ppi) / 1000.0
             self.samples_written += 1
 
-        if self.samples_written % 50 == 0:
+        self._maybe_flush(50)
+
+    def _maybe_flush(self, every: int) -> None:
+        # Frames add many samples at once, so a modulo check would rarely hit.
+        if self.samples_written - self._flushed_at >= every:
             self.flush()
+            self._flushed_at = self.samples_written
 
     def flush(self) -> None:
         """Flush unwritten buffer to disk."""

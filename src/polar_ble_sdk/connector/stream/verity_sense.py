@@ -107,6 +107,7 @@ class PolarVeritySense(BasePolarDevice):
             try:
                 self._ppi_active = True
                 await self.polar_device.start_ppi_stream(self._ppi_handler)
+                self._active_streams.add(PmdMeasurementType.PPI)
                 self._log("[DEBUG] PPI stream started OK")
             except Exception:
                 self._ppi_active = False
@@ -177,9 +178,9 @@ class PolarVeritySense(BasePolarDevice):
 
     def _ppi_handler(self, ppi_data) -> None:
         ppi_vals = []
+        # Invalid PPIs are kept (flagged) so consumers know two neighbouring
+        # intervals are not adjacent; dropping them silently breaks RMSSD.
         for s in ppi_data.samples:
-            if s.invalid_ppi:
-                continue
             ppi_vals.append(
                 (
                     s.timestamp,
@@ -188,6 +189,7 @@ class PolarVeritySense(BasePolarDevice):
                     s.hr,
                     s.skin_contact_status,
                     s.skin_contact_supported,
+                    s.invalid_ppi,
                 )
             )
         if self.ppi_callback and ppi_vals:

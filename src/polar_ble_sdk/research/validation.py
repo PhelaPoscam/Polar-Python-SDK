@@ -1,6 +1,21 @@
-"""Cross-validation and statistical metrics for dual Polar recordings (H10 vs Verity Sense).
+"""Agreement statistics for method comparison (Verity Sense vs H10 RR reference).
 
-Calculates accuracy, agreement, reliability, artifact detection, and epoch binning.
+Inputs are paired values per analysis window (see :mod:`.windows`), never 1 Hz
+rows: consecutive seconds of heart rate are strongly autocorrelated and would
+inflate the effective sample size. Windows are still serially correlated, so
+bootstrap intervals resample contiguous blocks, and pooled multi-participant
+analyses resample participants.
+
+References:
+    - Bland & Altman (1999). Measuring agreement in method comparison studies.
+      Stat Methods Med Res 8:135-160 (limits of agreement, their CIs, log/ratio
+      limits for skewed measures such as RMSSD).
+    - Bland & Altman (2007). Agreement between methods of measurement with
+      multiple observations per individual. J Biopharm Stat 17:571-582.
+    - Lin (1989), McBride (2005): concordance correlation and its strength bands.
+    - Shrout & Fleiss (1979), Koo & Li (2016): ICC(2,1) and its interpretation.
+    - ANSI/CTA-2065 (2018): heart-rate monitor accuracy, MAPE <= 10 %.
+    - Hyslop & White (2009): root-mean-square within-subject CV.
 """
 
 from __future__ import annotations
@@ -11,6 +26,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from scipy import stats
+
+N_BOOT = 2000
 
 
 def calculate_lins_ccc(x: Any, y: Any) -> float:
@@ -69,413 +86,269 @@ def calculate_icc_2_1(x: Any, y: Any) -> float:
     return float((ms_rows - ms_error) / denom)
 
 
-def bootstrap_ci(
-    data: Any,
-    stat_fn: Callable[[np.ndarray], float],
-    n_boot: int = 500,
+def calculate_wscv(x: Any, y: Any) -> float:
+    """Root-mean-square coefficient of variation between the two methods (%)."""
+    x_arr = np.asarray(x, dtype=float)
+    y_arr = np.asarray(y, dtype=float)
+    pair_sd = np.abs(x_arr - y_arr) / np.sqrt(2.0)
+    cv = pair_sd / ((x_arr + y_arr) / 2.0)
+    return float(np.sqrt(np.nanmean(cv**2)) * 100.0)
+
+
+def block_bootstrap_ci(
+    x: np.ndarray,
+    y: np.ndarray,
+    stat_fn: Callable[[np.ndarray, np.ndarray], float],
+    block_len: int | None = None,
+    n_boot: int = N_BOOT,
     ci: float = 95.0,
     seed: int = 42,
 ) -> tuple[float, float]:
-    """Calculate percentile bootstrap confidence intervals."""
-    data_arr = np.asarray(data, dtype=float)
-    data_arr = data_arr[~np.isnan(data_arr)]
-    if len(data_arr) < 2:
+    """Percentile CI from a moving-block bootstrap over time-ordered pairs.
+
+    Blocks of ``block_len`` (default ``n ** (1/3)``) consecutive windows keep
+    their serial correlation, which an i.i.d. bootstrap would destroy.
+    """
+    n = len(x)
+    if n < 3:
         return float("nan"), float("nan")
-
-    result = stats.bootstrap(
-        (data_arr,),
-        stat_fn,
-        n_resamples=n_boot,
-        confidence_level=ci / 100.0,
-        method="percentile",
-        vectorized=False,
-        rng=seed,
-    )
-    return float(result.confidence_interval.low), float(result.confidence_interval.high)
+    block_len = block_len or max(1, round(n ** (1 / 3)))
+    rng = np.random.default_rng(seed)
+    n_blocks = int(np.ceil(n / block_len))
+    starts = rng.integers(0, n - block_len + 1, size=(n_boot, n_blocks))
+    idx = (starts[:, :, None] + np.arange(block_len)).reshape(n_boot, -1)[:, :n]
+    boot = np.array([stat_fn(x[i], y[i]) for i in idx])
+    lo, hi = np.nanpercentile(boot, [(100 - ci) / 2, 100 - (100 - ci) / 2])
+    return float(lo), float(hi)
 
 
-def _constant_runs(values: np.ndarray, min_len: int) -> list[tuple[int, int]]:
-    """Maximal ``[start, stop)`` runs of one repeated valid (non-NaN, > 0) value.
-
-    NaN never equals itself, so missing samples always break a run.
-    """
-    n = len(values)
-    if n == 0:
-        return []
-    boundaries = np.flatnonzero(values[1:] != values[:-1]) + 1
-    starts = np.concatenate(([0], boundaries))
-    stops = np.concatenate((boundaries, [n]))
-    return [
-        (int(start), int(stop))
-        for start, stop in zip(starts, stops, strict=True)
-        if stop - start >= min_len and not np.isnan(values[start]) and values[start] > 0
-    ]
-
-
-def _true_runs(mask: np.ndarray, min_len: int) -> list[tuple[int, int]]:
-    """Maximal ``[start, stop)`` runs of True at least ``min_len`` samples long."""
-    padded = np.concatenate(([False], mask.astype(bool), [False]))
-    edges = np.flatnonzero(padded[1:] != padded[:-1])
-    return [
-        (int(start), int(stop))
-        for start, stop in zip(edges[::2], edges[1::2], strict=True)
-        if stop - start >= min_len
-    ]
-
-
-def detect_sense_artifacts(
-    df: pd.DataFrame,
-    min_plateau_sec: int = 20,
-    min_diff_sec: int = 15,
-    diff_threshold: float = 15.0,
-    min_contact_sec: int = 15,
-    min_error_ms: int = 200,
-) -> pd.DataFrame:
-    """Detect optical PPG sensor artifacts in Sense_HR:
-
-    1. Exact constant plateaus >= min_plateau_sec while H10 varies.
-    2. Sustained large differences (|Sense_HR - H10_HR| > diff_threshold) for >= min_diff_sec.
-    3. Device-reported PPI quality: sustained loss of skin contact or large PPI error estimates.
-    """
-    df = df.copy()
-    df["artifact"] = False
-    df["artifact_layer"] = None
-
-    if "H10_HR" not in df.columns or "Sense_HR" not in df.columns:
-        return df
-
-    n = len(df)
-    if n == 0:
-        return df
-
-    sense_hr = pd.to_numeric(df["Sense_HR"], errors="coerce").to_numpy(dtype=float)
-    h10_hr = pd.to_numeric(df["H10_HR"], errors="coerce").to_numpy(dtype=float)
-
-    artifact_mask = np.zeros(n, dtype=bool)
-    artifact_layers: list[str | None] = [None] * n
-
-    def _mark(start: int, stop: int, label: str, *, overwrite: bool) -> None:
-        artifact_mask[start:stop] = True
-        for k in range(start, stop):
-            if overwrite or artifact_layers[k] is None:
-                artifact_layers[k] = label
-
-    # 1. Symmetric plateau detection (one sensor stuck on a value while the other varies)
-    for sig_a, sig_b, label in (
-        (sense_hr, h10_hr, "plateau_sense"),
-        (h10_hr, sense_hr, "plateau_h10"),
-    ):
-        for start, stop in _constant_runs(sig_a, min_plateau_sec):
-            other = sig_b[start:stop]
-            valid_other = other[(~np.isnan(other)) & (other > 0)]
-            if len(valid_other) > 0 and np.std(valid_other) > 0:
-                _mark(start, stop, label, overwrite=True)
-
-    # 2. Sustained large diff detection
-    diff = np.abs(sense_hr - h10_hr)
-    large_diff = (
-        (~np.isnan(diff)) & (diff > diff_threshold) & (sense_hr > 0) & (h10_hr > 0)
-    )
-    for start, stop in _true_runs(large_diff, min_diff_sec):
-        _mark(start, stop, "diff", overwrite=False)
-
-    # 3. Device-reported PPI quality
-    contact_col = "PPI_SkinContact"
-    err_col = "PPI_ErrEst_ms"
-    if contact_col in df.columns or err_col in df.columns:
-        poor = np.zeros(n, dtype=bool)
-        if contact_col in df.columns:
-            contact = pd.to_numeric(df[contact_col], errors="coerce")
-            poor |= (contact.notna() & (contact == 0)).to_numpy()
-        if err_col in df.columns:
-            err = pd.to_numeric(df[err_col], errors="coerce")
-            poor |= (err.notna() & (err > min_error_ms)).to_numpy()
-        for start, stop in _true_runs(poor, min_contact_sec):
-            _mark(start, stop, "ppi_quality", overwrite=False)
-
-    df["artifact"] = artifact_mask
-    df["artifact_layer"] = artifact_layers
-    return df
-
-
-def build_epochs(
-    df: pd.DataFrame, epoch_sec: int = 10, min_samples: int = 5
-) -> pd.DataFrame:
-    """Bin 1-second rows into N-second epochs with paired validity verification."""
-    if df.empty or "Timestamp" not in df.columns:
-        return pd.DataFrame()
-
-    df = df.copy()
-    if "artifact" not in df.columns:
-        df["artifact"] = False
-
-    df["epoch_start"] = pd.to_datetime(df["Timestamp"]).dt.floor(f"{epoch_sec}s")
-
-    epochs = []
-    for ep_start, group in df.groupby("epoch_start"):
-        h10_valid = group[(group["H10_HR"].notna()) & (group["H10_HR"] > 0)]
-        h10_n = len(h10_valid)
-        h10_hr = float(h10_valid["H10_HR"].mean()) if h10_n > 0 else float("nan")
-
-        sense_valid = group[
-            (group["Sense_HR"].notna()) & (group["Sense_HR"] > 0) & (~group["artifact"])
-        ]
-        sense_n = len(sense_valid)
-        sense_hr = (
-            float(sense_valid["Sense_HR"].mean()) if sense_n > 0 else float("nan")
-        )
-
-        hr_paired_valid = (h10_n >= min_samples) and (sense_n >= min_samples)
-
-        if not hr_paired_valid:
-            h10_hr = float("nan")
-            sense_hr = float("nan")
-
-        hr_diff = sense_hr - h10_hr if hr_paired_valid else float("nan")
-        hr_abs_err = abs(hr_diff) if hr_paired_valid else float("nan")
-
-        epochs.append(
-            {
-                "epoch_start": ep_start,
-                "h10_n": h10_n,
-                "sense_n": sense_n,
-                "h10_hr": h10_hr,
-                "sense_hr": sense_hr,
-                "h10_rmssd": (
-                    float(group["H10_RMSSD"].mean())
-                    if "H10_RMSSD" in group
-                    else float("nan")
-                ),
-                "sense_rmssd": (
-                    float(group["Sense_RMSSD"].mean())
-                    if "Sense_RMSSD" in group
-                    else float("nan")
-                ),
-                "hr_paired_valid": hr_paired_valid,
-                "hr_diff": hr_diff,
-                "hr_abs_err": hr_abs_err,
-            }
-        )
-
-    return pd.DataFrame(epochs)
-
-
-def grade_metrics(metrics: dict[str, Any]) -> dict[str, str]:
-    """Grade metrics into performance tiers ('valid', 'acceptable', 'poor', or 'n/a')."""
-
-    def grade_val(
-        val: Any,
-        thresh_valid: float,
-        thresh_acceptable: float | None = None,
-        lower_is_better: bool = True,
-    ) -> str:
-        if val is None or (isinstance(val, float) and np.isnan(val)):
-            return "n/a"
-        if lower_is_better:
-            if val <= thresh_valid:
-                return "valid"
-            if thresh_acceptable is not None and val <= thresh_acceptable:
-                return "acceptable"
-            return "poor"
-        else:
-            if val >= thresh_valid:
-                return "valid"
-            if thresh_acceptable is not None and val >= thresh_acceptable:
-                return "acceptable"
-            return "poor"
-
-    bias_val = metrics.get("bias")
-    bias_mag: float | None = None
-    if bias_val is not None:
-        try:
-            b_float = float(bias_val)
-            if not np.isnan(b_float):
-                bias_mag = abs(b_float)
-        except (ValueError, TypeError):
-            pass
-
-    return {
-        "mae_grade": grade_val(metrics.get("mae"), 5.0, lower_is_better=True),
-        "mape_grade": grade_val(metrics.get("mape"), 5.0, 10.0, lower_is_better=True),
-        "bias_grade": grade_val(
-            bias_mag,
-            2.0,
-            lower_is_better=True,
-        ),
-        "ccc_grade": grade_val(
-            metrics.get("lins_ccc"), 0.90, 0.70, lower_is_better=False
-        ),
-        "icc_grade": grade_val(
-            metrics.get("icc_2_1"), 0.75, 0.60, lower_is_better=False
-        ),
-        "r_grade": grade_val(
-            metrics.get("pearson_r"), 0.90, 0.70, lower_is_better=False
-        ),
-        "cv_grade": grade_val(metrics.get("wscv"), 5.0, 10.0, lower_is_better=True),
-        "dropout_grade": grade_val(
-            metrics.get("dropout_rate"), 5.0, 10.0, lower_is_better=True
-        ),
-    }
-
-
-def compute_validation_metrics(df: pd.DataFrame) -> dict[str, Any]:
-    """Compute comprehensive cross-validation metrics across accuracy, agreement, and reliability."""
-    if df.empty:
-        return {
-            "n_samples": 0,
-            "n_artifact_seconds": 0,
-            "artifact_rate": 0.0,
-            "artifact_runs": [],
-            "n_epochs": 0,
-            "total_records": 0,
-            "dropout_rate": 0.0,
-        }
-
-    df = df.copy()
-    if "H10_HR" in df.columns and "Sense_HR" in df.columns:
-        if "HR_Diff" not in df.columns:
-            df["HR_Diff"] = df["Sense_HR"] - df["H10_HR"]
-        if "HR_Abs_Error" not in df.columns:
-            df["HR_Abs_Error"] = np.abs(df["HR_Diff"])
-
-    df = detect_sense_artifacts(df)
-    n_artifact_seconds = int(df["artifact"].sum()) if "artifact" in df.columns else 0
-    total_records = len(df)
-    artifact_rate = (
-        (n_artifact_seconds / total_records) * 100.0 if total_records > 0 else 0.0
-    )
-
-    epochs = build_epochs(df)
-    n_epochs = (
-        int(epochs["hr_paired_valid"].sum())
-        if not epochs.empty and "hr_paired_valid" in epochs.columns
-        else 0
-    )
-
-    paired_hr = df.dropna(subset=["H10_HR", "Sense_HR"])
-    paired_hr = paired_hr[(paired_hr["H10_HR"] > 0) & (paired_hr["Sense_HR"] > 0)]
-    n_received = len(paired_hr)
-    dropout_rate = (
-        ((total_records - n_received) / total_records) * 100.0
-        if total_records > 0
-        else 0.0
-    )
-
-    valid_hr = paired_hr[~paired_hr.get("artifact", False)]
-    n = len(valid_hr)
-
-    if n == 0:
-        base: dict[str, Any] = {
-            "n_samples": 0,
-            "n_artifact_seconds": n_artifact_seconds,
-            "artifact_rate": artifact_rate,
-            "n_epochs": n_epochs,
-            "total_records": total_records,
-            "dropout_rate": dropout_rate,
-            "h10_mean": float("nan"),
-            "h10_std": float("nan"),
-            "h10_min": float("nan"),
-            "h10_max": float("nan"),
-            "sense_mean": float("nan"),
-            "sense_std": float("nan"),
-            "sense_min": float("nan"),
-            "sense_max": float("nan"),
-            "mae": float("nan"),
-            "mape": float("nan"),
-            "rmse": float("nan"),
-            "bias": float("nan"),
-            "sd_diff": float("nan"),
-            "loa_upper": float("nan"),
-            "loa_lower": float("nan"),
-            "pearson_r": float("nan"),
-            "spearman_r": float("nan"),
-            "lins_ccc": float("nan"),
-            "icc_2_1": float("nan"),
-            "wscv": float("nan"),
-            "within_1bpm": float("nan"),
-            "within_2bpm": float("nan"),
-            "within_5bpm": float("nan"),
-        }
-        base.update(grade_metrics(base))
-        return base
-
-    x = valid_hr["H10_HR"].values.astype(float)
-    y = valid_hr["Sense_HR"].values.astype(float)
-
-    h10_mean, h10_std = float(np.mean(x)), float(np.std(x, ddof=1)) if n > 1 else 0.0
-    h10_min, h10_max = float(np.min(x)), float(np.max(x))
-
-    sense_mean, sense_std = (
-        float(np.mean(y)),
-        float(np.std(y, ddof=1)) if n > 1 else 0.0,
-    )
-    sense_min, sense_max = float(np.min(y)), float(np.max(y))
-
-    diff = y - x
-    abs_err = np.abs(diff)
-    ape = (abs_err / x) * 100.0
-
-    mae = float(np.mean(abs_err))
-    mape = float(np.mean(ape))
-    rmse = float(np.sqrt(np.mean(diff**2)))
+def _loa(diff: np.ndarray) -> dict[str, float]:
+    """Bias and 95 % limits of agreement with their exact-ish 95 % CIs."""
+    n = len(diff)
     bias = float(np.mean(diff))
-    sd_diff = float(np.std(diff, ddof=1)) if n > 1 else 0.0
-    loa_upper = bias + 1.96 * sd_diff
-    loa_lower = bias - 1.96 * sd_diff
-
-    pearson_r = (
-        float(valid_hr["H10_HR"].corr(valid_hr["Sense_HR"], method="pearson"))
-        if n > 1
-        else float("nan")
-    )
-    spearman_r = (
-        float(valid_hr["H10_HR"].corr(valid_hr["Sense_HR"], method="spearman"))
-        if n > 1
-        else float("nan")
-    )
-    lins_ccc = calculate_lins_ccc(x, y)
-    icc_2_1 = calculate_icc_2_1(x, y)
-
-    paired_means = (x + y) / 2.0
-    paired_stds = np.abs(x - y) / np.sqrt(2.0)
-    wscv_per_pair = (paired_stds / paired_means) * 100.0
-    wscv = float(np.mean(wscv_per_pair))
-
-    within_1bpm = float(np.sum(abs_err <= 1) / n * 100.0)
-    within_2bpm = float(np.sum(abs_err <= 2) / n * 100.0)
-    within_5bpm = float(np.sum(abs_err <= 5) / n * 100.0)
-
-    metrics: dict[str, Any] = {
-        "n_samples": n,
-        "n_artifact_seconds": n_artifact_seconds,
-        "artifact_rate": artifact_rate,
-        "n_epochs": n_epochs,
-        "total_records": total_records,
-        "dropout_rate": dropout_rate,
-        "h10_mean": h10_mean,
-        "h10_std": h10_std,
-        "h10_min": h10_min,
-        "h10_max": h10_max,
-        "sense_mean": sense_mean,
-        "sense_std": sense_std,
-        "sense_min": sense_min,
-        "sense_max": sense_max,
-        "mae": mae,
-        "mape": mape,
-        "rmse": rmse,
+    sd = float(np.std(diff, ddof=1))
+    t = float(stats.t.ppf(0.975, n - 1))
+    se_bias = sd / np.sqrt(n)
+    se_loa = sd * np.sqrt(3.0 / n)  # Bland & Altman (1999), eq. for LoA SE
+    lower, upper = bias - 1.96 * sd, bias + 1.96 * sd
+    return {
         "bias": bias,
-        "sd_diff": sd_diff,
-        "loa_upper": loa_upper,
-        "loa_lower": loa_lower,
-        "pearson_r": pearson_r,
-        "spearman_r": spearman_r,
-        "lins_ccc": lins_ccc,
-        "icc_2_1": icc_2_1,
-        "wscv": wscv,
-        "within_1bpm": within_1bpm,
-        "within_2bpm": within_2bpm,
-        "within_5bpm": within_5bpm,
+        "bias_ci_low": bias - t * se_bias,
+        "bias_ci_high": bias + t * se_bias,
+        "sd_diff": sd,
+        "loa_lower": lower,
+        "loa_lower_ci_low": lower - t * se_loa,
+        "loa_lower_ci_high": lower + t * se_loa,
+        "loa_upper": upper,
+        "loa_upper_ci_low": upper - t * se_loa,
+        "loa_upper_ci_high": upper + t * se_loa,
     }
 
-    metrics.update(grade_metrics(metrics))
-    return metrics
+
+def agreement(
+    ref: Any,
+    test: Any,
+    *,
+    log_ratio: bool = False,
+    n_boot: int = N_BOOT,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """Agreement of ``test`` against ``ref`` over time-ordered paired windows.
+
+    ``log_ratio=True`` computes the limits on ln values and reports them as
+    ratios test/ref (Bland & Altman 1999), for skewed, positive measures whose
+    error grows with magnitude, such as RMSSD.
+    """
+    x = np.asarray(ref, dtype=float)
+    y = np.asarray(test, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    if log_ratio:
+        ok &= (x > 0) & (y > 0)
+    x, y = x[ok], y[ok]
+    n = len(x)
+    out: dict[str, Any] = {"n": n, "log_ratio": log_ratio}
+    if n < 3:
+        return out
+
+    diff = np.log(y) - np.log(x) if log_ratio else y - x
+    loa = _loa(diff)
+    if log_ratio:
+        loa = {k: (float(np.exp(v)) if k != "sd_diff" else v) for k, v in loa.items()}
+    out.update(loa)
+
+    mean = (x + y) / 2.0
+    fit = stats.linregress(np.log(mean) if log_ratio else mean, diff)
+    out["prop_bias_slope"] = float(fit.slope)
+    out["prop_bias_p"] = float(fit.pvalue)
+
+    err = y - x
+    out["mae"] = float(np.mean(np.abs(err)))
+    out["mape"] = float(np.mean(np.abs(err) / x) * 100.0)
+    out["rmse"] = float(np.sqrt(np.mean(err**2)))
+    out["mae_ci_low"], out["mae_ci_high"] = block_bootstrap_ci(
+        x, y, lambda a, b: float(np.mean(np.abs(b - a))), n_boot=n_boot, seed=seed
+    )
+    out["pearson_r"] = (
+        float(stats.pearsonr(x, y)[0]) if np.std(x) and np.std(y) else float("nan")
+    )
+    out["lins_ccc"] = calculate_lins_ccc(x, y)
+    out["icc_2_1"] = calculate_icc_2_1(x, y)
+    out["wscv"] = calculate_wscv(x, y)
+    out["x_mean"], out["y_mean"] = float(np.mean(x)), float(np.mean(y))
+    return out
+
+
+def repeated_measures_agreement(
+    df: pd.DataFrame,
+    subject_col: str,
+    ref_col: str,
+    test_col: str,
+    *,
+    log_ratio: bool = False,
+    n_boot: int = N_BOOT,
+    seed: int = 42,
+) -> dict[str, Any]:
+    """Limits of agreement pooled over participants with several windows each.
+
+    Bland & Altman (2007), true value varying within subject: the variance of
+    the differences is the between-subject component ``(MSB - MSW) / m0`` plus
+    the within-subject ``MSW`` from a one-way ANOVA of the differences. CIs for
+    bias and limits come from a participant-level (cluster) bootstrap.
+    """
+    d = df[[subject_col, ref_col, test_col]].dropna()
+    if log_ratio:
+        d = d[(d[ref_col] > 0) & (d[test_col] > 0)]
+    diff = (
+        np.log(d[test_col]) - np.log(d[ref_col])
+        if log_ratio
+        else d[test_col] - d[ref_col]
+    )
+    groups = [g.to_numpy(dtype=float) for _, g in diff.groupby(d[subject_col])]
+    out: dict[str, Any] = {
+        "n_subjects": len(groups),
+        "n_windows": int(sum(len(g) for g in groups)),
+        "log_ratio": log_ratio,
+    }
+    if len(groups) < 2:
+        return out
+
+    def _pooled(gs: list[np.ndarray]) -> tuple[float, float]:
+        m = np.array([len(g) for g in gs], dtype=float)
+        n_tot, k = m.sum(), len(gs)
+        grand = np.concatenate(gs).mean()
+        ssb = sum(len(g) * (g.mean() - grand) ** 2 for g in gs)
+        ssw = sum(((g - g.mean()) ** 2).sum() for g in gs)
+        msb = ssb / (k - 1)
+        msw = ssw / (n_tot - k) if n_tot > k else 0.0
+        m0 = (n_tot**2 - (m**2).sum()) / ((k - 1) * n_tot)
+        var = max(msb - msw, 0.0) / m0 + msw
+        return float(grand), float(np.sqrt(var))
+
+    bias, sd = _pooled(groups)
+    rng = np.random.default_rng(seed)
+    boot = [
+        _pooled([groups[i] for i in rng.integers(0, len(groups), len(groups))])
+        for _ in range(n_boot)
+    ]
+    b_bias = np.array([b for b, _ in boot])
+    b_lo = np.array([b - 1.96 * s for b, s in boot])
+    b_hi = np.array([b + 1.96 * s for b, s in boot])
+    tf = (lambda v: float(np.exp(v))) if log_ratio else float
+    out.update(
+        {
+            "bias": tf(bias),
+            "bias_ci_low": tf(np.percentile(b_bias, 2.5)),
+            "bias_ci_high": tf(np.percentile(b_bias, 97.5)),
+            "sd_diff": sd,
+            "loa_lower": tf(bias - 1.96 * sd),
+            "loa_lower_ci_low": tf(np.percentile(b_lo, 2.5)),
+            "loa_lower_ci_high": tf(np.percentile(b_lo, 97.5)),
+            "loa_upper": tf(bias + 1.96 * sd),
+            "loa_upper_ci_low": tf(np.percentile(b_hi, 2.5)),
+            "loa_upper_ci_high": tf(np.percentile(b_hi, 97.5)),
+        }
+    )
+    return out
+
+
+def grade(metrics: dict[str, Any]) -> dict[str, str]:
+    """Interpretation labels, only where a published standard exists.
+
+    MAPE: ANSI/CTA-2065 (<= 10 % acceptable). CCC: McBride (2005) bands.
+    ICC: Koo & Li (2016) bands. Bias, LoA and RMSSD have no universal
+    threshold; judge them against the effect size your study needs to detect.
+    """
+
+    def band(v: Any, cuts: list[tuple[float, str]], below: str) -> str:
+        if v is None or not np.isfinite(v):
+            return "n/a"
+        for cut, label in cuts:
+            if v >= cut:
+                return label
+        return below
+
+    mape = metrics.get("mape")
+    return {
+        "mape": "n/a"
+        if mape is None or not np.isfinite(mape)
+        else ("acceptable" if mape <= 10.0 else "not acceptable"),
+        "lins_ccc": band(
+            metrics.get("lins_ccc"),
+            [(0.99, "almost perfect"), (0.95, "substantial"), (0.90, "moderate")],
+            "poor",
+        ),
+        "icc_2_1": band(
+            metrics.get("icc_2_1"),
+            [(0.90, "excellent"), (0.75, "good"), (0.50, "moderate")],
+            "poor",
+        ),
+    }
+
+
+# (label, reference column, test column, artifact column, log-ratio LoA)
+COMPARISONS: tuple[tuple[str, str, str, str | None, bool], ...] = (
+    ("PPG HR (beats)", "ref_hr", "ppg_hr", "artifact", False),
+    ("PPG HR (spectral)", "ref_hr", "ppg_hr_spectral", "artifact", False),
+    ("PPG RMSSD", "ref_rmssd", "ppg_rmssd", "artifact", True),
+    ("Sense PPI HR", "ref_hr", "ppi_hr", "ppi_artifact", False),
+    ("Sense PPI RMSSD", "ref_rmssd", "ppi_rmssd", "ppi_artifact", True),
+    ("Sense reported HR", "ref_hr", "sense_reported_hr", "artifact", False),
+    ("H10 reported HR", "ref_hr", "h10_reported_hr", None, False),
+)
+
+
+def validate_windows(
+    windows: pd.DataFrame, n_boot: int = N_BOOT
+) -> list[dict[str, Any]]:
+    """All comparisons for one session, on all windows and on artifact-free windows.
+
+    Windows whose *reference* is incomplete (``ref_ok`` False) are dropped from
+    both, since that criterion never looks at the test device. ``all`` is the
+    primary result; ``clean`` is the sensitivity analysis.
+    """
+    if windows.empty:
+        return []
+    ok = windows[windows["ref_ok"]] if "ref_ok" in windows else windows
+    results = []
+    for label, ref_col, test_col, art_col, log_ratio in COMPARISONS:
+        if test_col not in ok or ok[test_col].notna().sum() < 3:
+            continue
+        res: dict[str, Any] = {
+            "label": label,
+            "n_windows": len(windows),
+            "n_ref_ok": len(ok),
+            "all": agreement(
+                ok[ref_col], ok[test_col], log_ratio=log_ratio, n_boot=n_boot
+            ),
+        }
+        if art_col and art_col in ok:
+            clean = ok[~ok[art_col].astype(bool)]
+            res["n_artifact"] = int(ok[art_col].astype(bool).sum())
+            res["clean"] = agreement(
+                clean[ref_col], clean[test_col], log_ratio=log_ratio, n_boot=n_boot
+            )
+        for key in ("all", "clean"):
+            if key in res and not log_ratio:
+                res[key]["grades"] = grade(res[key])
+        results.append(res)
+    return results

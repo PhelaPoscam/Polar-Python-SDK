@@ -1,6 +1,7 @@
 """Tests for research loader unrolling wide ECG and PPG frame CSVs."""
 
 import numpy as np
+import pytest
 
 from polar_ble_sdk.research.loader import (
     _parse_wide_ecg_csv,
@@ -34,6 +35,9 @@ class TestWideFrameLoaderRoundtrip:
         dt_diffs = np.diff(df["Timestamp_s"].values)
         assert np.all(dt_diffs > 0)
         assert np.allclose(dt_diffs, 1.0 / 130.0, atol=1e-3)
+        # The frame timestamp belongs to the frame's last sample.
+        assert df["Timestamp_s"].iloc[9] == 100.0
+        assert df["Timestamp_s"].iloc[-1] == 100.153846
 
     def test_ppg_wide_csv_unrolls_correctly(self, tmp_path):
         # Create a synthetic wide PPG CSV with 2 frames of 2 samples (4 channels each)
@@ -63,3 +67,23 @@ class TestWideFrameLoaderRoundtrip:
         df = load_raw_stream(raw_dir, "ecg")
         assert len(df) == 4
         assert "ECG_uV" in df.columns
+
+
+def test_variable_size_ppg_frames_keep_true_sample_rate(tmp_path):
+    """Delta-compressed PPG frames vary in size; spacing must follow each frame."""
+    from polar_ble_sdk.research.loader import _parse_wide_ppg_csv
+    from polar_ble_sdk.research.ppg import estimate_fs, split_segments
+
+    fs, sizes = 135.0, [31, 52, 42, 48, 36, 45]
+    lines, n_total = ["Timestamp_s,PPG_Samples"], 0
+    for n in sizes:
+        n_total += n
+        ts = (n_total - 1) / fs  # timestamp of the frame's last sample
+        lines.append(f"{ts:.6f}," + ",".join(['"[1, 2, 3, 4]"'] * n))
+    csv_file = tmp_path / "ppg.csv"
+    csv_file.write_text("\n".join(lines), encoding="utf-8")
+
+    t = _parse_wide_ppg_csv(csv_file)["Timestamp_s"].to_numpy()
+    assert estimate_fs(t) == pytest.approx(fs, rel=1e-3)
+    assert len(split_segments(t, estimate_fs(t))) == 1
+    assert t[0] == pytest.approx(0.0, abs=1e-6)

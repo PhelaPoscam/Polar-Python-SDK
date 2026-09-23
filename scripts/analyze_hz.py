@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.append(str(PROJECT_ROOT / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from polar_ble_sdk.research.audit import audit_csv_stream  # noqa: E402
 

@@ -6,9 +6,10 @@ and Polar Verity Sense streams (ECG, PPG, ACC, Gyro, Mag, HR, and experiment mar
 Burst Unrolling:
     BLE delivers physiological and motion data in packet chunks (e.g. ~14 ECG samples
     every 107ms). Naive single-timestamp chunking creates stair-step timing artifacts.
-    This bridge unrolls each packet burst using nominal sample delta (dt = 1/fs),
-    providing continuous, sub-millisecond, sample-accurate LSL timestamps compatible
-    with LabRecorder, EEGLAB, Timeflux, and custom real-time pipelines.
+    This bridge unrolls each packet burst backwards from its arrival time, with
+    the sample spacing taken from the device's own frame timestamps
+    (dt = Δts / n, so configured-rate overrides and clock drift are followed);
+    the configured rate is only the fallback for a first frame or after a gap.
 """
 
 from __future__ import annotations
@@ -19,6 +20,35 @@ from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class BurstClock:
+    """Per-stream sample spacing learnt from the device's frame timestamps.
+
+    Each frame's timestamp (ns) marks its last sample, so ``Δts / n`` is the
+    true spacing; it follows rate overrides, a device that fell back to another
+    rate, and clock drift. A spacing above 1.5x the running estimate is a gap
+    (lost frames) and is not learnt. Until the first pair of frames arrives the
+    configured rate is used.
+    """
+
+    def __init__(self, nominal_hz: float) -> None:
+        self.dt = 1.0 / nominal_hz
+        self._learnt = False
+        self._prev_ts: int | None = None
+
+    def times(self, t_now: float, n: int, ts_hw: Any = None) -> list[float]:
+        """Per-sample times for ``n`` samples whose last one arrived at ``t_now``."""
+        if isinstance(ts_hw, int) and ts_hw > 0:
+            if self._prev_ts is not None and ts_hw > self._prev_ts and n > 0:
+                frame_dt = (ts_hw - self._prev_ts) / 1e9 / n
+                if not self._learnt:
+                    self.dt, self._learnt = frame_dt, True
+                elif frame_dt < 1.5 * self.dt:
+                    self.dt = 0.9 * self.dt + 0.1 * frame_dt
+            self._prev_ts = ts_hw
+        return [t_now - (n - 1 - i) * self.dt for i in range(n)]
+
 
 try:
     import pylsl  # type: ignore[import-untyped]
@@ -58,6 +88,9 @@ class PolarLSLBridge:
         ppg_rate: float = 135.0,
         acc_rate_h10: float = 200.0,
         acc_rate_sense: float = 52.0,
+        ecg_rate: float = 130.0,
+        gyro_rate: float = 52.0,
+        mag_rate: float = 20.0,
     ) -> None:
         if not HAS_PYLSL or pylsl is None:
             raise ImportError(
@@ -74,6 +107,10 @@ class PolarLSLBridge:
         self.ppg_rate = ppg_rate
         self.acc_rate_h10 = acc_rate_h10
         self.acc_rate_sense = acc_rate_sense
+        self.ecg_rate = ecg_rate
+        self.gyro_rate = gyro_rate
+        self.mag_rate = mag_rate
+        self._clocks: dict[str, BurstClock] = {}
 
         self.outlets: dict[str, Any] = {}
         self.configs: dict[str, LSLOutletConfig] = {}
@@ -88,7 +125,7 @@ class PolarLSLBridge:
                     name=f"Polar_{self.h10_id}_ECG",
                     type="ECG",
                     channel_count=1,
-                    nominal_srate=130.0,
+                    nominal_srate=self.ecg_rate,
                     channel_format="float32",
                     source_id=f"{self.h10_id}_ecg",
                     unit="microvolts",
@@ -156,7 +193,7 @@ class PolarLSLBridge:
                         name=f"Polar_{self.sense_id}_GYRO",
                         type="Gyroscope",
                         channel_count=3,
-                        nominal_srate=52.0,
+                        nominal_srate=self.gyro_rate,
                         channel_format="float32",
                         source_id=f"{self.sense_id}_gyro",
                         unit="dps",
@@ -170,7 +207,7 @@ class PolarLSLBridge:
                         name=f"Polar_{self.sense_id}_MAG",
                         type="Magnetometer",
                         channel_count=3,
-                        nominal_srate=20.0,
+                        nominal_srate=self.mag_rate,
                         channel_format="float32",
                         source_id=f"{self.sense_id}_mag",
                         unit="Gauss",
@@ -224,18 +261,20 @@ class PolarLSLBridge:
 
         return time.time()
 
+    def _times(self, key: str, ts_hw: Any, n: int, nominal_hz: float) -> list[float]:
+        clock = self._clocks.setdefault(key, BurstClock(nominal_hz))
+        return clock.times(self.local_clock(), n, ts_hw)
+
     def push_h10_ecg(self, data: Any) -> None:
         """Push a burst of ECG samples with sample-accurate burst unrolling."""
         if "h10_ecg" not in self.outlets:
             return
-        _ts_hw, samples = data
+        ts_hw, samples = data
         n = len(samples)
         if n == 0:
             return
 
-        t_now = self.local_clock()
-        dt = 1.0 / 130.0
-        timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
+        timestamps = self._times("h10_ecg", ts_hw, n, self.ecg_rate)
         chunk = [[float(s)] for s in samples]
         self.outlets["h10_ecg"].push_chunk(chunk, timestamps)
 
@@ -243,14 +282,12 @@ class PolarLSLBridge:
         """Push a burst of H10 3-axis ACC samples with burst unrolling."""
         if "h10_acc" not in self.outlets:
             return
-        _ts_hw, samples = data
+        ts_hw, samples = data
         n = len(samples)
         if n == 0:
             return
 
-        t_now = self.local_clock()
-        dt = 1.0 / self.acc_rate_h10
-        timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
+        timestamps = self._times("h10_acc", ts_hw, n, self.acc_rate_h10)
         chunk = [[float(s[0]), float(s[1]), float(s[2])] for s in samples]
         self.outlets["h10_acc"].push_chunk(chunk, timestamps)
 
@@ -272,14 +309,12 @@ class PolarLSLBridge:
         """Push a burst of Verity Sense 4-channel optical PPG samples."""
         if "sense_ppg" not in self.outlets:
             return
-        _ts_hw, samples = data
+        ts_hw, samples = data
         n = len(samples)
         if n == 0:
             return
 
-        t_now = self.local_clock()
-        dt = 1.0 / self.ppg_rate
-        timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
+        timestamps = self._times("sense_ppg", ts_hw, n, self.ppg_rate)
         chunk = []
         for s in samples:
             if isinstance(s, list | tuple):
@@ -296,14 +331,12 @@ class PolarLSLBridge:
         """Push a burst of Verity Sense 3-axis ACC samples."""
         if "sense_acc" not in self.outlets:
             return
-        _ts_hw, samples = data
+        ts_hw, samples = data
         n = len(samples)
         if n == 0:
             return
 
-        t_now = self.local_clock()
-        dt = 1.0 / self.acc_rate_sense
-        timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
+        timestamps = self._times("sense_acc", ts_hw, n, self.acc_rate_sense)
         chunk = [[float(s[0]), float(s[1]), float(s[2])] for s in samples]
         self.outlets["sense_acc"].push_chunk(chunk, timestamps)
 
@@ -311,14 +344,12 @@ class PolarLSLBridge:
         """Push a burst of Verity Sense 3-axis Gyroscope samples."""
         if "sense_gyro" not in self.outlets:
             return
-        _ts_hw, samples = data
+        ts_hw, samples = data
         n = len(samples)
         if n == 0:
             return
 
-        t_now = self.local_clock()
-        dt = 1.0 / 52.0
-        timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
+        timestamps = self._times("sense_gyro", ts_hw, n, self.gyro_rate)
         chunk = [[float(s[0]), float(s[1]), float(s[2])] for s in samples]
         self.outlets["sense_gyro"].push_chunk(chunk, timestamps)
 
@@ -326,14 +357,12 @@ class PolarLSLBridge:
         """Push a burst of Verity Sense 3-axis Magnetometer samples."""
         if "sense_mag" not in self.outlets:
             return
-        _ts_hw, samples = data
+        ts_hw, samples = data
         n = len(samples)
         if n == 0:
             return
 
-        t_now = self.local_clock()
-        dt = 1.0 / 20.0
-        timestamps = [t_now - (n - 1 - i) * dt for i in range(n)]
+        timestamps = self._times("sense_mag", ts_hw, n, self.mag_rate)
         chunk = [[float(s[0]), float(s[1]), float(s[2])] for s in samples]
         self.outlets["sense_mag"].push_chunk(chunk, timestamps)
 

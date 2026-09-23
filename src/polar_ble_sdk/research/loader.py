@@ -10,7 +10,9 @@ import ast
 import csv
 import json
 import logging
+import statistics
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,10 +46,64 @@ class PolarSessionData:
         return self.streams.get(stream_name.lower())
 
 
-def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
-    """Parse variable-width PPG frames into sample-level DataFrame."""
+def host_zero(meta: dict[str, Any], key: str) -> pd.Timestamp | None:
+    """Host local time of a stream's first frame, e.g. ``key="sense_ppg"``.
+
+    Host local time is the clock of the summary CSVs; markers convert to it
+    with ``datetime.fromtimestamp(marker["timestamp_epoch_s"])``.
+    """
+    ns = meta.get("clock_zero_points", {}).get(f"{key}_host_epoch_ns")
+    return pd.Timestamp(datetime.fromtimestamp(ns / 1e9)) if ns else None
+
+
+def _add_host_time(
+    streams: dict[str, pd.DataFrame], meta: dict[str, Any], prefix: str = ""
+) -> None:
+    """Add a ``Host_Time`` column mapping device-relative time onto host time.
+
+    Accuracy is limited by BLE latency (tens of ms, occasionally more): fine
+    for windowed analyses, not for event-locked cardiac timing (use LSL or a
+    hardware sync for that). Sessions recorded before v1.1 have no zero point.
+    """
+    for name, df in streams.items():
+        anchor = host_zero(meta, f"{prefix}{name}")
+        if anchor is not None and "Timestamp_s" in df.columns:
+            df["Host_Time"] = anchor + pd.to_timedelta(
+                pd.to_numeric(df["Timestamp_s"], errors="coerce"), unit="s"
+            )
+
+
+def _sample_times(
+    rows_ts: list[float], rows_samples: list[list[Any]], nominal_hz: float
+) -> list[float]:
+    """Per-sample times for wide frames whose timestamp marks their *last* sample.
+
+    Frames vary in size (PPG delta compression gives 31-52 samples), so each
+    frame's samples are spaced by that frame's own ``dt = Δts / n``, which
+    follows the device clock exactly. The first frame, and any frame after a
+    gap (lost packets make ``Δts / n`` implausible), use the median ``dt``.
+    """
+    per_frame = [
+        (rows_ts[k] - rows_ts[k - 1]) / len(rows_samples[k])
+        for k in range(1, len(rows_ts))
+        if rows_samples[k] and rows_ts[k] > rows_ts[k - 1]
+    ]
+    typical = statistics.median(per_frame) if per_frame else 1.0 / nominal_hz
+    times: list[float] = []
+    for k, (ts, samples) in enumerate(zip(rows_ts, rows_samples, strict=True)):
+        dt = typical
+        if k > 0 and samples:
+            frame_dt = (ts - rows_ts[k - 1]) / len(samples)
+            if abs(frame_dt - typical) <= 0.2 * typical:
+                dt = frame_dt
+        last = len(samples) - 1
+        times.extend(ts - (last - i) * dt for i in range(len(samples)))
+    return times
+
+
+def _read_wide_rows(path: Path, parse: Any) -> tuple[list[float], list[list[Any]]]:
     rows_ts: list[float] = []
-    rows_samples: list[list[int]] = []
+    rows_samples: list[list[Any]] = []
     with path.open(newline="", encoding="utf-8") as f:
         reader = csv.reader(f)
         _header = next(reader, None)
@@ -56,37 +112,25 @@ def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
                 continue
             try:
                 ts = float(line[0])
-                samples = [ast.literal_eval(c) for c in line[1:]]
-                rows_ts.append(ts)
-                rows_samples.append(samples)
+                samples = [parse(c) for c in line[1:] if c.strip() != ""]
             except (ValueError, SyntaxError):
                 continue
+            rows_ts.append(ts)
+            rows_samples.append(samples)
+    return rows_ts, rows_samples
 
+
+def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
+    """Parse variable-width PPG frames into sample-level DataFrame."""
+    rows_ts, rows_samples = _read_wide_rows(Path(path), ast.literal_eval)
     if not rows_samples:
         return pd.DataFrame(columns=["Timestamp_s", "ch1", "ch2", "ch3", "ch4"])
-
-    n0 = len(rows_samples[0])
-    if len(rows_ts) > 2 and (rows_ts[-1] - rows_ts[0]) > 0 and len(rows_samples) > 1:
-        diffs = [rows_ts[k + 1] - rows_ts[k] for k in range(len(rows_ts) - 1)]
-        valid_diffs = [d for d in diffs if 0.01 < d < 1.0]
-        if valid_diffs and n0 > 0:
-            import statistics
-
-            sample_dt = statistics.median(valid_diffs) / n0
-        else:
-            sample_dt = 1.0 / 135.0
-    elif len(rows_ts) > 1 and (rows_ts[1] - rows_ts[0]) > 0 and n0 > 0:
-        sample_dt = (rows_ts[1] - rows_ts[0]) / n0
-    else:
-        sample_dt = 1.0 / 135.0
-
-    recs: list[list[Any]] = []
-    for ts, samples in zip(rows_ts, rows_samples, strict=False):
-        for i, s in enumerate(samples):
-            if isinstance(s, list | tuple) and len(s) >= 4:
-                recs.append([ts + i * sample_dt, s[0], s[1], s[2], s[3]])
-            elif isinstance(s, list | tuple):
-                recs.append([ts + i * sample_dt, *s])
+    times = _sample_times(rows_ts, rows_samples, 135.0)
+    recs = [
+        [t, *s[:4]]
+        for t, s in zip(times, (s for row in rows_samples for s in row), strict=True)
+        if isinstance(s, list | tuple)
+    ]
     return (
         pd.DataFrame(recs, columns=["Timestamp_s", "ch1", "ch2", "ch3", "ch4"])
         .dropna()
@@ -96,35 +140,14 @@ def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
 
 def _parse_wide_ecg_csv(path: Path) -> pd.DataFrame:
     """Parse variable-width or wide ECG frames into a sample-level DataFrame."""
-    rows_ts: list[float] = []
-    rows_samples: list[list[int]] = []
-    with path.open(newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        _header = next(reader, None)
-        for line in reader:
-            if not line:
-                continue
-            try:
-                ts = float(line[0])
-                samples = [int(float(c)) for c in line[1:] if c.strip() != ""]
-                rows_ts.append(ts)
-                rows_samples.append(samples)
-            except (ValueError, SyntaxError):
-                continue
-
+    rows_ts, rows_samples = _read_wide_rows(Path(path), lambda c: int(float(c)))
     if not rows_samples:
         return pd.DataFrame(columns=["Timestamp_s", "uV", "ECG_uV"])
-
-    sample_dt = 1.0 / 130.0
-
-    recs: list[tuple[float, int, int]] = []
-    for ts, samples in zip(rows_ts, rows_samples, strict=False):
-        for i, s in enumerate(samples):
-            sample_time = ts + i * sample_dt
-            recs.append((sample_time, s, s))
-
-    df = pd.DataFrame(recs, columns=["Timestamp_s", "uV", "ECG_uV"])
-    return df.reset_index(drop=True)
+    times = _sample_times(rows_ts, rows_samples, 130.0)
+    flat = [s for row in rows_samples for s in row]
+    return pd.DataFrame({"Timestamp_s": times, "uV": flat, "ECG_uV": flat}).reset_index(
+        drop=True
+    )
 
 
 def _read_stream_csv(csv_path: Path, stream: str | None = None) -> pd.DataFrame:
@@ -230,6 +253,8 @@ def load_session(session_path: Path | str) -> PolarSessionData:
 
         h10_data = _load_single_device_dir(h10_dir)
         sense_data = _load_single_device_dir(sense_dir)
+        _add_host_time(h10_data.streams, meta, "h10_")
+        _add_host_time(sense_data.streams, meta, "sense_")
 
         return PolarSessionData(
             session_id=path.name,
@@ -239,7 +264,9 @@ def load_session(session_path: Path | str) -> PolarSessionData:
             markers=meta.get("markers", []),
         )
 
-    return _load_single_device_dir(path)
+    single = _load_single_device_dir(path)
+    _add_host_time(single.streams, single.metadata)
+    return single
 
 
 def load_raw_stream(raw_path_or_dir: Path | str, stream_name: str) -> pd.DataFrame:

@@ -16,6 +16,11 @@ from .stream.base import DISCONNECT_INFO, DisconnectReason, looks_like_bond_brea
 
 logger = logging.getLogger("polar_adapter")
 
+# HR notifications and PPI frames arrive every few seconds and PPI can pause
+# (e.g. while it re-locks after motion), so they get a longer freeze budget.
+SLOW_STREAMS = frozenset({"hr", "ppi"})
+SLOW_STREAM_FACTOR = 3.0
+
 
 @dataclass
 class _Link:
@@ -37,6 +42,11 @@ class _Link:
     enabled: bool = False
     reconnecting: bool = False
     last_packet_time: float = 0.0
+    # Per-stream arrival times since the last (re)start: one frozen stream
+    # (e.g. PPG) is caught even while others (ACC) keep flowing.
+    last_packet: dict[str, float] = field(default_factory=dict)
+    frozen_streams: list[str] = field(default_factory=list)
+    last_error: str = ""
 
     @property
     def polar_device(self) -> Any:
@@ -55,14 +65,21 @@ class _Link:
         client = self.client
         return bool(client and getattr(client, "is_connected", False))
 
-    def wrap(self, cb: Callable[[Any], None]) -> Callable[[Any], None]:
+    def wrap(self, stream: str, cb: Callable[[Any], None]) -> Callable[[Any], None]:
         """Tag every delivered packet with its arrival time, for the watchdog."""
 
         def wrapped(data: Any) -> None:
-            self.last_packet_time = time.monotonic()
+            now = time.monotonic()
+            self.last_packet_time = now
+            self.last_packet[stream] = now
             cb(data)
 
         return wrapped
+
+    def mark_started(self) -> None:
+        self.last_packet_time = time.monotonic()
+        self.last_packet.clear()
+        self.frozen_streams = []
 
     def build(self) -> None:
         """(Re)create the connector for this link from the current callbacks."""
@@ -81,8 +98,15 @@ class _Link:
         if self.conn is None or not self.is_connected:
             return DisconnectReason.LINK_LOSS
         if self.last_packet_time > 0 and (now - self.last_packet_time) > freeze_timeout:
+            self.frozen_streams = sorted(self.callbacks)
             return DisconnectReason.STREAM_FROZEN
-        return None
+        self.frozen_streams = [
+            stream
+            for stream, t in self.last_packet.items()
+            if now - t
+            > freeze_timeout * (SLOW_STREAM_FACTOR if stream in SLOW_STREAMS else 1.0)
+        ]
+        return DisconnectReason.STREAM_FROZEN if self.frozen_streams else None
 
 
 class PolarAdapter:
@@ -138,7 +162,7 @@ class PolarAdapter:
 
         for link, raw in ((self.h10, h10_callbacks), (self.sense, sense_callbacks)):
             link.callbacks = {
-                stream: link.wrap(cb)
+                stream: link.wrap(stream, cb)
                 for stream, cb in (raw or {}).items()
                 if cb is not None and not (link is self.sense and stream in disabled)
             }
@@ -164,26 +188,52 @@ class PolarAdapter:
             self.sense.dev = sense_dev
         return h10_dev, sense_dev
 
+    def add_link(
+        self,
+        key: str,
+        label: str,
+        dev: Any,
+        factory: Callable[..., Any],
+        callbacks: Mapping[str, Callable[[Any], None] | None],
+        kwargs: dict[str, Any] | None = None,
+    ) -> _Link:
+        """Manage any single device (e.g. from ``create_polar_connector``)."""
+        link = _Link(
+            key=key,
+            label=label,
+            target=getattr(dev, "address", None),
+            factory=factory,
+            kwargs=kwargs or {},
+            dev=dev,
+            enabled=True,
+        )
+        link.callbacks = {s: link.wrap(s, cb) for s, cb in callbacks.items() if cb}
+        self.links[key] = link
+        return link
+
+    async def start(self) -> dict[str, bool]:
+        """Start every enabled link and the watchdog; per-link success."""
+        self._running = True
+        results = {
+            key: link.enabled and bool(link.dev) and await self._start(link)
+            for key, link in self.links.items()
+        }
+        if self.enable_watchdog and (
+            self._watchdog_task is None or self._watchdog_task.done()
+        ):
+            self._watchdog_task = self._create_task(self._watchdog_loop())
+        return results
+
     async def connect_and_start_streams(
         self,
         enable_h10: bool = True,
         enable_sense: bool = True,
     ) -> tuple[bool, bool]:
         """Initialize Polar clients and start BLE streaming."""
-        self._running = True
         self.h10.enabled = enable_h10
         self.sense.enabled = enable_sense
-
-        results = []
-        for link in (self.h10, self.sense):
-            results.append(link.enabled and bool(link.dev) and await self._start(link))
-
-        if self.enable_watchdog and (
-            self._watchdog_task is None or self._watchdog_task.done()
-        ):
-            self._watchdog_task = self._create_task(self._watchdog_loop())
-
-        return results[0], results[1]
+        results = await self.start()
+        return results["h10"], results["sense"]
 
     async def _start(self, link: _Link) -> bool:
         """Build the connector and subscribe; False if the device refused."""
@@ -194,9 +244,10 @@ class PolarAdapter:
             await link.conn.start_notify()
         except Exception as e:
             logger.error("Polar %s start_notify failed: %s", link.label, e)
+            link.last_error = f"{type(e).__name__}: {e}"
             link.conn = None
             return False
-        link.last_packet_time = time.monotonic()
+        link.mark_started()
         logger.info("Polar %s streaming started successfully.", link.label)
         return True
 
@@ -220,13 +271,27 @@ class PolarAdapter:
             return
         link.reconnecting = True
         label, guidance = DISCONNECT_INFO[reason]
-        self._notify(link, f"Watchdog: {label.lower()}; reconnecting...")
-        logger.warning("Polar %s %s: %s", link.label, label.lower(), guidance)
+        which = (
+            f" ({', '.join(link.frozen_streams)})"
+            if reason is DisconnectReason.STREAM_FROZEN and link.frozen_streams
+            else ""
+        )
+        self._notify(link, f"Watchdog: {label.lower()}{which}; reconnecting...")
+        logger.warning("Polar %s %s%s: %s", link.label, label.lower(), which, guidance)
 
         try:
+            old_client = link.client
             if link.conn:
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(link.conn.stop_notify(), timeout=3.0)
+            # A timed-out teardown can leave the old client connected; opening a
+            # second one to the same device double-feeds (or is refused by) WinRT.
+            if old_client is not None and getattr(old_client, "is_connected", False):
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(old_client.disconnect(), timeout=3.0)
+                if getattr(old_client, "is_connected", False):
+                    self._notify(link, "Old connection still open; retrying teardown.")
+                    return
             await asyncio.sleep(self.reconnect_cooldown)
             if not link.dev:
                 link.dev = await discover_polar_device(
@@ -236,7 +301,7 @@ class PolarAdapter:
                 link.build()
                 if link.conn:
                     await link.conn.start_notify()
-                    link.last_packet_time = time.monotonic()
+                    link.mark_started()
                     self._notify(link, "Connected! Streaming...")
                     logger.info(
                         "Polar %s reconnected and resumed streaming.", link.label

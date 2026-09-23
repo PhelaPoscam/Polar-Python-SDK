@@ -48,7 +48,7 @@ dev = [
     "pytest>=7",
     "pytest-asyncio",
     "mypy",
-    "ruff",
+    "ruff==0.15.22",  # keep in sync with .pre-commit-config.yaml
     "pre-commit",
 ]
 
