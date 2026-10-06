@@ -11,7 +11,7 @@ An open-source Python SDK for connecting, monitoring, and capturing raw physiolo
 
 ## Quick Start
 
-**Requirements:** Python 3.10+, Windows 10/11 (Bluetooth capable).
+**Requirements:** Python 3.10+ on Windows, Linux, or macOS, with a Bluetooth LE capable adapter. (CI runs on all three; the interactive dashboards are developed primarily on Windows.)
 
 ### Install from PyPI
 ```bash
@@ -21,7 +21,8 @@ pip install polar-ble-sdk
 ### Local install (for CLI tools)
 ```bash
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1   # Windows
+source .venv/bin/activate    # Linux / macOS
 pip install -e .
 ```
 
