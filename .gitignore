@@ -32,20 +32,10 @@ ENV/
 .env.*
 !.env.example
 
-# IDE, Editor, & AI assistant configs
+# IDE, Editor, & OS configs
 .vscode/
 .idea/
 .vs/
-.commandcode/
-.claude/
-.codex/
-.repowise/
-.headroom/
-.mcp.json
-mcp.json
-.cursor/
-.windsurf/
-AGENTS.md
 *.swp
 *.swo
 *~
