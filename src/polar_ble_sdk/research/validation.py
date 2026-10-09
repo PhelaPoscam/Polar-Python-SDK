@@ -314,6 +314,21 @@ COMPARISONS: tuple[tuple[str, str, str, str | None, bool], ...] = (
     ("Sense PPI RMSSD", "ref_rmssd", "ppi_rmssd", "ppi_artifact", True),
     ("Sense reported HR", "ref_hr", "sense_reported_hr", "artifact", False),
     ("H10 reported HR", "ref_hr", "h10_reported_hr", None, False),
+    # Need the research.features columns merged into the windows (``--features``).
+    *(
+        (f"{name} {label}", f"rr_{col}", f"{src}_{col}", art, True)
+        for src, name, art in (
+            ("ppgbeat", "PPG", "artifact"),
+            ("ppi", "Sense PPI", "ppi_artifact"),
+        )
+        for label, col in (
+            ("SDNN", "sdnn"),
+            ("SD1", "sd1"),
+            ("LF power (5 min)", "lf_5m"),
+            ("HF power (5 min)", "hf_5m"),
+            ("LF/HF (5 min)", "lf_hf_5m"),
+        )
+    ),
 )
 
 

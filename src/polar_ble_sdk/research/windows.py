@@ -56,6 +56,16 @@ def _read_meta(session_dir: Path) -> dict[str, Any]:
         return {}
 
 
+def stream_source(
+    session_dir: Path, meta: dict[str, Any], device: str, stream: str
+) -> tuple[Path, pd.Timestamp | None]:
+    """Raw CSV path and host zero point of a stream in a dual or single-device session."""
+    dual = session_dir / device / "raw" / f"{stream}.csv"
+    if dual.exists() or device not in meta.get("devices", {}):
+        return dual, host_zero(meta, f"{device}_{stream}")
+    return session_dir / "raw" / f"{stream}.csv", host_zero(meta, stream)
+
+
 def _to_host(anchor: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex:
     return anchor + pd.to_timedelta(np.asarray(seconds, dtype=float), unit="s")
 
@@ -68,8 +78,7 @@ def load_h10_beats(session_dir: Path, meta: dict[str, Any]) -> pd.DataFrame:
     RR sum, which is exact; the H10 notifies ~1 s after a beat, not at it, so
     each run between gaps is anchored with the smallest notification lag.
     """
-    path = session_dir / "h10" / "raw" / "hr.csv"
-    anchor = host_zero(meta, "h10_hr")
+    path, anchor = stream_source(session_dir, meta, "h10", "hr")
     if not path.exists() or anchor is None:
         return pd.DataFrame(columns=["t", "rr_ms"])
     raw = pd.read_csv(path, dtype={"RR_Intervals_ms": str})
@@ -110,8 +119,7 @@ def load_ppg_channels(
 
     Returns ``(beats by channel, filtered signal by channel, host sample times, fs)``.
     """
-    path = session_dir / "sense" / "raw" / "ppg.csv"
-    anchor = host_zero(meta, "sense_ppg")
+    path, anchor = stream_source(session_dir, meta, "sense", "ppg")
     if not path.exists() or anchor is None:
         return {}, {}, pd.DatetimeIndex([]), float("nan")
     df = _parse_wide_ppg_csv(path).sort_values("Timestamp_s")
@@ -143,8 +151,7 @@ def load_ppg_channels(
 
 def load_sense_ppi(session_dir: Path, meta: dict[str, Any]) -> pd.DataFrame:
     """Sense PPI (``t``, ``ppi_ms`` NaN when invalid or after a gap, ``contact``)."""
-    path = session_dir / "sense" / "raw" / "ppi.csv"
-    anchor = host_zero(meta, "sense_ppi")
+    path, anchor = stream_source(session_dir, meta, "sense", "ppi")
     if not path.exists() or anchor is None:
         return pd.DataFrame(columns=["t", "ppi_ms", "contact"])
     raw = pd.read_csv(path)
@@ -163,10 +170,11 @@ def load_sense_ppi(session_dir: Path, meta: dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame({"t": _to_host(anchor, ts), "ppi_ms": ppi, "contact": contact})
 
 
-def load_motion(session_dir: Path, meta: dict[str, Any]) -> pd.Series:
-    """Per-second SD of the Sense acceleration magnitude (mG), indexed by host second."""
-    path = session_dir / "sense" / "raw" / "acc.csv"
-    anchor = host_zero(meta, "sense_acc")
+def load_motion(
+    session_dir: Path, meta: dict[str, Any], device: str = "sense"
+) -> pd.Series:
+    """Per-second SD of a device's acceleration magnitude (mG), indexed by host second."""
+    path, anchor = stream_source(session_dir, meta, device, "acc")
     if not path.exists() or anchor is None:
         return _EMPTY_SERIES.copy()
     acc = pd.read_csv(path)
@@ -231,7 +239,7 @@ def build_windows(session_dir: Path | str, window_s: int = WINDOW_S) -> pd.DataF
     ]
 
     rows = []
-    win = pd.Timedelta(seconds=window_s)
+    win = pd.Timedelta(window_s, "s")
     a = start
     while a + win <= end:
         b = a + win

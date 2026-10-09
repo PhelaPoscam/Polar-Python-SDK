@@ -3,11 +3,16 @@
 Usage:
     python scripts/run_analysis.py [session_dir] [--window 60]
     python scripts/run_analysis.py --pool SESSION_DIR [SESSION_DIR ...]
+    add --features for ECG/HRV/PPG/IMU features (needs the ``features`` extra)
 
 Per session: fixed windows on the host clock, Verity Sense PPG/PPI against the
 H10 RR reference, metrics on all windows (primary) and artifact-free windows
 (sensitivity). ``--pool`` adds Bland-Altman (2007) repeated-measures limits
 across participants (``participant_id`` in session_meta.json, else session id).
+``--features`` writes ``post-processed/features.csv`` and ``ecg_beats.csv`` per
+session (``data/pooled_features.csv`` with ``--pool``), adds the feature
+comparisons to the validation and a feature section and figures to the report.
+Single-device sessions get features only.
 """
 
 from __future__ import annotations
@@ -27,6 +32,8 @@ from rich.table import Table  # noqa: E402
 
 from polar_ble_sdk.research import (  # noqa: E402
     build_windows,
+    generate_feature_plots,
+    generate_feature_summary,
     generate_markdown_report,
     generate_validation_plots,
     load_session,
@@ -70,11 +77,18 @@ def main() -> None:
         metavar="SESSION_DIR",
         help="Pool several sessions (repeated-measures limits of agreement).",
     )
+    parser.add_argument(
+        "--features",
+        action="store_true",
+        help="Extract ECG, HRV, PPG and IMU features per window.",
+    )
     args = parser.parse_args()
 
     console = Console()
     if args.pool:
-        _pooled_analysis([Path(p).resolve() for p in args.pool], args.window, console)
+        _pooled_analysis(
+            [Path(p).resolve() for p in args.pool], args.window, console, args.features
+        )
         return
 
     if args.session_dir:
@@ -134,24 +148,49 @@ def main() -> None:
 
     # 3. Window-level validation against the H10 RR reference
     windows = build_windows(session_path, window_s=args.window)
-    if windows.empty:
+    features = pd.DataFrame()
+    if args.features:
+        from polar_ble_sdk.research.features import extract_features, load_signals
+
+        signals = load_signals(session_path)
+        starts = None if windows.empty else windows["start"]
+        features = extract_features(session_path, args.window, starts, signals)
+        out_dir = session_path / "post-processed"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        features.to_csv(out_dir / "features.csv", index=False)
+        signals.ecg_beats.to_csv(out_dir / "ecg_beats.csv", index=False)
+        console.print(
+            f"Features: [cyan]{features.shape[0]} windows x {features.shape[1]} "
+            f"columns[/cyan] -> {out_dir / 'features.csv'}\n"
+        )
+        windows = _merge_features(windows, features)
+    if windows.empty and features.empty:
         console.print(
             "[bold red]No overlapping H10 RR and Sense data (needs raw hr.csv and "
             "ppg.csv or ppi.csv, plus host zero points from a v1.1+ recording).[/bold red]"
         )
         sys.exit(1)
-    results = validate_windows(windows)
-    _print_results(console, results, windows, args.window)
 
     # 4. Reports & plots
     reports_dir = session_path / "reports"
-    plots = generate_validation_plots(windows, reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    (reports_dir / "validation_report.md").write_text(
-        generate_markdown_report(results, session_path.name, windows, args.window),
-        encoding="utf-8",
-    )
-    windows.to_csv(reports_dir / "windows.csv", index=False)
+    plots: list[Path] = []
+    if windows.empty:
+        report_name = "feature_report.md"
+        report = f"# Feature Report\n\n**Session**: `{session_path.name}`\n\n"
+    else:
+        report_name = "validation_report.md"
+        results = validate_windows(windows)
+        _print_results(console, results, windows, args.window)
+        plots += generate_validation_plots(windows, reports_dir)
+        report = generate_markdown_report(
+            results, session_path.name, windows, args.window
+        )
+        windows.to_csv(reports_dir / "windows.csv", index=False)
+    if args.features:
+        plots += generate_feature_plots(features, signals, reports_dir)
+        report += "\n" + generate_feature_summary(features)
+    (reports_dir / report_name).write_text(report, encoding="utf-8")
 
     plot_info = f"\nPlots Generated: [cyan]{len(plots)} figures[/cyan]" if plots else ""
     console.print(
@@ -213,17 +252,44 @@ def _print_results(
         console.print()
 
 
-def _pooled_analysis(sessions: list[Path], window_s: int, console: Console) -> None:
+def _merge_features(windows: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
+    """Feature columns not already in the windows, joined on the window start."""
+    if windows.empty or features.empty:
+        return windows
+    new = [c for c in features if c not in windows]
+    return windows.merge(features[["start", *new]], on="start", how="left")
+
+
+def _pooled_analysis(
+    sessions: list[Path], window_s: int, console: Console, features: bool = False
+) -> None:
     frames = []
+    feature_frames = []
     for path in sessions:
         w = build_windows(path, window_s=window_s)
+        meta = load_session(path).metadata
+        participant = meta.get("participant_id") or path.name
+        if features:
+            from polar_ble_sdk.research.features import extract_features
+
+            f = extract_features(path, window_s, None if w.empty else w["start"])
+            if not f.empty:
+                feature_frames.append(
+                    f.assign(session_id=path.name, participant_id=participant)
+                )
+            w = _merge_features(w, f)
         if w.empty:
             console.print(f"[yellow]Skipping {path.name}: no usable windows[/yellow]")
             continue
-        meta = load_session(path).metadata
-        w["participant"] = meta.get("participant_id") or path.name
+        w["participant"] = participant
         frames.append(w)
+    if feature_frames:
+        out = PROJECT_ROOT / "data" / "pooled_features.csv"
+        pd.concat(feature_frames, ignore_index=True).to_csv(out, index=False)
+        console.print(f"Pooled features: [cyan]{out}[/cyan]\n")
     if not frames:
+        if feature_frames:
+            return
         console.print("[bold red]No usable sessions.[/bold red]")
         sys.exit(1)
     all_w = pd.concat(frames, ignore_index=True)

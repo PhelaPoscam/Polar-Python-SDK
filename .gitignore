@@ -1,7 +1,4 @@
-# Python compilation artifacts
-__pycache__/
-*.py[cod]
-*$py.class
+# C extensions & build artifacts
 *.so
 .Python
 build/
@@ -20,44 +17,19 @@ wheels/
 .installed.cfg
 *.egg
 
-# Virtual environments
-venv/
-env/
-ENV/
-.venv/
-.venv*/
-
 # Environment variables
 .env
 .env.*
 !.env.example
-
-# IDE, Editor, & AI assistant configs
-.vscode/
-.idea/
-.vs/
-.commandcode/
-.claude/
-.codex/
-.repowise/
-.mcp.json
-mcp.json
-.cursor/
-.windsurf/
-AGENTS.md
-*.swp
-*.swo
-*~
 
 # Machine Learning models (large files)
 *.pkl
 *.h5
 *.joblib
 
-# Data & Logging
+# Data & Logging (project-specific)
 *.csv
 *.xlsx
-*.log
 datasets/
 data/
 analysis/
@@ -70,27 +42,10 @@ skills-lock.json
 walkthrough.md
 
 # Jupyter Notebooks
-.ipynb_checkpoints/
 *.ipynb
-
-# OS generated files
-.DS_Store
-Thumbs.db
-desktop.ini
-*.tmp
 
 # Streamlit config/cache
 .streamlit/
-
-# Test caches & coverage
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.cache/
-.coverage
-.coverage.*
-htmlcov/
-coverage.xml
 
 # Reference folder
 reference/
