@@ -85,6 +85,7 @@ Polar-Python-SDK/
 │       ├── windows.py                # build_windows(): host-clock windows, H10 RR reference, PPG/PPI beats, artifact flags
 │       ├── validation.py             # agreement(): LoA with CIs, proportional bias, CCC, ICC(2,1), block bootstrap, repeated measures
 │       ├── ppg.py                    # PPG band-pass, gap-aware sub-sample beat detection, spectral HR and signal quality
+│       ├── features.py               # Per-window ECG morphology, HRV (time/frequency/nonlinear), wavelet, EMD and IMU features
 │       └── report.py                 # Automated Markdown cross-validation report and diagnostic Matplotlib figures
 ├── examples/
 │   └── connect_polar.py              # Minimal example connecting and receiving raw stream callbacks
@@ -326,6 +327,12 @@ Method:
 - **Statistics:** results on *all* windows are primary; artifact-free windows are a sensitivity analysis. Bias and limits of agreement come with 95 % CIs, proportional bias is tested, RMSSD uses log-ratio limits, MAE CIs use a moving-block bootstrap, and `--pool` gives Bland & Altman (2007) repeated-measures limits with a participant-level bootstrap (`--participant` when recording). Grades only where a published standard exists (MAPE: ANSI/CTA-2065; CCC: McBride 2005; ICC: Koo & Li 2016).
 
 Outputs in `<session>/reports/`: `validation_report.md`, `windows.csv` (every window with its artifact reason), `bland_altman_hr.png`, `bland_altman_rmssd.png`, `time_series.png`.
+
+**Features (`--features`, needs `pip install -e ".[features]"`):** one row per window in `<session>/post-processed/features.csv` (plus per-beat fiducials in `ecg_beats.csv`; `--pool` writes `data/pooled_features.csv`). Works on single-device sessions too.
+- H10 ECG (`ecg_`): P/QRS/T/ST amplitudes and durations, PR, QT, QTc (Bazett, Fridericia), fiducial offsets from R, beat-shape PCA, DCT of the median beat, quality flags (`ecg_good_beats`, `ecg_quality`, `ecg_artifact`). Single lead at 130 Hz: 7.7 ms resolution, ST is not diagnostic.
+- HRV for H10 RR (`rr_`), Sense PPI (`ppi_`) and PPG beats (`ppgbeat_`): SDNN, RMSSD, pNN50, SD1/SD2 per window; VLF/LF/HF power (Lomb-Scargle), LF/HF, sample entropy and DFA α1 on a 5 min window (`_5m`).
+- ECG and PPG signal (`ecg_`, `ppg_`): mean/variance/skewness/kurtosis, Welch spectrum, db4 DWT energies and entropies, EMD IMF energies and Hilbert frequencies. ACC/gyro magnitude statistics.
+- SDNN, SD1, LF, HF and LF/HF are added to the Sense-vs-H10 agreement; figures: `feature_timeline.png`, `average_beat.png`, `hrv_psd.png`, `poincare.png`.
 
 #### 2. Sampling Rate & Frame Integrity Audit (`analyze_hz.py`)
 For a fast summary of packet intervals, mean frequencies, and frame gaps:

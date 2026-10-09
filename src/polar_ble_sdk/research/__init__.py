@@ -1,9 +1,17 @@
-"""Research package for data loading, signal integrity audits, PPG processing, and validation."""
+"""Research package for data loading, signal integrity audits, PPG processing, and validation.
+
+Feature extraction lives in :mod:`.features` (needs the ``features`` extra).
+"""
 
 from .audit import StreamAudit, audit_csv_stream, verify_session_integrity
 from .loader import PolarSessionData, load_session
 from .ppg import bandpass_filter, detect_beats, spectral_hr, spectral_sqi
-from .report import generate_markdown_report, generate_validation_plots
+from .report import (
+    generate_feature_plots,
+    generate_feature_summary,
+    generate_markdown_report,
+    generate_validation_plots,
+)
 from .validation import (
     agreement,
     block_bootstrap_ci,
@@ -37,4 +45,6 @@ __all__ = [
     "validate_windows",
     "generate_validation_plots",
     "generate_markdown_report",
+    "generate_feature_plots",
+    "generate_feature_summary",
 ]

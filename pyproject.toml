@@ -42,8 +42,14 @@ research = [
     "scipy",
     "matplotlib",
 ]
+features = [
+    "polar-ble-sdk[research]",
+    "neurokit2",
+    "PyWavelets",
+    "EMD-signal",
+]
 dev = [
-    "polar-ble-sdk[lsl,research]",
+    "polar-ble-sdk[lsl,research,features]",
     "pytest>=7",
     "pytest-asyncio",
     "mypy",
