@@ -171,7 +171,7 @@ print(audit_report)
 |---|---|
 | `create_polar_connector(device, **callbacks)` | Instantiate the right connector (`PolarH10`, or `PolarVeritySense`, which also drives watches). |
 
-Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_callback`, `gyro_callback`, `mag_callback`, `ppi_callback`.
+Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_callback`, `gyro_callback`, `mag_callback`, `ppi_callback`. On the Verity Sense, passing `ppi_callback` turns SDK mode off by default (PPI needs it off, so PPG runs at 55 Hz); pass `sdk_mode=True`/`False` to choose explicitly.
 
 ### Research & Metrics
 
@@ -231,7 +231,7 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
 | `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
 | `--no-log` | Disable CSV logging completely. | `monitor-polar --no-log` |
-| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=marker, S=stimulus_on, B=baseline_start, R=rest_start`. Type `/text` + Enter for a free-text marker that starts with a hotkey letter. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
+| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=marker, S=stimulus_on, B=baseline_start, R=rest_start`. Type `/text` + Enter for a free-text marker that starts with a hotkey letter. On Linux/macOS input is line-based: hotkeys need Enter, and a bare Enter is SPACE. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
 | `--log-level` | Terminal log verbosity: `minimal` (errors only), `moderate` (default, connection + stream events + RSSI), `verbose` (adds per-frame counts, frequent RSSI). Press **L** during monitoring to toggle at runtime. | `monitor-polar --log-level verbose` |
 | `--<sensor>-rate` | Override specific sensor sampling rate (e.g., `--ecg-rate 130`, `--acc-rate 200`). | `--ecg-rate 130` |
 
@@ -245,6 +245,10 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 | `--no-log` | Disable summary and full CSV logging. | `monitor-dual-polar --no-log` |
 | `--no-ppi` | Disable the Sense PPI stream (only relevant with `--no-sdk-mode`; SDK mode disables PPI anyway). | `monitor-dual-polar --no-ppi` |
 | `--no-sdk-mode` | Disable SDK mode: PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-dual-polar --no-sdk-mode` |
+| `--sense-gyro` | Enable the Verity Sense gyroscope (52 Hz), alongside ACC. | `monitor-dual-polar --sense-gyro` |
+| `--sense-mag` | Enable the Verity Sense magnetometer (20 Hz). | `monitor-dual-polar --sense-mag` |
+| `--scan-timeout` | Device discovery scan timeout in seconds (default 15). | `--scan-timeout 30` |
+| `--lsl` | Broadcast H10 ECG/ACC/HR, Sense PPG/ACC/gyro/mag and markers over Lab Streaming Layer (needs the `lsl` extra). | `monitor-dual-polar --lsl` |
 | `--log-level` | Terminal log verbosity: `minimal`, `moderate` (default), `verbose`. Press **L** during monitoring to toggle at runtime. | `--log-level verbose` |
 
 ---

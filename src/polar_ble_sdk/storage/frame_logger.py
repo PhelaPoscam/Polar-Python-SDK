@@ -120,6 +120,15 @@ class StreamFrameLogger:
             self._ppi_cumulative_s = -sum(
                 float(s[1]) / 1000.0 for s in data if len(s) > 1 and s[1]
             )
+        elif self._first_ts_ns is None:
+            # Beats lost in an outage/reconnect never reach the cumulative clock;
+            # re-anchor to the host so later beats are not shifted early. The jump
+            # leaves a visible time gap that the research loader masks.
+            # ponytail: fixed 2 s lag threshold, tune if BLE latency is ever higher.
+            frame_s = sum(float(s[1]) / 1000.0 for s in data if len(s) > 1 and s[1])
+            host_s = (time.time_ns() - self.first_host_ns) / 1e9
+            if host_s - (self._ppi_cumulative_s + frame_s) > 2.0:
+                self._ppi_cumulative_s = host_s - frame_s
 
         for sample in data:
             ts_ns = (

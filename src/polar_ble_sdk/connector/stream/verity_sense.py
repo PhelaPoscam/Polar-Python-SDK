@@ -46,10 +46,11 @@ class PolarVeritySense(BasePolarDevice):
         """Start the Verity Sense (and compatible) streams."""
         features = await self._fetch_available_features()
 
-        # SDK mode unlocks higher PPG rates (135/176 Hz) and is now the default.
-        # A user can disable it via custom_settings["sdk_mode"]=False.
+        # SDK mode unlocks higher PPG rates (135/176 Hz) and is the default, unless
+        # PPI was asked for: SDK mode disables PPI, which would then fail silently.
+        # custom_settings["sdk_mode"] overrides either way.
         custom = getattr(self, "custom_settings", {}) or {}
-        want_sdk = custom.get("sdk_mode", True)  # SDK mode ON by default
+        want_sdk = custom.get("sdk_mode", self.ppi_callback is None)
         if want_sdk:
             try:
                 # Enable unconditionally (idempotent); the status pre-check can

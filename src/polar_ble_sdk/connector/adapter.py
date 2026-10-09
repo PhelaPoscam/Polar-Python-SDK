@@ -327,7 +327,11 @@ class PolarAdapter:
 
     def _notify(self, link: _Link, msg: str) -> None:
         if self.status_callback:
-            self.status_callback(link.label, msg)
+            # A raising UI callback must not abort reconnects or the watchdog.
+            try:
+                self.status_callback(link.label, msg)
+            except Exception:
+                logger.exception("Polar %s status callback failed", link.label)
 
     async def disconnect(self) -> None:
         """Stop notifications and disconnect all Polar devices."""
@@ -344,10 +348,19 @@ class PolarAdapter:
             await asyncio.gather(*self._active_tasks, return_exceptions=True)
         self._active_tasks.clear()
 
-        for link in self.links.values():
+        async def _teardown(link: _Link) -> None:
             if link.conn:
+                client = link.client
                 try:
                     await asyncio.wait_for(link.conn.stop_notify(), timeout=5.0)
                 except Exception as e:
                     logger.debug("Polar %s disconnect error: %s", link.label, e)
+                # A timed-out teardown never reaches the disconnect; WinRT then
+                # keeps the link open and the next run cannot connect.
+                if client is not None and getattr(client, "is_connected", False):
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(client.disconnect(), timeout=3.0)
             link.conn = None
+
+        # Links tear down in parallel: worst case 8 s total, not 8 s per device.
+        await asyncio.gather(*(_teardown(link) for link in self.links.values()))

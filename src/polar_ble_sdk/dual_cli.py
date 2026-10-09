@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import logging
 import sys
 import time
 from collections.abc import Sequence
@@ -43,6 +44,8 @@ from .session.state import (
 from .storage.summary_logger import CsvLogger
 from .ui.components import device_panel, header_bar, info_bar
 from .ui.log_panel import LogPanel, log_event
+
+logger = logging.getLogger(__name__)
 
 if sys.platform == "win32":
     with contextlib.suppress(Exception):
@@ -137,7 +140,7 @@ def _make_grid(
     )
 
     parts: list[Any] = [grid]
-    if log_panel.level != "minimal":
+    if log_panel.shown:
         parts.append(log_panel.render())
 
     return Panel(
@@ -328,6 +331,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
                     enable_sense_mag=args.sense_mag,
                     ppg_rate=args.ppg_rate or (55.0 if args.no_sdk_mode else 135.0),
                     acc_rate_h10=args.acc_rate or 200.0,
+                    acc_rate_sense=args.acc_rate or 52.0,
                     ecg_rate=args.ecg_rate or 130.0,
                     gyro_rate=args.gyro_rate or 52.0,
                     mag_rate=args.mag_rate or 20.0,
@@ -547,7 +551,10 @@ async def main(argv: Sequence[str] | None = None) -> None:
             configured_rates=configured_rates,
             keep_log=True,
         )
-        await adapter.disconnect()
+        try:
+            await asyncio.wait_for(adapter.disconnect(), timeout=9.0)
+        except Exception as e:
+            logger.debug("Error stopping notifications: %s", e)
         session_mgr.close_log()
 
         print_hz_summary(

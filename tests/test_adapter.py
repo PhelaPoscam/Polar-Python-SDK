@@ -352,6 +352,30 @@ class TestWatchdogHealth:
         assert adapter.h10.reconnecting is False
 
     @pytest.mark.asyncio
+    async def test_disconnect_falls_back_when_teardown_times_out(self) -> None:
+        adapter = PolarAdapter()
+        stuck = _connected_conn()
+        stuck.stop_notify = AsyncMock(side_effect=asyncio.TimeoutError)
+        client = stuck.polar_device._client
+        client.disconnect = AsyncMock()
+        adapter.h10.conn = stuck
+        await adapter.disconnect()
+        client.disconnect.assert_awaited_once()
+        assert adapter.h10.conn is None
+
+    @pytest.mark.asyncio
+    async def test_raising_status_callback_does_not_wedge_reconnect(self) -> None:
+        def boom(_d: str, _m: str) -> None:
+            raise RuntimeError("widget gone")
+
+        adapter = PolarAdapter(status_callback=boom, reconnect_cooldown=0)
+        adapter._running = True
+        adapter.h10.dev = MagicMock()  # skip the BLE scan
+        with patch.object(adapter.h10, "build", lambda: None):
+            await adapter._reconnect(adapter.h10)
+        assert adapter.h10.reconnecting is False
+
+    @pytest.mark.asyncio
     async def test_add_link_manages_a_single_device(self) -> None:
         conn = _connected_conn()
         conn.start_notify = AsyncMock()

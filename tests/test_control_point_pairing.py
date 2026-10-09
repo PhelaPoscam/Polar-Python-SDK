@@ -239,3 +239,19 @@ class TestMultiPacketReplies:
             await asyncio.wait_for(
                 device.request_stream_settings(PmdMeasurementType.ACC), 10
             )
+
+    def test_start_reply_stores_factor_before_start_stream_resumes(self) -> None:
+        """A data frame dispatched right after the START reply must be scaled."""
+        import struct
+
+        device, _client = make_device()
+        raw = struct.unpack("<I", struct.pack("<f", 0.244))[0]
+        device._handle_pmd_control(
+            0,
+            response(
+                PmdControlOperationCode.START,
+                PmdMeasurementType.ACC,
+                settings=((PmdSettingType.FACTOR, [raw]),),
+            ),
+        )
+        assert device._factors[PmdMeasurementType.ACC] == pytest.approx(0.244)

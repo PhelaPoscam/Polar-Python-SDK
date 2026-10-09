@@ -1,3 +1,10 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+.venv*/
+.coverage
+htmlcov/
+
 # C extensions & build artifacts
 *.so
 .Python

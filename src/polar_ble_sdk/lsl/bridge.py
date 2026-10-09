@@ -54,7 +54,7 @@ try:
     import pylsl  # type: ignore[import-untyped]
 
     HAS_PYLSL = True
-except ImportError:
+except (ImportError, OSError, RuntimeError):  # RuntimeError: liblsl missing
     pylsl = None  # type: ignore[assignment]
     HAS_PYLSL = False
 
@@ -300,8 +300,13 @@ class PolarLSLBridge:
             return
         t_now = self.local_clock()
         if rr_list:
-            for rr in rr_list:
-                self.outlets["h10_hr"].push_sample([float(hr_val), float(rr)], t_now)
+            # Each RR ends at a beat; the last beat is ~now, earlier ones precede it
+            # (one stamp for all would give LSL consumers duplicate timestamps).
+            t = t_now - sum(float(rr) for rr in rr_list[1:]) / 1000.0
+            for i, rr in enumerate(rr_list):
+                if i:
+                    t += float(rr) / 1000.0
+                self.outlets["h10_hr"].push_sample([float(hr_val), float(rr)], t)
         else:
             self.outlets["h10_hr"].push_sample([float(hr_val), 0.0], t_now)
 

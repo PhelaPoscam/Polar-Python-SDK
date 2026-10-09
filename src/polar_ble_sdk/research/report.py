@@ -10,15 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-
-from .validation import agreement  # noqa: E402
+from .validation import agreement
 
 REF = "#2ca02c"
 TEST = "#ff7f0e"
