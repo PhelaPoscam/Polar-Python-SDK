@@ -124,6 +124,18 @@ class TestPolarLSLBridge:
 
         bridge.close()
 
+    def test_push_hr_staggers_multiple_rr(self) -> None:
+        bridge = PolarLSLBridge(enable_sense=False)
+        mock_outlet = MagicMock()
+        bridge.outlets["h10_hr"] = mock_outlet
+        bridge.local_clock = lambda: 100.0  # type: ignore[method-assign]
+
+        bridge.push_h10_hr((70, [800.0, 900.0]))
+        stamps = [c[0][1] for c in mock_outlet.push_sample.call_args_list]
+        assert stamps == pytest.approx([99.1, 100.0])
+
+        bridge.close()
+
     def test_push_marker(self) -> None:
         bridge = PolarLSLBridge(enable_h10=False, enable_sense=False)
         mock_outlet = MagicMock()

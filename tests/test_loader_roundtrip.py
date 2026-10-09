@@ -56,6 +56,17 @@ class TestWideFrameLoaderRoundtrip:
         assert df["ch1"].iloc[0] == 100.0
         assert df["ch4"].iloc[-1] == 43.0
 
+    def test_ppg_with_fewer_channels_is_padded(self, tmp_path):
+        csv_file = tmp_path / "ppg.csv"
+        csv_file.write_text(
+            'Timestamp_s,PPG_Samples\n50.0,"[100, 200, 300]","[101, 201, 301]"\n',
+            encoding="utf-8",
+        )
+        df = _parse_wide_ppg_csv(csv_file)
+        assert len(df) == 2
+        assert df["ch3"].iloc[1] == 301.0
+        assert df["ch4"].isna().all()
+
     def test_load_raw_stream_routes_ecg_and_ppg(self, tmp_path):
         raw_dir = tmp_path / "raw"
         raw_dir.mkdir()

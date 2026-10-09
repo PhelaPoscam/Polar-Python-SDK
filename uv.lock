@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -2057,7 +2057,7 @@ research = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bleak" },
+    { name = "bleak", specifier = ">=3.0,<4" },
     { name = "emd-signal", marker = "extra == 'features'" },
     { name = "matplotlib", marker = "extra == 'research'" },
     { name = "mypy", marker = "extra == 'dev'" },

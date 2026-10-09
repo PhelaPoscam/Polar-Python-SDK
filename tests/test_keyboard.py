@@ -1,4 +1,4 @@
-"""Marker parsing for the Windows (msvcrt) keyboard path."""
+"""Marker parsing for the Windows (msvcrt) and POSIX (line) keyboard paths."""
 
 from polar_ble_sdk.input.keyboard import NonBlockingKeyboardReader
 
@@ -30,3 +30,22 @@ def test_slash_prefix_keeps_free_text_intact() -> None:
 
 def test_plain_free_text_still_works() -> None:
     assert poll("hello\r") == ["hello"]
+
+
+def poll_posix(monkeypatch, line: str) -> list[str]:
+    import io
+    import select
+    import sys
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    monkeypatch.setattr(select, "select", lambda r, w, x, t: (r, [], []))
+    reader = NonBlockingKeyboardReader()
+    reader._win_msvcrt = None
+    return reader.poll_markers()
+
+
+def test_posix_line_input(monkeypatch) -> None:
+    assert poll_posix(monkeypatch, "\n") == ["marker"]  # bare Enter = SPACE
+    assert poll_posix(monkeypatch, "/s trial\n") == ["s trial"]
+    assert poll_posix(monkeypatch, "s\n") == ["stimulus_on"]
+    assert poll_posix(monkeypatch, "") == []  # EOF

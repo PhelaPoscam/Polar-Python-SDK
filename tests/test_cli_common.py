@@ -187,3 +187,15 @@ def test_sdk_mode_flags_last_one_wins() -> None:
     assert parser.parse_args([]).no_sdk_mode is False
     assert parser.parse_args(["--no-sdk-mode"]).no_sdk_mode is True
     assert parser.parse_args(["--no-sdk-mode", "--sdk-mode"]).no_sdk_mode is False
+
+
+def test_minimal_log_level_shows_errors_only() -> None:
+    from polar_ble_sdk.ui.log_panel import log_event
+
+    panel = LogPanel()
+    panel.set_level("minimal")
+    log_event(panel, "connected", "success")
+    assert not panel.shown
+    log_event(panel, "link lost", "error")
+    assert panel.shown
+    assert [ln.plain.split(" ", 2)[2] for ln in panel._visible()] == ["link lost"]

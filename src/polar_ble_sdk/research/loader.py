@@ -126,14 +126,15 @@ def _parse_wide_ppg_csv(path: Path) -> pd.DataFrame:
     if not rows_samples:
         return pd.DataFrame(columns=["Timestamp_s", "ch1", "ch2", "ch3", "ch4"])
     times = _sample_times(rows_ts, rows_samples, 135.0)
+    # Pad to 4 channels: PPG frame types with fewer channels must not break the frame.
     recs = [
-        [t, *s[:4]]
+        [t, *s[:4], *[None] * (4 - len(s[:4]))]
         for t, s in zip(times, (s for row in rows_samples for s in row), strict=True)
         if isinstance(s, list | tuple)
     ]
     return (
         pd.DataFrame(recs, columns=["Timestamp_s", "ch1", "ch2", "ch3", "ch4"])
-        .dropna()
+        .dropna(subset=["Timestamp_s", "ch1"])
         .reset_index(drop=True)
     )
 

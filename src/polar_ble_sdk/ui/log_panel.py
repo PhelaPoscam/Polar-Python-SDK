@@ -75,8 +75,15 @@ class LogPanel:
 
     def _visible(self) -> list[Text]:
         if self._level == "minimal":
-            return [ln for ln in self._lines if not ln.plain.startswith("· ")]
+            # Lines read "HH:MM:SS <icon> msg" (see log_event): errors only.
+            error = SEVERITY_ICONS["error"]
+            return [ln for ln in self._lines if ln.plain.split(" ", 2)[1:2] == [error]]
         return list(self._lines)
+
+    @property
+    def shown(self) -> bool:
+        """Whether the panel is worth drawing: in minimal, only once an error exists."""
+        return self._level != "minimal" or bool(self._visible())
 
     def render(self, height: int | None = None) -> Panel:
         visible = self._visible()

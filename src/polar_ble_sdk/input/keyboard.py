@@ -79,8 +79,18 @@ class NonBlockingKeyboardReader:
             import select
 
             if select.select([sys.stdin], [], [], 0.0)[0]:
-                line = sys.stdin.readline().strip()
-                if line:
+                # Line-buffered: a bare Enter stands in for SPACE.
+                raw = sys.stdin.readline()
+                line = raw.strip()
+                if not raw:
+                    pass  # EOF (stdin closed): stays readable, never a marker
+                elif not line:
+                    if self._hotkeys.get("SPACE"):
+                        markers.append(self._hotkeys["SPACE"])
+                elif line.startswith("/"):
+                    if line[1:].strip():
+                        markers.append(line[1:].strip())
+                else:
                     line_upper = line.upper()
                     if line_upper in self._hotkeys:
                         markers.append(self._hotkeys[line_upper])

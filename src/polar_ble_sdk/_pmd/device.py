@@ -303,14 +303,16 @@ class PolarDevice:
                 raise exceptions.ControlPointResponseError(
                     f"Device rejected stream: {response.error_code.name}"
                 )
-            for setting in response.settings:
-                if setting.type == PmdSettingType.FACTOR and setting.values:
-                    raw_int_factor = setting.values[0]
-                    real_factor = struct.unpack(
-                        "<f", struct.pack("<I", raw_int_factor)
-                    )[0]
-                    self._factors[settings.measurement_type] = real_factor
-                    break
+            self._store_factor(response)
+
+    def _store_factor(self, response: MeasurementSettings) -> None:
+        """Keep the scale factor a START response carries for its stream."""
+        for setting in response.settings:
+            if setting.type == PmdSettingType.FACTOR and setting.values:
+                raw_int_factor = setting.values[0]
+                real_factor = struct.unpack("<f", struct.pack("<I", raw_int_factor))[0]
+                self._factors[response.measurement_type] = real_factor
+                break
 
     async def stop_stream(self, measurement_type: PmdMeasurementType) -> None:
         """Stops a generic PMD stream and cleans up its stored factors.
@@ -656,6 +658,18 @@ class PolarDevice:
         """
         if not data or data[0] not in (0xF0, 0x00, 0x01):
             return
+
+        # The first data frame can be dispatched before start_stream() resumes
+        # from the queue: store the factor now, or that frame is parsed unscaled.
+        if (
+            data[0] == 0xF0
+            and len(data) > 3
+            and data[1] == PmdControlOperationCode.START
+        ):
+            with contextlib.suppress(Exception):
+                response = MeasurementSettings.from_bytes(data)
+                if response.error_code == PmdControlPointErrorCode.SUCCESS:
+                    self._store_factor(response)
 
         self._queue_pmd_control.put_nowait(data)
 

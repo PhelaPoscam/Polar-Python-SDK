@@ -366,7 +366,7 @@ async def main() -> None:
             log_level=log_panel.level,
         )
         parts: list[Any] = [device_panel(state, is_h10=is_h10), info]
-        if log_panel.level != "minimal":
+        if log_panel.shown:
             parts.append(log_panel.render())
         return Panel(Group(*parts), title=header, border_style="cyan")
 
@@ -449,18 +449,15 @@ async def main() -> None:
             live.update(build())
             await asyncio.sleep(3)
         finally:
-            state["status"] = "Disconnecting..."
-            _log("Disconnecting...")
-            live.update(build())
-
             for task in (battery_task, rssi_task):
                 if task:
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
 
-            # Save before the BLE teardown, which can take seconds: a second
-            # Ctrl+C during it must not lose the session manifest.
+            # Save first: before the BLE teardown, which can take seconds (a second
+            # Ctrl+C must not lose the manifest), and before touching the terminal,
+            # which raises once it is gone (SIGHUP).
             session_mgr.metadata.devices[device_type].battery_end = state.get(
                 "battery", "-"
             )
@@ -470,8 +467,12 @@ async def main() -> None:
                 keep_log=True,
             )
 
+            state["status"] = "Disconnecting..."
+            _log("Disconnecting...")
+            live.update(build())
+
             try:
-                await asyncio.wait_for(adapter.disconnect(), timeout=6.0)
+                await asyncio.wait_for(adapter.disconnect(), timeout=9.0)
             except Exception as e:
                 logger.debug("Error stopping notifications: %s", e)
             _log("Disconnected", "success")

@@ -135,3 +135,25 @@ class TestSessionManager:
         assert rows[3].endswith(",1")  # Invalid flag kept
         meta = json.loads((mgr.session_dir / "session_meta.json").read_text("utf-8"))
         assert "sense_ppi_host_epoch_ns" in meta["clock_zero_points"]
+
+    def test_untimestamped_ppi_reanchors_after_outage(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Beats lost in a reconnect must not shift later PPI rows early."""
+        import polar_ble_sdk.storage.frame_logger as fl_mod
+
+        now = [10**18]
+        monkeypatch.setattr(fl_mod.time, "time_ns", lambda: now[0])
+        fl = StreamFrameLogger(tmp_path / "ppi.csv", "ppi")
+        fl.open()
+        fl.write_ppi_frames([(0, 800, 10, 75, 1, 1, 0)])
+        now[0] += 900_000_000  # normal next beat: no re-anchor
+        fl.write_ppi_frames([(0, 900, 10, 70, 1, 1, 0)])
+        now[0] += 20 * 10**9  # 20 s outage, then one beat
+        fl.write_ppi_frames([(0, 850, 10, 72, 1, 1, 0)])
+        fl.close()
+        rows = (tmp_path / "ppi.csv").read_text(encoding="utf-8").splitlines()
+        ts = [float(r.split(",")[0]) for r in rows[1:]]
+        assert ts == [0.0, 0.9, 20.9]
+        # The gap is visible to the loader's lost-packet mask (windows.py).
+        assert (ts[2] - ts[1]) * 1000 > 1.5 * 850 + 100
