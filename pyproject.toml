@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polar-ble-sdk"
+version = "1.1.0"
+authors = [
+    { name = "Aleph Campos da Silveira", email = "aleph.camposdasilveira@tuni.fi" }
+]
+description = "An open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "bleak>=3.0,<4",  # diagnostics use bleak private attributes
+    "rich",
+]
+
+[project.scripts]
+monitor-polar = "polar_ble_sdk.cli:_entrypoint"
+monitor-dual-polar = "polar_ble_sdk.dual_cli:_entrypoint"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"polar_ble_sdk" = ["py.typed"]
+
+[project.optional-dependencies]
+lsl = [
+    "pylsl>=1.16.0",
+]
+research = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+]
+features = [
+    "polar-ble-sdk[research]",
+    "neurokit2",
+    "PyWavelets",
+    "EMD-signal",
+]
+dev = [
+    "polar-ble-sdk[lsl,research,features]",
+    "pytest>=7",
+    "pytest-asyncio",
+    "mypy",
+    "ruff==0.15.22",  # keep in sync with .pre-commit-config.yaml
+    "pre-commit",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+exclude = [".venv", ".venv313", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long — handled by the formatter
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["polar_ble_sdk"]
+
+[tool.mypy]
+ignore_missing_imports = true
+warn_unused_configs = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+norecursedirs = [".venv", "reference"]
