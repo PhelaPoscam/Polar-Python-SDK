@@ -289,6 +289,8 @@ The log panel fills remaining vertical space. Events are color-coded by severity
 
 Raw stream files are per-stream CSVs with session-relative timestamps (seconds since the first frame), e.g. `ecg.csv` (`Timestamp_s, uV_Samples`), `acc.csv` (`Timestamp_s, X_mG, Y_mG, Z_mG`), `hr.csv` (`Timestamp_s, HeartRate_BPM, RR_Intervals_ms`). The `ppi.csv` file carries the device's raw PPI quality flags (`Timestamp_s, PPI_ms, ErrEst_ms, HR_BPM, SkinContact, SkinContactSupported`) so analysis can flag the documented "HR fixed to last reliable value when movement detected" mode.
 
+PPI and RR times are beat times, not arrival times. The Verity Sense delivers a PPI frame ~7.3 s after its last beat, and the H10 delivers an HR notification ~2.0 s after the beat that ends its last RR interval (measured against the H10 ECG; Polar documents neither, so a firmware update may change them: `SENSE_PPI_DELAY_S` / `H10_RR_DELAY_S` in `_pmd/constants`). `ppi.csv` rows are written at beat times, and `session_meta.json` marks this with `<key>_beat_delay_ns`. PPI from older sessions without that marker is corrected on load by `research.loader` / `research.windows`, so old files need no rewrite. `hr.csv` rows keep the notification arrival time; `research.windows.load_h10_beats` and the LSL bridge give RR beat times.
+
 ### Stream Status & Failures
 
 On connect, the dashboard status shows `Connected! Streaming data.` when all requested streams start. If any stream fails to start (e.g. unsupported sample rate or device rejection), the status reports which ones, e.g. `Connected. Failed: gyro, mag`.

@@ -132,7 +132,8 @@ class TestPolarLSLBridge:
 
         bridge.push_h10_hr((70, [800.0, 900.0]))
         stamps = [c[0][1] for c in mock_outlet.push_sample.call_args_list]
-        assert stamps == pytest.approx([99.1, 100.0])
+        # The notification arrives H10_RR_DELAY_S (2.0 s) after its last beat
+        assert stamps == pytest.approx([97.1, 98.0])
 
         bridge.close()
 

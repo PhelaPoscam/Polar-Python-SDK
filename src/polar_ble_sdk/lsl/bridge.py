@@ -19,6 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from .._pmd.constants import H10_RR_DELAY_S
+
 logger = logging.getLogger(__name__)
 
 
@@ -300,9 +302,10 @@ class PolarLSLBridge:
             return
         t_now = self.local_clock()
         if rr_list:
-            # Each RR ends at a beat; the last beat is ~now, earlier ones precede it
-            # (one stamp for all would give LSL consumers duplicate timestamps).
-            t = t_now - sum(float(rr) for rr in rr_list[1:]) / 1000.0
+            # Each RR ends at a beat; the last beat was H10_RR_DELAY_S before now,
+            # earlier ones precede it (one stamp for all would give LSL consumers
+            # duplicate timestamps). The HR value alone keeps the arrival time.
+            t = t_now - H10_RR_DELAY_S - sum(float(rr) for rr in rr_list[1:]) / 1000.0
             for i, rr in enumerate(rr_list):
                 if i:
                     t += float(rr) / 1000.0

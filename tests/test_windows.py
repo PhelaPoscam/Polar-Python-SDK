@@ -18,7 +18,7 @@ from polar_ble_sdk.metrics.hrv import calculate_rmssd
 from polar_ble_sdk.research.windows import build_windows
 
 BASE_NS = 1_790_000_000 * 10**9
-DURATION_S = 185.0
+DURATION_S = 190.0  # 3 full windows after the last ~2 s of beats go unnotified
 MOTION_S = (125.0, 185.0)
 
 
@@ -38,7 +38,8 @@ def _write_session(root: Path) -> list[float]:
     rows, first_notif, k = ["Timestamp_s,HeartRate_BPM,RR_Intervals_ms"], None, 0
     for sec in range(1, int(DURATION_S) + 1):
         batch = []
-        while k < len(beats) and beats[k] <= sec - 0.3:  # notifies 0.3+ s later
+        # notifies 1.6-2.6 s after the beat, as measured against the H10 ECG
+        while k < len(beats) and beats[k] <= sec - 1.6:
             batch.append(rr[k])
             k += 1
         if batch:
@@ -107,3 +108,24 @@ def test_windows_recover_truth_and_flag_motion(tmp_path: Path) -> None:
     moving = w[w["artifact"]]
     assert len(moving) == 1
     assert "motion" in moving["artifact_reason"].iloc[0]
+
+
+def test_ppi_from_older_sessions_is_shifted_to_beat_time(tmp_path: Path) -> None:
+    """PPI logged before the delay fix was stamped at arrival, 7.3 s after the beats."""
+    from polar_ble_sdk.research.windows import load_sense_ppi
+
+    raw = tmp_path / "sense" / "raw"
+    raw.mkdir(parents=True)
+    (raw / "ppi.csv").write_text(
+        "Timestamp_s,PPI_ms,ErrEst_ms,HR_BPM,SkinContact,SkinContactSupported,Invalid\n"
+        "0.000,800,10,75,1,1,0\n0.900,900,10,70,1,1,0\n",
+        encoding="utf-8",
+    )
+    zero = {"sense_ppi_host_epoch_ns": BASE_NS}
+    old = {"clock_zero_points": zero}
+    new = {"clock_zero_points": {**zero, "sense_ppi_beat_delay_ns": 7_300_000_000}}
+
+    t_old = load_sense_ppi(tmp_path, old)["t"]
+    t_new = load_sense_ppi(tmp_path, new)["t"]
+
+    assert (t_new - t_old).dt.total_seconds().tolist() == pytest.approx([7.3, 7.3])

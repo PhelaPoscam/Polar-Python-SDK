@@ -210,6 +210,10 @@ class SessionManager:
                 self.metadata.clock_zero_points[f"{key}_host_epoch_ns"] = (
                     fl.first_host_ns
                 )
+            if fl.beat_delay_s is not None:
+                self.metadata.clock_zero_points[f"{key}_beat_delay_ns"] = round(
+                    fl.beat_delay_s * 1e9
+                )
             if fl.first_ts_ns is not None:
                 self.metadata.clock_zero_points[key] = fl.first_ts_ns
                 if "_" in key:

@@ -130,11 +130,14 @@ class TestSessionManager:
         fl.write_ppi_frames([(0, 850, 10, 72, 1, 1, 1)])
         mgr.close_all()
         rows = fl.path.read_text(encoding="utf-8").splitlines()
-        # Each row is stamped at its beat; the first frame's last beat is t=0
-        assert [r.split(",")[0] for r in rows[1:]] == ["-0.900", "0.000", "0.850"]
+        # Each row is stamped at its beat; the first frame arrived at t=0, its
+        # last beat SENSE_PPI_DELAY_S (7.3 s) earlier
+        assert [r.split(",")[0] for r in rows[1:]] == ["-8.200", "-7.300", "-6.450"]
         assert rows[3].endswith(",1")  # Invalid flag kept
         meta = json.loads((mgr.session_dir / "session_meta.json").read_text("utf-8"))
         assert "sense_ppi_host_epoch_ns" in meta["clock_zero_points"]
+        # Marks the rows as beat times, so loaders don't subtract the delay again
+        assert meta["clock_zero_points"]["sense_ppi_beat_delay_ns"] == 7_300_000_000
 
     def test_untimestamped_ppi_reanchors_after_outage(
         self, tmp_path: Path, monkeypatch
@@ -154,6 +157,6 @@ class TestSessionManager:
         fl.close()
         rows = (tmp_path / "ppi.csv").read_text(encoding="utf-8").splitlines()
         ts = [float(r.split(",")[0]) for r in rows[1:]]
-        assert ts == [0.0, 0.9, 20.9]
+        assert ts == [-7.3, -6.4, 13.6]  # host arrival minus the 7.3 s delay
         # The gap is visible to the loader's lost-packet mask (windows.py).
         assert (ts[2] - ts[1]) * 1000 > 1.5 * 850 + 100

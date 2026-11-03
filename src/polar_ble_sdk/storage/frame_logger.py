@@ -14,6 +14,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
+from .._pmd.constants import SENSE_PPI_DELAY_S
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +61,9 @@ class StreamFrameLogger:
         # Host wall clock at the first frame: maps device time onto host time.
         self.first_host_ns: int | None = None
         self._ppi_cumulative_s: float = 0.0
+        # Delivery delay already removed from the PPI rows; the session records
+        # it so loaders tell these beat times from older arrival-stamped files.
+        self.beat_delay_s: float | None = None
         self.samples_written = 0
         self._flushed_at = 0
 
@@ -111,22 +116,26 @@ class StreamFrameLogger:
             return
 
         if self.first_host_ns is None:
-            # The frame arrives with its *last* interval, so that beat is t=0 on
-            # both clocks. The Verity Sense sends PPI frames with timestamp 0.
+            # The frame ends with its *last* interval, whose beat happened
+            # SENSE_PPI_DELAY_S before the frame arrived (host t=0). The Verity
+            # Sense sends PPI frames with timestamp 0.
             self.first_host_ns = time.time_ns()
             last_ts = data[-1][0] if data[-1] and data[-1][0] else 0
             if last_ts > 0:
                 self._first_ts_ns = last_ts
-            self._ppi_cumulative_s = -sum(
+            else:
+                self.beat_delay_s = SENSE_PPI_DELAY_S
+            self._ppi_cumulative_s = -(self.beat_delay_s or 0.0) - sum(
                 float(s[1]) / 1000.0 for s in data if len(s) > 1 and s[1]
             )
         elif self._first_ts_ns is None:
             # Beats lost in an outage/reconnect never reach the cumulative clock;
             # re-anchor to the host so later beats are not shifted early. The jump
             # leaves a visible time gap that the research loader masks.
-            # ponytail: fixed 2 s lag threshold, tune if BLE latency is ever higher.
+            # ponytail: fixed 2 s lag threshold, tune if delivery jitter is ever higher.
             frame_s = sum(float(s[1]) / 1000.0 for s in data if len(s) > 1 and s[1])
-            host_s = (time.time_ns() - self.first_host_ns) / 1e9
+            # Host time of this frame's last beat.
+            host_s = (time.time_ns() - self.first_host_ns) / 1e9 - SENSE_PPI_DELAY_S
             if host_s - (self._ppi_cumulative_s + frame_s) > 2.0:
                 self._ppi_cumulative_s = host_s - frame_s
 

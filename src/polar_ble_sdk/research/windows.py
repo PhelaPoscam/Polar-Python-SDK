@@ -25,8 +25,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from polar_ble_sdk._pmd.constants import H10_RR_DELAY_S
 from polar_ble_sdk.metrics.hrv import calculate_rmssd, rr_valid_mask
-from polar_ble_sdk.research.loader import _parse_wide_ppg_csv, host_zero
+from polar_ble_sdk.research.loader import (
+    _parse_wide_ppg_csv,
+    host_zero,
+    ppi_delay_to_remove,
+)
 from polar_ble_sdk.research.ppg import (
     bandpass_filter,
     beat_intervals,
@@ -56,14 +61,22 @@ def _read_meta(session_dir: Path) -> dict[str, Any]:
         return {}
 
 
+def _stream_key(
+    session_dir: Path, meta: dict[str, Any], device: str, stream: str
+) -> tuple[Path, str]:
+    """Raw CSV path and session_meta key of a stream in a dual or single-device session."""
+    dual = session_dir / device / "raw" / f"{stream}.csv"
+    if dual.exists() or device not in meta.get("devices", {}):
+        return dual, f"{device}_{stream}"
+    return session_dir / "raw" / f"{stream}.csv", stream
+
+
 def stream_source(
     session_dir: Path, meta: dict[str, Any], device: str, stream: str
 ) -> tuple[Path, pd.Timestamp | None]:
     """Raw CSV path and host zero point of a stream in a dual or single-device session."""
-    dual = session_dir / device / "raw" / f"{stream}.csv"
-    if dual.exists() or device not in meta.get("devices", {}):
-        return dual, host_zero(meta, f"{device}_{stream}")
-    return session_dir / "raw" / f"{stream}.csv", host_zero(meta, stream)
+    path, key = _stream_key(session_dir, meta, device, stream)
+    return path, host_zero(meta, key)
 
 
 def _to_host(anchor: pd.Timestamp, seconds: Any) -> pd.DatetimeIndex:
@@ -75,8 +88,11 @@ def load_h10_beats(session_dir: Path, meta: dict[str, Any]) -> pd.DataFrame:
 
     ``rr_ms`` is NaN at a gap (lost notification): the next interval is not
     adjacent to the previous one. Relative beat times come from the cumulative
-    RR sum, which is exact; the H10 notifies ~1 s after a beat, not at it, so
-    each run between gaps is anchored with the smallest notification lag.
+    RR sum, which is exact. A notification arrives ``H10_RR_DELAY_S`` after its
+    last beat (median; where the beat fell in the 1 s notify cycle spreads it),
+    so each run between gaps is anchored with its median notification lag
+    minus that delay. The smallest lag, used before, assumed the fastest
+    notification was instant and left the beats over 1 s late.
     """
     path, anchor = stream_source(session_dir, meta, "h10", "hr")
     if not path.exists() or anchor is None:
@@ -102,7 +118,11 @@ def load_h10_beats(session_dir: Path, meta: dict[str, Any]) -> pd.DataFrame:
         cum = np.cumsum(rrs) / 1000.0
         notif_arr = np.asarray(notif)
         known = ~np.isnan(notif_arr)
-        lag = float(np.min(notif_arr[known] - cum[known])) if known.any() else 0.0
+        lag = (
+            float(np.median(notif_arr[known] - cum[known])) - H10_RR_DELAY_S
+            if known.any()
+            else 0.0
+        )
         if times:
             # Gap marker: this run's first interval doesn't follow the last one.
             times.append(lag + cum[0] - rrs[0] / 1000.0)
@@ -151,14 +171,15 @@ def load_ppg_channels(
 
 def load_sense_ppi(session_dir: Path, meta: dict[str, Any]) -> pd.DataFrame:
     """Sense PPI (``t``, ``ppi_ms`` NaN when invalid or after a gap, ``contact``)."""
-    path, anchor = stream_source(session_dir, meta, "sense", "ppi")
+    path, key = _stream_key(session_dir, meta, "sense", "ppi")
+    anchor = host_zero(meta, key)
     if not path.exists() or anchor is None:
         return pd.DataFrame(columns=["t", "ppi_ms", "contact"])
     raw = pd.read_csv(path)
     ppi = pd.to_numeric(raw["PPI_ms"], errors="coerce")
     if "Invalid" in raw.columns:
         ppi = ppi.mask(pd.to_numeric(raw["Invalid"], errors="coerce") == 1)
-    ts = raw["Timestamp_s"].to_numpy(dtype=float)
+    ts = raw["Timestamp_s"].to_numpy(dtype=float) - ppi_delay_to_remove(meta, key)
     # Lost packets: the time step is much longer than the interval it carries.
     step_ms = np.diff(ts, prepend=np.nan) * 1000.0
     ppi = ppi.mask(step_ms > 1.5 * ppi.to_numpy() + 100.0)

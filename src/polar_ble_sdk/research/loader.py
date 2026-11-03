@@ -18,6 +18,8 @@ from typing import Any
 
 import pandas as pd
 
+from polar_ble_sdk._pmd.constants import SENSE_PPI_DELAY_S
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,6 +58,19 @@ def host_zero(meta: dict[str, Any], key: str) -> pd.Timestamp | None:
     return pd.Timestamp(datetime.fromtimestamp(ns / 1e9)) if ns else None
 
 
+def ppi_delay_to_remove(meta: dict[str, Any], key: str) -> float:
+    """Seconds still to subtract from a PPI stream's Timestamp_s (``key="sense_ppi"``).
+
+    The frame logger writes beat times and records ``<key>_beat_delay_ns``.
+    Un-timestamped (Verity Sense) PPI logged before that was stamped at arrival,
+    ``SENSE_PPI_DELAY_S`` after its beats.
+    """
+    zero = meta.get("clock_zero_points", {})
+    if f"{key}_beat_delay_ns" in zero or key in zero:  # fixed logger / device clock
+        return 0.0
+    return SENSE_PPI_DELAY_S
+
+
 def _add_host_time(
     streams: dict[str, pd.DataFrame], meta: dict[str, Any], prefix: str = ""
 ) -> None:
@@ -64,13 +79,16 @@ def _add_host_time(
     Accuracy is limited by BLE latency (tens of ms, occasionally more): fine
     for windowed analyses, not for event-locked cardiac timing (use LSL or a
     hardware sync for that). Sessions recorded before v1.1 have no zero point.
+    PPI rows are beat times. HR rows are notification arrivals, ~2 s after the
+    beat ending their last RR (``research.windows.load_h10_beats`` gives beats).
     """
     for name, df in streams.items():
         anchor = host_zero(meta, f"{prefix}{name}")
         if anchor is not None and "Timestamp_s" in df.columns:
-            df["Host_Time"] = anchor + pd.to_timedelta(
-                pd.to_numeric(df["Timestamp_s"], errors="coerce"), unit="s"
-            )
+            t = pd.to_numeric(df["Timestamp_s"], errors="coerce")
+            if name == "ppi":
+                t = t - ppi_delay_to_remove(meta, f"{prefix}{name}")
+            df["Host_Time"] = anchor + pd.to_timedelta(t, unit="s")
 
 
 def _sample_times(
