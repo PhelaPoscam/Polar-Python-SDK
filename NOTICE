@@ -1,0 +1,31 @@
+polar-ble-sdk
+Copyright (c) 2025 Aleph Campos da Silveira
+Licensed under the MIT License (see LICENSE), except for the third-party
+material listed below, which stays under its own licence.
+
+This is an unofficial project. It is not affiliated with, endorsed by, or
+certified by Polar Electro Oy. "Polar" and Polar product names are trademarks
+of Polar Electro Oy.
+
+
+Third-party material
+====================
+
+1. polar-python
+   https://github.com/zHElEARN/polar-python
+   Copyright (c) 2024 Zachary Liu
+   MIT License; full text in licenses/polar-python-LICENSE.txt
+
+   The PMD protocol layer in src/polar_ble_sdk/_pmd/ (constants, models,
+   parsers and the PolarDevice client) was derived from polar-python.
+
+2. Polar BLE SDK
+   https://github.com/polarofficial/polar-ble-sdk
+   Copyright (c) Polar Electro Oy and its licensors
+   Polar Software Development Kit Limited License Agreement; full text in
+   licenses/Polar_SDK_License.txt
+
+   Parts of src/polar_ble_sdk/_pmd/ follow Polar's official SDK: the PMD
+   constants, frame layouts, delta decompression and sample decoders, and some
+   of their comments. Those parts remain subject to Polar's licence, not the
+   MIT License.
