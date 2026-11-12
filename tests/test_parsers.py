@@ -211,6 +211,30 @@ class TestPmdDataFrameParsers:
         assert isinstance(parsed, PPGData)
         assert parsed.samples == [[1000, 2000, 3000, 400]]
 
+    @staticmethod
+    def _compressed_ppg_frame(channels: tuple[int, ...]) -> bytearray:
+        # Compressed TYPE_0 holding only its reference sample (4 x 24-bit).
+        frame = bytearray([1])
+        frame.extend((100).to_bytes(8, "little"))
+        frame.append(0x80)
+        for value in channels:
+            frame.extend(value.to_bytes(3, "little", signed=True))
+        return frame
+
+    def test_ppg_compressed_applies_factor(self):
+        """As PpgData.kt: every channel is multiplied by the START factor."""
+        frame = self._compressed_ppg_frame((1001, -2001, 3000, 400))
+        parsed = parse_polar_data(frame, lambda _: 0.5)
+        assert parsed.samples == [[500, -1000, 1500, 200]]  # truncated toward 0
+        parsed = parse_polar_data(frame, lambda _: 1.0)
+        assert parsed.samples == [[1001, -2001, 3000, 400]]
+
+    def test_measurement_type_upper_bits_are_masked(self):
+        """PMD spec 4.2.9: the type is data[0] & 0x3F."""
+        frame = self._compressed_ppg_frame((1, 2, 3, 4))
+        frame[0] |= 0x40
+        assert isinstance(parse_polar_data(frame, lambda _: 1.0), PPGData)
+
     def test_ppi_raw_type_0(self):
         # Type=3 (PPI), raw Type 0 (6-byte chunk: HR, PPI uint16, ErrEst uint16, Status)
         header = bytearray([3])

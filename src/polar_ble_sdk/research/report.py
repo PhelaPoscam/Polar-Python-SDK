@@ -146,7 +146,9 @@ def generate_markdown_report(
     pooled: list[dict[str, Any]] | None = None,
 ) -> str:
     """Markdown report: methods, per-comparison agreement (all / clean), windows."""
-    n_art = int(windows["artifact"].sum()) if "artifact" in windows else 0
+    # Counted among the windows the tables use: those with a valid reference.
+    ok = windows[windows["ref_ok"]] if "ref_ok" in windows else windows
+    n_art = int(ok["artifact"].sum()) if "artifact" in ok else 0
     lines = [
         "# Polar Verity Sense vs H10: Agreement Report",
         "",
@@ -157,8 +159,10 @@ def generate_markdown_report(
         "differences only between adjacent valid intervals)  ",
         "**Test**: Verity Sense raw PPG beats (band-pass 0.5-4 Hz, interpolated peaks, "
         "best channel per window by spectral SQI) and, if recorded, the Sense PPI stream  ",
-        f"**Artifact windows**: {n_art} (Sense accelerometer motion, PPG SQI, coverage, "
-        "skin contact; never the reference)",
+        f"**Artifact windows**: {n_art} of {len(ok)} with a valid reference (Sense "
+        "accelerometer motion, PPG SQI, PPG beat coverage). Sense PPI comparisons use "
+        "their own flag: motion, PPI coverage, skin contact. Flags never use the "
+        "reference; missing accelerometer or contact data never flags a window.",
         "",
         "Bias and limits of agreement (LoA) are shown with 95 % CIs; RMSSD uses "
         "log-transformed limits reported as ratios (test/reference). MAE CIs come from "
@@ -167,6 +171,12 @@ def generate_markdown_report(
         "(MAPE: ANSI/CTA-2065; CCC: McBride 2005; ICC: Koo & Li 2016).",
         "",
     ]
+    if any(str(c).endswith("_5m") for c in windows):
+        lines += [
+            "5-minute features (`(5 min)`) come from a 300 s span around each window, "
+            "so they are compared only on windows whose 300 s spans don't overlap.",
+            "",
+        ]
     header = [
         "| Comparison | n | Bias [95 % CI] | LoA [95 % CI] | Prop. bias | MAE [95 % CI] | MAPE | CCC | ICC(2,1) |",
         "| :--- | ---: | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
@@ -175,6 +185,8 @@ def generate_markdown_report(
         ("all", "## Primary: all windows with a valid reference"),
         ("clean", "## Sensitivity: artifact windows excluded"),
     ):
+        if not results:  # pooled-only report
+            break
         lines += [title, "", *header]
         for res in results:
             if key in res:
@@ -203,6 +215,7 @@ def generate_markdown_report(
     cols = [
         c
         for c in (
+            "participant",
             "start",
             "ref_hr",
             "ppg_hr",
@@ -250,7 +263,6 @@ FEATURE_SUMMARY = (
     ("rr_pnn50", "H10 pNN50", "%"),
     ("rr_sd1", "H10 SD1", "ms"),
     ("rr_sd2", "H10 SD2", "ms"),
-    ("rr_vlf_5m", "H10 VLF power (5 min)", "ms²"),
     ("rr_lf_5m", "H10 LF power (5 min)", "ms²"),
     ("rr_hf_5m", "H10 HF power (5 min)", "ms²"),
     ("rr_lf_hf_5m", "H10 LF/HF (5 min)", ""),
@@ -283,8 +295,9 @@ def generate_feature_summary(features: pd.DataFrame) -> str:
     lines = [
         "## Feature summary",
         "",
-        f"{len(features)} windows. `(5 min)` features use a 300 s window centred on "
-        "each row, so neighbouring rows share data. ECG rows exclude windows flagged "
+        f"{len(features)} windows. `(5 min)` features use a 300 s span centred on "
+        "each row (shifted to stay inside the recording), so neighbouring rows share "
+        "data. ECG rows exclude windows flagged "
         "`ecg_artifact` (under half the beats fully delineated, NeuroKit2 quality "
         "< 0.5, or H10 motion). Single chest lead at 130 Hz: intervals are quantised "
         "to 7.7 ms and the ST level is not diagnostic.",

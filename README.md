@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 
-An open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches).
+An **unofficial**, open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices (H10 and Verity Sense; Vantage/Grit watches are experimental and untested). It is not affiliated with, endorsed by, or certified by Polar Electro Oy; for Polar's own SDK see [polarofficial/polar-ble-sdk](https://github.com/polarofficial/polar-ble-sdk).
 
 ---
 
@@ -73,7 +73,7 @@ Polar-Python-SDK/
 │   │   └── rate_tracker.py           # Real-time sliding-window & session Hz estimators
 │   ├── diagnostics/                  # Hardware Telemetry
 │   │   ├── battery.py                # Battery reading & periodic update loop
-│   │   └── rssi.py                   # BLE RSSI telemetry & frame delta loggers
+│   │   └── frame_counts.py           # Per-stream frame count deltas (verbose log)
 │   ├── input/                        # User & Experiment Interaction
 │   │   └── keyboard.py               # Cross-platform non-blocking hotkey & marker reader
 │   ├── ui/                           # Rich Terminal Presentation
@@ -148,7 +148,7 @@ acc_df = session.get_stream("acc")  # 200 Hz 3-axis Accelerometer + computed ACC
 summary_df = session.summary
 markers = session.markers
 
-# 4. Audit signal integrity and calculate timestamp jitter
+# 4. Audit sampling rates and packet gaps
 audit_report = verify_session_integrity("data/h10/20260818_120000")
 print(audit_report)
 ```
@@ -178,7 +178,7 @@ Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_ca
 | Class / Function | Description |
 |---|---|
 | `load_session(path)` | Load single or dual recording sessions into a `PolarSessionData` container with pandas DataFrames. Import from `polar_ble_sdk.research`. |
-| `verify_session_integrity(path)` | Audit sampling rates, inter-sample standard deviation (jitter), and packet gap statistics. Import from `polar_ble_sdk.research`. |
+| `verify_session_integrity(path)` | Audit sampling rates, the spread of packet-level rates (standard deviation of 1/Δt between packets, in Hz; not per-sample jitter), and packet gap statistics. Import from `polar_ble_sdk.research`. |
 | `calculate_rmssd(rr_intervals)` | Calculate Root Mean Square of Successive Differences (in ms) from RR/PPI intervals. |
 | `calculate_sdnn(rr_intervals)` | Calculate Standard Deviation of NN intervals (in ms). |
 | `calculate_pnn50(rr_intervals)` | Calculate percentage of successive intervals differing by > 50 ms. |
@@ -195,8 +195,8 @@ Supported callbacks: `callback` (HR+RR), `ecg_callback`, `ppg_callback`, `acc_ca
 | Verity Sense | PPG | **135 Hz** (default, SDK mode; 55 Hz without SDK mode) |
 | Verity Sense | ACC/GYRO | 52 Hz |
 | Verity Sense | MAG | 10–100 Hz |
-| Watches | PPG | up to 135 Hz |
-| Watches | ACC/GYRO | up to 208 Hz |
+| Watches (untested) | PPG | up to 135 Hz |
+| Watches (untested) | ACC/GYRO | up to 208 Hz |
 
 ---
 
@@ -208,12 +208,12 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 
 | Tool / Script | Command | Description |
 |---|---|---|
-| **Single-Device Dashboard** | `monitor-polar` | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Slim identity header, compact info bar, and a rolling event log showing connection/stream/RSSI events. Logs 1 Hz summary or full raw streams to CSV plus a session event log file. Prints a session-end Hz verification table and reports failed streams in the status line. |
+| **Single-Device Dashboard** | `monitor-polar` | Rich live terminal dashboard showing real-time HR, RR intervals, ECG/PPG/IMU streams, and hotkey markers. Slim identity header, compact info bar, and a rolling event log showing connection and stream events. Logs a 1 Hz summary (and full raw streams with `--log-full`) to CSV plus a session event log file. Prints a session-end Hz verification table and reports failed streams in the status line. |
 | **Dual-Device Dashboard** | `monitor-dual-polar` | Simultaneous live monitoring of both a **Polar H10** and **Verity Sense**. Side-by-side stream panels with a shared rolling event log (device-prefixed `[H10]`/`[Sense]`). Records synchronized 1 Hz summary or full raw CSV logs plus a session event log file. |
 | **Session Hz Verifier** | `python scripts/analyze_hz.py <session_dir>` | Real-world verification that a recorded session collected at the configured rates — reports actual average Hz, sample count, and standard deviation per stream from the raw CSVs. Works on single-device (`.../raw/`) and dual-device (`.../h10/raw/`, `.../sense/raw/`) layouts. |
 | **Low-Level PMD Utility** | `python -m polar_ble_sdk._pmd <subcommand>` | Direct protocol interaction tool. Supports subcommands:<br>• `scan`: Scan for nearby Polar devices<br>• `inspect --address <MAC>`: Query available GATT PMD features and stream settings<br>• `stream --address <MAC> -s <hr/ecg/acc/...>`: Stream raw PMD packets |
 | **Simple Stream Tester** | `python examples/connect_polar.py` | Minimal testing script demonstrating basic connection and raw callback stream printing. |
-| **Windows Pairing Helper** | `.\scripts\pair_watch.ps1` | PowerShell helper script to assist with Windows WinRT Bluetooth pairing for Polar watches. |
+| **Windows Pairing Helper** | `.\scripts\pair_watch.ps1 -Mac 24:AC:AC:00:00:00` | Windows PowerShell 5.1 helper that pairs a Polar watch through WinRT (untested; not in the PyPI package). |
 
 ---
 
@@ -224,23 +224,29 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 |---|---|---|
 | `--device` | Target device name substring or exact MAC address. | `monitor-polar --device "H10"` |
 | `--type` | Force device type (`h10` or `sense`) and default stream sets. | `monitor-polar --type h10` |
-| `--streams` | Comma-separated list of streams to enable (`hr,ecg,acc,ppg,ppi,gyro,mag`). | `--streams hr,ecg,acc` |
-| `--no-sdk-mode` | **Disable** SDK mode (now the default): PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-polar --no-sdk-mode` |
+| `--streams` | Comma-separated list of streams to enable (`hr,ecg,acc,ppg,ppi,gyro,mag`). On the Sense, `hr` and `ppi` need `--no-sdk-mode`. | `--streams hr,ecg,acc` |
+| `--no-sdk-mode` | Disable SDK mode, which is on by default: PPG falls back to 55 Hz and the Sense's own HR + PPI streams become available. | `monitor-polar --no-sdk-mode` |
 | `--ppi` | Record the Sense PPI stream, also when `--streams` is given. Needs `--no-sdk-mode` (SDK mode disables HR/PPI). | `monitor-polar --no-sdk-mode --streams ppg,acc --ppi` |
 | `--sdk-mode` | Keep SDK mode on (the default); overrides an earlier `--no-sdk-mode`. | `monitor-polar --sdk-mode` |
 | `--log-full` | Enable high-speed, full-resolution raw CSV logs for all active sensor streams. | `monitor-polar --log-full` |
 | `--csv` | Custom file path for the 1 Hz summary CSV log. | `--csv data/my_session.csv` |
 | `--no-log` | Disable CSV logging completely. | `monitor-polar --no-log` |
-| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=marker, S=stimulus_on, B=baseline_start, R=rest_start`. Type `/text` + Enter for a free-text marker that starts with a hotkey letter. On Linux/macOS input is line-based: hotkeys need Enter, and a bare Enter is SPACE. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
-| `--log-level` | Terminal log verbosity: `minimal` (errors only), `moderate` (default, connection + stream events + RSSI), `verbose` (adds per-frame counts, frequent RSSI). Press **L** during monitoring to toggle at runtime. | `monitor-polar --log-level verbose` |
-| `--<sensor>-rate` | Override specific sensor sampling rate (e.g., `--ecg-rate 130`, `--acc-rate 200`). | `--ecg-rate 130` |
+| `--markers` | Define custom hotkey event markers (`KEY=LABEL`). Default: `SPACE=marker, S=stimulus_on, B=baseline_start, R=rest_start`. On Windows, hotkeys fire on the key press; type `/text` + Enter for a free-text marker (Esc cancels it). Other keys are ignored. On Linux/macOS input is line-based: hotkeys need Enter, a bare Enter is SPACE, and any other line is a free-text marker. **`L` is reserved for the log-level toggle.** | `--markers "SPACE=Jump,S=Sprint"` |
+| `--log-level` | Terminal log verbosity: `minimal` (errors only), `moderate` (default, connection + stream events), `verbose` (adds per-frame counts). Press **L** during monitoring to toggle at runtime. | `monitor-polar --log-level verbose` |
+| `--<sensor>-rate`, `--acc-range`, `--gyro-range` | Override a sensor's sampling rate or range (e.g. `--ecg-rate 130`, `--acc-rate 200`). A value the device does not offer is replaced by the closest one it does, with a warning. | `--ecg-rate 130` |
+| `--duration` | Stop after this many seconds of recording (counted from when streaming starts). | `--duration 300` |
+| `--participant` | Participant ID written to `session_meta.json` (used by `run_analysis.py --pool`). | `--participant P01` |
+| `--data-dir` | Root folder for session data (default `./data`). | `--data-dir D:/study` |
+| `--no-watchdog`, `--freeze-timeout`, `--watchdog-interval` | Turn off auto-reconnect, or tune how long a silent stream may stay quiet (default 8 s; HR/PPI get 3×) and how often it is checked (default 3 s). | `--freeze-timeout 12` |
+
+`monitor-dual-polar` accepts the same `--markers`, `--log-level`, rate/range, `--participant`, `--data-dir` and watchdog flags. Both dashboards exit with status 1 when no device could be found or streaming could not start.
 
 #### `monitor-dual-polar` (Dual-Device Dashboard)
 | Flag | Description | Example |
 |---|---|---|
 | `--h10` | Target MAC address or name for the Polar H10. | `--h10 "Polar H10 12345678"` |
 | `--sense` | Target MAC address or name for the Verity Sense. | `--sense "Polar Sense 87654321"` |
-| `--duration` | Set recording duration in seconds; automatically disconnects and closes cleanly. | `--duration 180` |
+| `--duration` | Set recording duration in seconds (counted from when streaming starts); automatically disconnects and closes cleanly. | `--duration 180` |
 | `--no-log-full` | Disable the full-resolution raw CSV logs written by default to `data/dual/.../h10/raw/` and `.../sense/raw/`. | `monitor-dual-polar --no-log-full` |
 | `--no-log` | Disable summary and full CSV logging. | `monitor-dual-polar --no-log` |
 | `--no-ppi` | Disable the Sense PPI stream (only relevant with `--no-sdk-mode`; SDK mode disables PPI anyway). | `monitor-dual-polar --no-ppi` |
@@ -257,14 +263,14 @@ This SDK provides several command-line tools for real-time monitoring, protocol 
 
 ### Output Layout
 
-Both dashboards write session data under `data/`, with full-resolution raw CSVs, a 1 Hz summary, and an event log:
+Both dashboards write session data under `data/` (or `--data-dir`): a 1 Hz summary, an event log, and full-resolution raw CSVs (by default for `monitor-dual-polar`, with `--log-full` for `monitor-polar`):
 
 | Dashboard | Session dir | Raw streams | Post-processed | Event log |
 |---|---|---|---|---|
 | `monitor-polar` | `data/{h10\|sense}/{timestamp}/` | `raw/<stream>.csv` | `post-processed/summary.csv` | `monitor_<timestamp>.log` |
 | `monitor-dual-polar` | `data/dual/{timestamp}/` | `h10/raw/<stream>.csv`, `sense/raw/<stream>.csv` | `h10/post-processed/summary.csv`, `sense/post-processed/summary.csv` | `dual_<timestamp>.log` |
 
-The event log file records every terminal log event (connection, stream start/stop, RSSI, errors, markers) as plain text, one line per event. Useful for post-session debugging.
+The event log file records every terminal log event (connection, stream start/stop, errors, markers) as plain text, one line per event. Useful for post-session debugging.
 
 ### Terminal Layout
 
@@ -280,20 +286,24 @@ Both dashboards use a Rich Live display with four sections:
 │ ┌─ Log ────────────────────────────────────────┐   │
 │ │ 12:34:01 ● Connected (0.8s setup, 7.4s total)│   │  ← Rolling event log
 │ │ 12:34:01 ● ECG stream started                 │   │
-│ │ 12:34:02 📡 RSSI: -52 dBm                    │   │
+│ │ 12:34:02 ● ACC stream started                 │   │
 │ └───────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────┘
 ```
 
 The log panel fills remaining vertical space. Events are color-coded by severity: green (success), yellow (warning), red (error), dim (info). Press **L** at runtime to toggle between moderate and verbose detail.
 
-Raw stream files are per-stream CSVs with session-relative timestamps (seconds since the first frame), e.g. `ecg.csv` (`Timestamp_s, uV_Samples`), `acc.csv` (`Timestamp_s, X_mG, Y_mG, Z_mG`), `hr.csv` (`Timestamp_s, HeartRate_BPM, RR_Intervals_ms`). The `ppi.csv` file carries the device's raw PPI quality flags (`Timestamp_s, PPI_ms, ErrEst_ms, HR_BPM, SkinContact, SkinContactSupported`) so analysis can flag the documented "HR fixed to last reliable value when movement detected" mode.
+Raw stream files are per-stream CSVs with session-relative timestamps (seconds since the first frame), e.g. `ecg.csv` (`Timestamp_s, uV_Samples`), `acc.csv` (`Timestamp_s, X_mG, Y_mG, Z_mG`), `hr.csv` (`Timestamp_s, HeartRate_BPM, RR_Intervals_ms`). In `acc.csv`, `gyro.csv` and `mag.csv` every row of a frame carries that frame's timestamp, which belongs to its last sample; `load_session()` spreads the samples evenly over the frame interval. The `ppi.csv` file carries the device's raw PPI quality flags (`Timestamp_s, PPI_ms, ErrEst_ms, HR_BPM, SkinContact, SkinContactSupported, Invalid`) so analysis can flag the documented "HR fixed to last reliable value when movement detected" mode.
 
 PPI and RR times are beat times, not arrival times. The Verity Sense delivers a PPI frame ~7.3 s after its last beat, and the H10 delivers an HR notification ~2.0 s after the beat that ends its last RR interval (measured against the H10 ECG; Polar documents neither, so a firmware update may change them: `SENSE_PPI_DELAY_S` / `H10_RR_DELAY_S` in `_pmd/constants`). `ppi.csv` rows are written at beat times, and `session_meta.json` marks this with `<key>_beat_delay_ns`. PPI from older sessions without that marker is corrected on load by `research.loader` / `research.windows`, so old files need no rewrite. `hr.csv` rows keep the notification arrival time; `research.windows.load_h10_beats` and the LSL bridge give RR beat times.
 
 ### Stream Status & Failures
 
-On connect, the dashboard status shows `Connected! Streaming data.` when all requested streams start. If any stream fails to start (e.g. unsupported sample rate or device rejection), the status reports which ones, e.g. `Connected. Failed: gyro, mag`.
+On connect, the dashboard status shows `Connected! Streaming live data.` when all requested streams start. A stream start the device refuses or does not answer is retried twice; if it still fails (or the device does not advertise the stream), the status reports which ones, e.g. `Connected. Failed: GYRO, MAG`, and after an auto-reconnect `Reconnected, but failed: ECG`. Every such failure is also listed with its time under `devices.<device>.stream_errors` in `session_meta.json`. If SDK mode is refused (watches, old firmware, device on its charger), PPG falls back to 55 Hz and `SDK mode` appears in that list.
+
+A raw CSV that can no longer be written (disk full, drive removed) is reported in the event log and status line, and counted under `write_errors` in `session_meta.json`. The manifest is first written when each raw stream receives its first frame, so the host-time anchors survive a hard kill; `end_time_iso` stays empty until the session closes normally.
+
+A Sense PPI stream that goes quiet while other streams keep flowing is logged but does not trigger a reconnect (the Sense pauses PPI during movement). Any other silent stream, or a lost link, makes the watchdog reconnect the device.
 
 ### Session-End Hz Verification
 
@@ -306,12 +316,12 @@ When a session ends (Ctrl+C), both dashboards print a **Hz verification table** 
   Stream   Configured   Observed     Match
 --------------------------------------------------------
   ecg          130 Hz    130.01 Hz       OK
-  acc           52 Hz     52.00 Hz       OK
-  ppg           55 Hz     55.00 Hz       OK
+  acc          200 Hz    199.98 Hz       OK
+  ppg          135 Hz    135.00 Hz       OK
 ========================================================
 ```
 
-Configured rates come from the device's actual settings (e.g. H10 ECG 130 Hz, H10 ACC 200 Hz; Sense PPG 55 Hz, Sense ACC/GYRO 52 Hz, MAG 20 Hz). A mismatch (`X`) flags a stream that did not deliver its configured rate.
+Configured rates are the rates the dashboard requests (H10 ECG 130 Hz, H10 ACC 200 Hz; Sense PPG 135 Hz in SDK mode or 55 Hz with `--no-sdk-mode`, Sense ACC/GYRO 52 Hz, MAG 20 Hz, or your `--<sensor>-rate` override). A mismatch (`X`) flags a stream that did not deliver its configured rate.
 
 ### Post-Session Analysis & Cross-Validation
 
@@ -334,11 +344,11 @@ Method:
 
 Outputs in `<session>/reports/`: `validation_report.md`, `windows.csv` (every window with its artifact reason), `bland_altman_hr.png`, `bland_altman_rmssd.png`, `time_series.png`.
 
-**Features (`--features`, needs `pip install -e ".[features]"`):** one row per window in `<session>/post-processed/features.csv` (plus per-beat fiducials in `ecg_beats.csv`; `--pool` writes `data/pooled_features.csv`). Works on single-device sessions too.
+**Features (`--features`, needs `pip install -e ".[features]"`):** one row per window in `<session>/post-processed/features.csv` (plus per-beat fiducials in `ecg_beats.csv`; `--pool` writes `pooled_features.csv` and `pooled_report.md` to the folder that holds the pooled sessions). Works on single-device sessions too.
 - H10 ECG (`ecg_`): P/QRS/T/ST amplitudes and durations, PR, QT, QTc (Bazett, Fridericia), fiducial offsets from R, beat-shape PCA, DCT of the median beat, quality flags (`ecg_good_beats`, `ecg_quality`, `ecg_artifact`). Single lead at 130 Hz: 7.7 ms resolution, ST is not diagnostic.
-- HRV for H10 RR (`rr_`), Sense PPI (`ppi_`) and PPG beats (`ppgbeat_`): SDNN, RMSSD, pNN50, SD1/SD2 per window; VLF/LF/HF power (Lomb-Scargle), LF/HF, sample entropy and DFA α1 on a 5 min window (`_5m`).
+- HRV for H10 RR (`rr_`), Sense PPI (`ppi_`) and PPG beats (`ppgbeat_`): SDNN, RMSSD, pNN50, SD1/SD2 per window; LF/HF power (Lomb-Scargle), LF/HF, sample entropy and DFA α1 on a 5 min window (`_5m`), spanning the same time for every source. VLF is not computed: 5 min is too short for it (Task Force 1996).
 - ECG and PPG signal (`ecg_`, `ppg_`): mean/variance/skewness/kurtosis, Welch spectrum, db4 DWT energies and entropies, EMD IMF energies and Hilbert frequencies. ACC/gyro magnitude statistics.
-- SDNN, SD1, LF, HF and LF/HF are added to the Sense-vs-H10 agreement; figures: `feature_timeline.png`, `average_beat.png`, `hrv_psd.png`, `poincare.png`.
+- SDNN, SD1, LF, HF and LF/HF are added to the Sense-vs-H10 agreement. LF, HF and LF/HF come from overlapping 5 min windows, so they are compared only on rows whose 5 min spans do not overlap; figures: `feature_timeline.png`, `average_beat.png`, `hrv_psd.png`, `poincare.png`.
 
 #### 2. Sampling Rate & Frame Integrity Audit (`analyze_hz.py`)
 For a fast summary of packet intervals, mean frequencies, and frame gaps:
@@ -350,7 +360,8 @@ python scripts/analyze_hz.py data/h10/20260806_120000
 # Dual-device session
 python scripts/analyze_hz.py data/dual/20260818_132922
 ```
-```
+
+The scripts in `scripts/` are in the repository, not in the PyPI package; run them from a clone.
 
 ---
 
@@ -374,11 +385,13 @@ pytest tests/ -v
 
 ---
 
-## Acknowledgements & Disclaimer
+## Acknowledgements, Licences & Disclaimer
 
-This project builds upon and draws inspiration from the following open-source resources:
-- [zHElEARN/polar-python](https://github.com/zHElEARN/polar-python)
-- [polarofficial/polar-ble-sdk](https://github.com/polarofficial/polar-ble-sdk)
+This project is MIT-licensed (see [LICENSE](LICENSE)), except for third-party code it contains:
+- The PMD protocol layer (`src/polar_ble_sdk/_pmd/`) is derived from [zHElEARN/polar-python](https://github.com/zHElEARN/polar-python) (MIT, © 2024 Zachary Liu).
+- Parts of that layer follow Polar's official [polarofficial/polar-ble-sdk](https://github.com/polarofficial/polar-ble-sdk) and remain under the Polar SDK License.
+
+See [NOTICE](NOTICE) and the full licence texts in [`licenses/`](licenses/).
 
 > [!IMPORTANT]
 > **Trademark Disclaimer:** This project is an unofficial, third-party open-source library. It is not affiliated with, endorsed by, or certified by Polar Electro Oy.

@@ -23,6 +23,7 @@ from .models import (
     HRData,
     MAGData,
     MeasurementSettings,
+    PmdDataFrame,
     PPGData,
     PPIData,
 )
@@ -30,6 +31,25 @@ from .models import (
 # Emit a per-kind frame tally every N raw PMD notifications. Low enough to spot
 # a silent stream, high enough not to flood the log panel during a session.
 PMD_STATS_INTERVAL = 500
+
+CONTROL_POINT_RESPONSE_CODE = 0xF0
+# Control-point messages the device sends on its own (not replies). 0x01 is
+# followed by the measurement types the device has stopped streaming.
+CP_ONLINE_MEASUREMENT_STOPPED = 0x01
+SDK_MODE_TYPE = 0x09
+
+
+def _reply_has_more(reply: bytearray) -> bool:
+    """True if another packet follows this reply (PmdControlPointResponse.kt).
+
+    Only a successful reply carries a "more" flag; byte 4 of an error reply is
+    not one.
+    """
+    return (
+        len(reply) > 4
+        and reply[3] == PmdControlPointErrorCode.SUCCESS
+        and reply[4] != 0
+    )
 
 
 class PolarDevice:
@@ -91,6 +111,10 @@ class PolarDevice:
         self._factors = {}
         self._pmd_event_cb = pmd_event_callback
         self._pmd_counts: dict[str, int] = {}
+        # Set while a reply's "more" flag says a continuation packet is due;
+        # tells an old-format continuation (0x00/0x01 first byte) apart from a
+        # device-initiated 0x01 "measurement stopped" message.
+        self._cp_more_pending = False
 
     async def connect(self) -> None:
         """Connects to the Polar BLE device and sets up initial notifications.
@@ -114,6 +138,7 @@ class PolarDevice:
 
     def _drain_control_queue(self) -> None:
         """Drop queued control-point replies, e.g. a late reply to a timed-out request."""
+        self._cp_more_pending = False
         while not self._queue_pmd_control.empty():
             try:
                 self._queue_pmd_control.get_nowait()
@@ -175,12 +200,13 @@ class PolarDevice:
         """Await the control-point reply matching ``op`` and ``measurement_type``.
 
         Replies are only removed from the queue when a caller reads them, so
-        commands that ignore their reply (SDK mode, stop) leave one behind. A
-        blind ``queue.get()`` then reads that stale reply as its own, pairing
-        every later request with the response to the one before it. That is how
-        an ACC start rejected for missing channels was reported as success: the
-        SDK-mode reply poisoned the settings fetch, and the GET reply was then
-        read as the START reply. Matching on the response header discards
+        commands that ignore their reply (stop) leave one behind, as does a
+        request that timed out. A blind ``queue.get()`` then reads that stale
+        reply as its own, pairing every later request with the response to the
+        one before it. That is how an ACC start rejected for missing channels
+        was once reported as success: an unread SDK-mode reply poisoned the
+        settings fetch, and the GET reply was then read as the START reply.
+        Matching on the response header discards
         mismatched replies and keeps waiting, so pairing stays correct whatever
         is queued.
         """
@@ -209,12 +235,20 @@ class PolarDevice:
     ) -> bytearray | None:
         """Append continuation packets while the reply's "more" flag is set.
 
-        As in the official Polar SDK, byte 4 of the first packet and byte 0 of
-        each continuation say whether another packet follows; a continuation's
-        payload starts at byte 1. Returns None if the reply is incomplete.
+        Byte 4 of a successful reply says whether another packet follows. Two
+        continuation formats are accepted:
+
+        - current Polar SDK (``BlePMDClient.sendPmdCommand``): each continuation
+          repeats the 5-byte reply header ``F0 op type status more``, and its
+          payload starts at byte 5;
+        - Polar SDK 5.0.0 and earlier: a 1-byte header holding the "more" flag,
+          with the payload from byte 1.
+
+        A reply to some other request arriving in between is skipped. Returns
+        None if the reply is incomplete.
         """
         merged = bytearray(first)
-        more = len(merged) > 4 and merged[4] != 0
+        more = _reply_has_more(merged)
         loop = asyncio.get_running_loop()
         while more:
             remaining = deadline - loop.time()
@@ -224,10 +258,16 @@ class PolarDevice:
                 part = await asyncio.wait_for(self._queue_pmd_control.get(), remaining)
             except asyncio.TimeoutError:
                 return None
-            if not part or part[0] == 0xF0:  # a new reply: this one was cut short
-                return None
-            merged += part[1:]
-            more = part[0] != 0
+            if not part:
+                continue
+            if part[0] == CONTROL_POINT_RESPONSE_CODE:
+                if len(part) < 5 or part[1:3] != merged[1:3]:
+                    continue
+                merged += part[5:]
+                more = _reply_has_more(part)
+            else:
+                merged += part[1:]
+                more = part[0] != 0
         if len(merged) > 4:
             merged[4] = 0
         return merged
@@ -296,6 +336,10 @@ class PolarDevice:
                     f"No start response for {settings.measurement_type.name}"
                 )
             response = MeasurementSettings.from_bytes(response_bytes)
+            if response.error_code == PmdControlPointErrorCode.ERROR_ALREADY_IN_STATE:
+                # A retry after a start whose reply was lost: the stream runs,
+                # and that late reply already stored the factor.
+                return
             if (
                 response.error_code is not None
                 and response.error_code != PmdControlPointErrorCode.SUCCESS
@@ -329,28 +373,53 @@ class PolarDevice:
 
     # ── SDK mode (enables higher sample rates, e.g. PPG 135/176 Hz) ──────
 
-    async def enable_sdk_mode(self) -> None:
+    async def enable_sdk_mode(self, timeout: float = 5.0) -> None:
         """Enables SDK mode on the device.
 
         SDK mode unlocks additional PMD settings (e.g. PPG at 135/176 Hz on the
         Verity Sense). Protocol: REQUEST_MEASUREMENT_START with the SDK_MODE
-        measurement type (0x09), per the official Polar BLE SDK (which also
-        sends the command without reading a response). The reply is left queued;
-        ``_read_control_response`` discards replies that match no pending
-        request, so it cannot desynchronise later commands.
-        """
-        async with self._control_lock:
-            await self._client.write_gatt_char(
-                PolarCharacteristic.PMD_CONTROL_POINT.value,
-                bytearray([PmdControlOperationCode.START, 0x09]),
-            )
+        measurement type (0x09). As in the official Polar SDK, the reply is
+        read: success and "already in state" are accepted.
 
-    async def disable_sdk_mode(self) -> None:
-        """Disables SDK mode on the device (STOP_MEASUREMENT, type 0x09)."""
+        Raises:
+            exceptions.ControlPointResponseError: If the device does not answer,
+                or refuses (e.g. watches, older firmware, device in charger).
+        """
+        await self._sdk_mode_command(PmdControlOperationCode.START, timeout)
+
+    async def disable_sdk_mode(self, timeout: float = 2.0) -> None:
+        """Disables SDK mode on the device (STOP_MEASUREMENT, type 0x09).
+
+        The short default timeout keeps teardown quick when the device is gone.
+        """
+        await self._sdk_mode_command(PmdControlOperationCode.STOP, timeout)
+
+    async def _sdk_mode_command(self, op: int, timeout: float) -> None:
+        action = "enable" if op == PmdControlOperationCode.START else "disable"
         async with self._control_lock:
+            self._drain_control_queue()
             await self._client.write_gatt_char(
                 PolarCharacteristic.PMD_CONTROL_POINT.value,
-                bytearray([PmdControlOperationCode.STOP, 0x09]),
+                bytearray([op, SDK_MODE_TYPE]),
+            )
+            response = await self._read_control_response(
+                op, SDK_MODE_TYPE, timeout=timeout
+            )
+        if response is None or len(response) < 4:
+            raise exceptions.ControlPointResponseError(
+                f"No reply to SDK mode {action} request"
+            )
+        status = response[3]
+        if status not in (
+            PmdControlPointErrorCode.SUCCESS,
+            PmdControlPointErrorCode.ERROR_ALREADY_IN_STATE,
+        ):
+            try:
+                reason = PmdControlPointErrorCode(status).name
+            except ValueError:
+                reason = f"status {status}"
+            raise exceptions.ControlPointResponseError(
+                f"Device refused to {action} SDK mode: {reason}"
             )
 
     async def sdk_mode_enabled(self) -> bool:
@@ -648,30 +717,52 @@ class PolarDevice:
     def _handle_pmd_control(
         self, _: BleakGATTCharacteristic | int, data: bytearray
     ) -> None:
-        """Queue PMD control point responses and their continuation packets.
+        """Route control-point notifications.
 
-        Responses start with 0xF0 (the response code); continuation packets of
-        a multi-packet reply start with their "more" flag (0x00 or 0x01). On
-        BlueZ, reading the PMD control point while notifications are enabled can
-        also surface the feature packet as a notification; those start with
-        0x0F and must not be mixed into the response queue.
+        Replies start with 0xF0 and are queued for the waiting request. Any
+        other first byte is either an old-format continuation packet (0x00 or
+        0x01, only while a reply's "more" flag is pending) or a message the
+        device sends on its own; 0x01 then means "online measurement stopped",
+        followed by the stopped measurement types. On BlueZ, reading the
+        control point while notifications are enabled can also surface the
+        feature packet (0x0F); it is dropped.
         """
-        if not data or data[0] not in (0xF0, 0x00, 0x01):
+        if not data:
             return
 
-        # The first data frame can be dispatched before start_stream() resumes
-        # from the queue: store the factor now, or that frame is parsed unscaled.
-        if (
-            data[0] == 0xF0
-            and len(data) > 3
-            and data[1] == PmdControlOperationCode.START
-        ):
-            with contextlib.suppress(Exception):
-                response = MeasurementSettings.from_bytes(data)
-                if response.error_code == PmdControlPointErrorCode.SUCCESS:
-                    self._store_factor(response)
+        if data[0] == CONTROL_POINT_RESPONSE_CODE:
+            self._cp_more_pending = _reply_has_more(data)
+            # The first data frame can be dispatched before start_stream()
+            # resumes from the queue: store the factor now, or that frame is
+            # parsed unscaled.
+            if len(data) > 3 and data[1] == PmdControlOperationCode.START:
+                with contextlib.suppress(Exception):
+                    response = MeasurementSettings.from_bytes(data)
+                    if response.error_code == PmdControlPointErrorCode.SUCCESS:
+                        self._store_factor(response)
+            self._queue_pmd_control.put_nowait(data)
+        elif self._cp_more_pending and data[0] in (0x00, 0x01):
+            self._cp_more_pending = data[0] != 0
+            self._queue_pmd_control.put_nowait(data)
+        elif data[0] == CP_ONLINE_MEASUREMENT_STOPPED:
+            self._report_device_stop(data[1:])
 
-        self._queue_pmd_control.put_nowait(data)
+    def _report_device_stop(self, types: bytearray) -> None:
+        """Surface the device stopping a stream on its own (Polar SDK posts
+        BleOnlineStreamClosed); the data would otherwise just stop arriving."""
+        names = []
+        for raw in types:
+            with contextlib.suppress(ValueError):
+                names.append(
+                    PmdMeasurementType(
+                        raw & PmdDataFrame.MEASUREMENT_TYPE_BIT_MASK
+                    ).name
+                )
+        if self._pmd_event_cb is not None:
+            self._pmd_event_cb(
+                f"Device stopped stream: {', '.join(names) or 'unknown type'}",
+                "error",
+            )
 
     def _handle_pmd_data(
         self, _: BleakGATTCharacteristic | int, data: bytearray

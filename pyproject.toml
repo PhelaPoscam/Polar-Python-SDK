@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0.0", "wheel"]
+requires = ["setuptools>=77.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,23 +8,32 @@ version = "1.1.0"
 authors = [
     { name = "Aleph Campos da Silveira", email = "aleph.camposdasilveira@tuni.fi" }
 ]
-description = "An open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices."
+description = "Unofficial open-source Python SDK for connecting, monitoring, and capturing raw physiological and IMU data from Polar BLE devices (not affiliated with Polar Electro Oy)."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+# Parts of the _pmd protocol layer stay under the Polar SDK License; see NOTICE
+# and licenses/.
+license = "MIT AND LicenseRef-Polar-SDK-License"
+license-files = ["LICENSE", "NOTICE", "licenses/*"]
+keywords = ["polar", "h10", "verity sense", "ble", "bluetooth", "ecg", "ppg", "hrv", "bleak"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "bleak>=3.0,<4",  # diagnostics use bleak private attributes
+    "bleak>=3.0,<4",
     "rich",
 ]
+
+[project.urls]
+Homepage = "https://github.com/PhelaPoscam/Polar-Python-SDK"
+Source = "https://github.com/PhelaPoscam/Polar-Python-SDK"
+Issues = "https://github.com/PhelaPoscam/Polar-Python-SDK/issues"
 
 [project.scripts]
 monitor-polar = "polar_ble_sdk.cli:_entrypoint"

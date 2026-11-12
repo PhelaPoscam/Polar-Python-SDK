@@ -27,7 +27,12 @@ class NonBlockingKeyboardReader:
             self._win_msvcrt = msvcrt
 
     def poll_markers(self) -> list[str]:
-        """Poll non-blocking keyboard input and return triggered markers."""
+        """Poll non-blocking keyboard input and return triggered markers.
+
+        Windows: hotkeys fire on the key press; free text is typed as
+        ``/text`` + Enter (Esc cancels it). Other keys are ignored, so a stray
+        key can never hold back the hotkeys that follow it.
+        """
         markers: list[str] = []
         if self._win_msvcrt is not None:
             while self._win_msvcrt.kbhit():
@@ -37,44 +42,33 @@ class NonBlockingKeyboardReader:
                         self._win_msvcrt.getwch()
                     continue
 
-                if ch == "\x08":
-                    self._buffer = self._buffer[:-1]
+                if self._buffer:  # typing "/text"
+                    if ch == "\x08":
+                        self._buffer = self._buffer[:-1]
+                    elif ch == "\x1b":
+                        self._buffer = ""
+                    elif ch in ("\r", "\n"):
+                        text = self._buffer[1:].strip()
+                        self._buffer = ""
+                        if text:
+                            markers.append(text)
+                    else:
+                        self._buffer += ch
                     continue
 
-                if ch in ("\r", "\n"):
-                    line = self._buffer.strip()
-                    self._buffer = ""
-                    if line.startswith("/"):
-                        # "/text" is always free text, even if it starts with a hotkey.
-                        if line[1:].strip():
-                            markers.append(line[1:].strip())
-                    elif line:
-                        line_upper = line.upper()
-                        if line_upper in self._hotkeys:
-                            markers.append(self._hotkeys[line_upper])
-                        else:
-                            markers.append(line)
-                    continue
-
-                if not self._buffer:
-                    if ch == "/":
-                        self._buffer = ch
-                        continue
-                    if ch == " ":
-                        now = time.monotonic()
-                        if (now - self._last_space_ts) >= 0.2:
-                            marker = self._hotkeys.get("SPACE")
-                            if marker:
-                                markers.append(marker)
-                            self._last_space_ts = now
-                        continue
-                    ch_upper = ch.upper()
-                    marker = self._hotkeys.get(ch_upper)
+                if ch == "/":
+                    self._buffer = ch
+                elif ch == " ":
+                    now = time.monotonic()
+                    if (now - self._last_space_ts) >= 0.2:
+                        marker = self._hotkeys.get("SPACE")
+                        if marker:
+                            markers.append(marker)
+                        self._last_space_ts = now
+                else:
+                    marker = self._hotkeys.get(ch.upper())
                     if marker:
                         markers.append(marker)
-                        continue
-
-                self._buffer += ch
         else:
             import select
 

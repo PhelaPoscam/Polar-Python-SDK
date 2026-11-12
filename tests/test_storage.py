@@ -160,3 +160,34 @@ class TestSessionManager:
         assert ts == [-7.3, -6.4, 13.6]  # host arrival minus the 7.3 s delay
         # The gap is visible to the loader's lost-packet mask (windows.py).
         assert (ts[2] - ts[1]) * 1000 > 1.5 * 850 + 100
+
+    def test_first_frame_writes_the_clock_anchors_before_shutdown(self, tmp_path: Path):
+        """A hard kill must still leave the anchors that map raw CSVs to host time."""
+        mgr = SessionManager(base_dir=tmp_path, device_type="dual", session_id="s")
+        mgr.metadata.devices["sense"] = DeviceMetadata(device_type="sense")
+        fl = mgr.create_frame_logger("ppi", sub_device="sense")
+        fl.write_ppi_frames([(0, 800, 10, 75, 1, 1, 0)])
+        # No close_all: the process "dies" here.
+        meta = json.loads((mgr.session_dir / "session_meta.json").read_text("utf-8"))
+        assert "sense_ppi_host_epoch_ns" in meta["clock_zero_points"]
+        assert meta["clock_zero_points"]["sense_ppi_beat_delay_ns"] == 7_300_000_000
+        assert meta["end_time_iso"] == ""
+        assert meta["system_info"]["polar_ble_sdk_version"]
+
+    def test_failed_writes_are_reported_and_recorded(self, tmp_path: Path):
+        mgr = SessionManager(base_dir=tmp_path, device_type="h10", session_id="s")
+        reported: list[tuple[str, str]] = []
+        mgr.on_write_error = lambda key, msg: reported.append((key, msg))
+        fl = mgr.create_frame_logger("acc")
+
+        class FullDisk:
+            def writerow(self, _row):
+                raise OSError(28, "No space left on device")
+
+        fl._writer = FullDisk()
+        fl.write_frame(1, [(1, 2, 3), (4, 5, 6)])
+        fl.write_frame(2, [(1, 2, 3)])
+        assert reported == [("acc", "OSError: [Errno 28] No space left on device")]
+        mgr.close_all()
+        meta = json.loads((mgr.session_dir / "session_meta.json").read_text("utf-8"))
+        assert meta["write_errors"]["acc"]["count"] == 2

@@ -50,6 +50,28 @@ def test_lf_hf_band(f_hz: float, lf_dominant: bool) -> None:
     assert 0 < out["dfa_a1_5m"] < 2
 
 
+def test_five_minute_spans_match_across_sources_at_edges() -> None:
+    """PPI starting 60 s after RR: both 5 min spans must still hold the same beats."""
+    import pandas as pd
+
+    from polar_ble_sdk.research.features import SessionSignals
+
+    rng = np.random.default_rng(1)
+    rr = 900 + 50 * np.sin(np.arange(800) / 3) + rng.normal(0, 5, 800)
+    t = pd.Timestamp("2026-01-01") + pd.to_timedelta(np.cumsum(rr), unit="ms")
+    rr_df = pd.DataFrame({"t": t, "ms": rr})
+    ppi_df = rr_df[rr_df["t"] >= t[0] + pd.Timedelta(60, "s")]
+    sig = SessionSignals(intervals={"rr": rr_df, "ppi": ppi_df})
+    starts = pd.Series(
+        pd.date_range(ppi_df["t"].min().ceil("1s"), periods=8, freq="60s")
+    )
+
+    feats = extract_features(Path("."), 60, starts, sig)
+    assert feats.loc[0, "start_5m"] == ppi_df["t"].min()
+    assert feats["rr_lf_5m"].to_numpy() == pytest.approx(feats["ppi_lf_5m"].to_numpy())
+    assert "rr_vlf_5m" not in feats
+
+
 def test_single_session_gap_split(tmp_path: Path) -> None:
     """A 5 s hole in the ECG splits it: no interval spans the gap."""
     x = np.concatenate([_ecg(65, 1), _ecg(65, 2)])

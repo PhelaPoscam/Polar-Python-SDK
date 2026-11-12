@@ -68,3 +68,26 @@ class TestMeasurementSettings:
         assert len(parsed.settings) == 1
         assert parsed.settings[0].type == PmdSettingType.SAMPLE_RATE
         assert parsed.settings[0].values == [52, 208]
+
+    def test_newer_setting_types_do_not_truncate_the_reply(self):
+        # A derived-measurement setting (type 7, 1-byte field, PmdSetting.kt)
+        # before SAMPLE_RATE used to end parsing as UNKNOWN.
+        raw = bytearray(
+            [
+                0xF0,
+                0x01,
+                PmdMeasurementType.ACC.value,
+                PmdControlPointErrorCode.SUCCESS.value,
+                0x00,
+                PmdSettingType.DERIVED_MEASUREMENT_METHOD.value,
+                0x01,
+                0x03,
+                PmdSettingType.SAMPLE_RATE.value,
+                0x01,
+                *(52).to_bytes(2, "little"),
+            ]
+        )
+        parsed = MeasurementSettings.from_bytes(raw)
+        by_type = {s.type: s.values for s in parsed.settings}
+        assert by_type[PmdSettingType.DERIVED_MEASUREMENT_METHOD] == [3]
+        assert by_type[PmdSettingType.SAMPLE_RATE] == [52]

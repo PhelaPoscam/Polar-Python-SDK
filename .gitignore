@@ -4,6 +4,17 @@ __pycache__/
 .venv*/
 .coverage
 htmlcov/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Editor and AI-assistant local config
+.vscode/
+.claude/
+.codex/
+.commandcode/
+.mcp.json
+AGENTS.md
 
 # C extensions & build artifacts
 *.so

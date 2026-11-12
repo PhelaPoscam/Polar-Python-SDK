@@ -219,6 +219,8 @@ def reset_device_state_on_disconnect(state: dict[str, Any]) -> None:
     state["acc_raw"] = None
     state["gyro_raw"] = None
     state["mag_raw"] = None
+    state["ecg_last_uv"] = None
+    state["ppg_last_sample"] = "-"
 
 
 def unwrap_vector(state: dict[str, Any], raw_key: str) -> tuple[Any, Any, Any]:

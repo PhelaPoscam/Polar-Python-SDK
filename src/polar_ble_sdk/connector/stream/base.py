@@ -4,15 +4,22 @@ import asyncio
 import contextlib
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any
+
+from bleak.exc import BleakCharacteristicNotFoundError
 
 from ..._pmd import PolarDevice
 from ..._pmd.constants import (
     PmdMeasurementType,
     PolarCharacteristic,
 )
+
+# A refused or unanswered stream start is retried this many times in total
+# before the stream is reported as failed; the link itself stays up.
+STREAM_START_ATTEMPTS = 3
+STREAM_RETRY_DELAY_S = 1.0
 
 
 class DisconnectReason(str, Enum):
@@ -71,6 +78,7 @@ class BasePolarDevice:
         self.pair_timeout = kwargs.get("pair_timeout", 60.0)
         self.post_pair_delay = kwargs.get("post_pair_delay", 2.0)
         self.stream_errors: dict[str, str] = {}
+        self._callback_errors: dict[str, int] = {}
         self._active_streams: set[PmdMeasurementType] = set()
         self._sdk_mode_enabled: bool = False
         # log_callback is a simple callable(msg, severity) — no event bus needed.
@@ -86,6 +94,24 @@ class BasePolarDevice:
         """Emit a structured log event if a callback is registered."""
         if self.log_callback:
             self.log_callback(msg, severity)
+
+    def _forward(self, label: str, callback: Callable | None, payload: Any) -> None:
+        """Hand one parsed frame to a user callback without letting it kill the stream.
+
+        The first failure per stream is reported; later ones are only counted,
+        so a broken callback cannot flood the event log at the frame rate.
+        """
+        if not callback:
+            return
+        try:
+            callback(payload)
+        except Exception as exc:
+            count = self._callback_errors.get(label, 0) + 1
+            self._callback_errors[label] = count
+            if count == 1:
+                self._emit(
+                    f"{label} callback failed: {type(exc).__name__}: {exc}", "error"
+                )
 
     def _on_ble_disconnected(self, _client: Any) -> None:
         """Bleak hook for any OS-level disconnect; reports the reason if unexpected.
@@ -197,7 +223,13 @@ class BasePolarDevice:
                         self._log(f"Failed to complete pairing: {pair_err}")
                         self._emit(f"Pairing failed: {pair_err}", "error")
                         last_error = pair_err
-                elif "not found" in err_str.lower() or "FB005C81" in err_str:
+                elif (
+                    isinstance(e, BleakCharacteristicNotFoundError)
+                    or "fb005c81" in err_str.lower()
+                ):
+                    # Only a missing PMD characteristic means SDK sharing is
+                    # off; a device that is not found (e.g. dropped from the
+                    # BlueZ cache) goes through the normal retry path.
                     self._log("\n" + "=" * 60)
                     self._log(
                         "SDK STREAM NOT ACTIVE: The device is not exposing the measurement service."
@@ -361,8 +393,7 @@ class BasePolarDevice:
         if not callback:
             return True
         if measurement_type not in features:
-            self._log(f"[DEBUG] {label} skipped — not in available features")
-            self._emit(f"{label} stream skipped — not advertised by device", "warning")
+            self._not_advertised(label)
             return False
         try:
             available = await self._get_available_settings(measurement_type)
@@ -418,14 +449,43 @@ class BasePolarDevice:
                         continue
                     resolved[key] = override
             method = getattr(self.polar_device, method_name)
-            await method(handler, **resolved)
-            self._active_streams.add(measurement_type)
-            self._log(f"[DEBUG] {label} stream started OK")
-            self._emit(f"{label} stream started", "success")
-            return True
         except Exception as exc:
-            err_msg = f"{type(exc).__name__}: {exc}"
-            self._log(f"[DEBUG] {label} stream failed: {err_msg}")
-            self.stream_errors[label] = err_msg
-            self._emit(f"{label} stream failed: {err_msg}", "error")
+            self._stream_failed(label, f"{type(exc).__name__}: {exc}")
             return False
+        if not await self._start_with_retry(label, lambda: method(handler, **resolved)):
+            return False
+        self._active_streams.add(measurement_type)
+        self._log(f"[DEBUG] {label} stream started OK")
+        self._emit(f"{label} stream started", "success")
+        return True
+
+    async def _start_with_retry(
+        self, label: str, start: Callable[[], Awaitable[None]]
+    ) -> bool:
+        """Run one stream's start command, retrying a refused or unanswered start.
+
+        A failure after the last attempt is recorded in ``stream_errors``, which
+        the CLIs show and write to session_meta.json; the link stays up.
+        """
+        err_msg = ""
+        for attempt in range(1, STREAM_START_ATTEMPTS + 1):
+            try:
+                await start()
+                return True
+            except Exception as exc:
+                err_msg = f"{type(exc).__name__}: {exc}"
+                self._log(f"[DEBUG] {label} start attempt {attempt} failed: {err_msg}")
+                if attempt < STREAM_START_ATTEMPTS:
+                    self._emit(f"{label} start failed ({err_msg}); retrying", "warning")
+                    await asyncio.sleep(STREAM_RETRY_DELAY_S)
+        self._stream_failed(label, err_msg)
+        return False
+
+    def _stream_failed(self, label: str, err_msg: str) -> None:
+        self.stream_errors[label] = err_msg
+        self._emit(f"{label} stream failed: {err_msg}", "error")
+
+    def _not_advertised(self, label: str) -> None:
+        self._log(f"[DEBUG] {label} skipped — not in available features")
+        self.stream_errors[label] = "not advertised by device"
+        self._emit(f"{label} stream skipped — not advertised by device", "warning")

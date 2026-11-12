@@ -90,13 +90,13 @@ class PPGData:
             data_type="signed_int",
         )
 
-        ppg_samples = []
-        for sample in samples:
-            ppg0 = sample[0]
-            ppg1 = sample[1]
-            ppg2 = sample[2]
-            ambient = sample[3]
-            ppg_samples.append([ppg0, ppg1, ppg2, ambient])
+        # As PpgData.kt: every channel is scaled by the START reply's factor
+        # (truncated toward zero, like Kotlin's toInt()).
+        factor = frame.factor
+        ppg_samples = [
+            [int(v * factor) for v in sample[:4]] if factor != 1.0 else sample[:4]
+            for sample in samples
+        ]
 
         return cls(
             timestamp=frame.timestamp,

@@ -31,6 +31,7 @@ def _stoppable_conn() -> MagicMock:
 def _connected_conn() -> MagicMock:
     conn = MagicMock()
     conn.polar_device._client.is_connected = True
+    conn.stream_errors = {}
     return conn
 
 
@@ -159,6 +160,7 @@ class TestPolarAdapter:
         )
         mock_sense = MagicMock()
         mock_sense.polar_device._client.is_connected = False
+        mock_sense.stream_errors = {}
         adapter.sense.conn = mock_sense
         adapter.sense.enabled = True
         adapter._running = True
@@ -206,6 +208,48 @@ class TestPolarAdapter:
         assert ("H10", "Watchdog: link lost; reconnecting...") in statuses
         assert ("H10", "Connected! Streaming...") in statuses
         assert adapter.h10.last_packet_time > 0
+
+    @pytest.mark.asyncio
+    async def test_reconnect_reports_streams_that_failed_to_start(self) -> None:
+        """A stream that fails on reconnect used to vanish behind "Streaming"."""
+        statuses: list[str] = []
+        adapter = PolarAdapter(
+            status_callback=lambda _d, m: statuses.append(m), reconnect_cooldown=0
+        )
+        adapter._running = True
+        adapter.h10.dev = MagicMock()
+        mock_conn = _stoppable_conn()
+        mock_conn.stream_errors = {"ECG": "ControlPointResponseError: timeout"}
+        mock_conn.start_notify = AsyncMock()
+        adapter.h10.conn = mock_conn
+
+        with patch.object(
+            adapter.h10, "build", lambda: setattr(adapter.h10, "conn", mock_conn)
+        ):
+            await adapter._reconnect(adapter.h10)
+
+        assert "Reconnected, but failed: ECG" in statuses
+        assert adapter.h10.stream_error_log[-1]["errors"] == mock_conn.stream_errors
+
+    @pytest.mark.asyncio
+    async def test_device_not_found_triggers_a_fresh_scan(self) -> None:
+        from bleak.exc import BleakDeviceNotFoundError
+
+        adapter = PolarAdapter(reconnect_cooldown=0)
+        adapter._running = True
+        adapter.h10.dev = MagicMock()
+        mock_conn = _stoppable_conn()
+        mock_conn.start_notify = AsyncMock(
+            side_effect=BleakDeviceNotFoundError("AA", "Device was not found.")
+        )
+        adapter.h10.conn = mock_conn
+
+        with patch.object(
+            adapter.h10, "build", lambda: setattr(adapter.h10, "conn", mock_conn)
+        ):
+            await adapter._reconnect(adapter.h10)
+
+        assert adapter.h10.dev is None  # next attempt rediscovers
 
     @pytest.mark.asyncio
     async def test_clean_disconnect(self) -> None:
@@ -331,6 +375,51 @@ class TestWatchdogHealth:
         link.last_packet["ppi"] = now - 12.0
         link.last_packet_time = now
         assert link.stall_reason(now, freeze_timeout=8.0) is None
+
+    def test_silent_ppi_alone_warns_without_reconnecting(self) -> None:
+        """The Sense pauses PPI during motion; that must not cost PPG/ACC data."""
+        logged: list[str] = []
+        adapter = PolarAdapter(
+            sense_callbacks={"ppg": lambda _d: None, "ppi": lambda _d: None},
+            sense_kwargs={"log_callback": lambda m, _s: logged.append(m)},
+        )
+        link = adapter.sense
+        link.conn = _connected_conn()
+        link.mark_started()
+        link.callbacks["ppg"](None)
+        link.callbacks["ppi"](None)
+        now = time.monotonic()
+        link.last_packet["ppi"] = now - 60.0
+        assert link.stall_reason(now, freeze_timeout=8.0) is None
+        assert link.frozen_streams == ["ppi"]
+
+        link.last_packet["ppg"] = now - 60.0  # PPG freezing still reconnects
+        assert (
+            link.stall_reason(now, freeze_timeout=8.0) is DisconnectReason.STREAM_FROZEN
+        )
+
+    @pytest.mark.asyncio
+    async def test_watchdog_logs_a_silent_ppi_stream_once(self) -> None:
+        logged: list[str] = []
+        adapter = PolarAdapter(
+            sense_callbacks={"ppi": lambda _d: None},
+            sense_kwargs={"log_callback": lambda m, _s: logged.append(m)},
+            watchdog_interval=0.01,
+        )
+        link = adapter.sense
+        link.enabled = True
+        link.conn = _connected_conn()
+        link.mark_started()
+        link.callbacks["ppi"](None)
+        link.last_packet["ppi"] = time.monotonic() - 60.0
+        adapter._running = True
+        task = asyncio.create_task(adapter._watchdog_loop())
+        await asyncio.sleep(0.05)
+        adapter._running = False
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert len([m for m in logged if "PPI silent" in m]) == 1
 
     @pytest.mark.asyncio
     async def test_no_second_connection_while_old_client_is_stuck(self) -> None:

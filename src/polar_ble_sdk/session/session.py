@@ -14,8 +14,10 @@ import platform
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,13 @@ from ..storage.frame_logger import StreamFrameLogger
 logger = logging.getLogger(__name__)
 
 MANIFEST_SCHEMA_VERSION = "1.0.0"
+
+
+def _sdk_version() -> str:
+    try:
+        return version("polar-ble-sdk")
+    except PackageNotFoundError:  # run from a source tree that was never installed
+        return "unknown"
 
 
 @dataclass
@@ -38,6 +47,8 @@ class DeviceMetadata:
     battery_end: str = "-"
     stream_configurations: dict[str, Any] = field(default_factory=dict)
     clock_zero_points: dict[str, int] = field(default_factory=dict)
+    # One entry per (re)connect that left streams failed: {time_epoch_s, errors}.
+    stream_errors: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -59,6 +70,8 @@ class SessionMetadata:
     stream_results: dict[str, Any] = field(default_factory=dict)
     markers: list[dict[str, Any]] = field(default_factory=list)
     clock_zero_points: dict[str, int] = field(default_factory=dict)
+    # Raw CSV files that failed to write: {logger key: first error, count}.
+    write_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -101,6 +114,7 @@ class SessionManager:
                 "os": platform.platform(),
                 "python_version": sys.version.split()[0],
                 "platform": sys.platform,
+                "polar_ble_sdk_version": _sdk_version(),
             },
             clock_zero_points={"host_epoch_ns": now_ns},
         )
@@ -110,6 +124,8 @@ class SessionManager:
         # close_all may race with an emergency save on console close.
         self._close_lock = threading.Lock()
         self._saved = False
+        # Called once per raw CSV that starts failing: (logger key, error).
+        self.on_write_error: Callable[[str, str], None] | None = None
 
     def init_event_log(self, prefix: str = "monitor") -> Path:
         """Create and open the plain-text session event log file."""
@@ -151,7 +167,18 @@ class SessionManager:
         """Instantiate and open a StreamFrameLogger inside the raw directory."""
         raw_dir = self.get_raw_dir(sub_device)
         logger_key = f"{sub_device}_{stream}" if sub_device else stream
-        frame_logger = StreamFrameLogger(raw_dir / f"{stream}.csv", stream)
+
+        def on_error(msg: str) -> None:
+            self.metadata.write_errors[logger_key] = {"first_error": msg}
+            if self.on_write_error:
+                self.on_write_error(logger_key, msg)
+
+        frame_logger = StreamFrameLogger(
+            raw_dir / f"{stream}.csv",
+            stream,
+            on_error=on_error,
+            on_first_frame=self.checkpoint,
+        )
         frame_logger.open()
         self._frame_loggers[logger_key] = frame_logger
         return frame_logger
@@ -199,11 +226,49 @@ class SessionManager:
                 self._log_file.close()
             self._log_file = None
 
+    def checkpoint(self) -> None:
+        """Write the manifest as it stands (no end time yet).
+
+        Called when each raw stream gets its first frame, so a hard kill or
+        power loss still leaves the host-time anchors that map the raw CSVs
+        onto host time. The final save overwrites it.
+        """
+        with self._close_lock:
+            if not self._saved:
+                self._collect_clock_points()
+                self._write_manifest()
+
     def _save(
         self,
         rate_tracker: RateTracker | None,
         configured_rates: dict[str, int] | None,
     ) -> None:
+        self._collect_clock_points()
+        for key, fl in self._frame_loggers.items():
+            fl.close()
+            if fl.write_errors:
+                self.metadata.write_errors.setdefault(key, {})["count"] = (
+                    fl.write_errors
+                )
+
+        # Finalize metadata
+        now_dt = datetime.now(timezone.utc)
+        self.metadata.end_time_iso = now_dt.isoformat()
+        self.metadata.end_time_epoch_ns = time.time_ns()
+        self.metadata.duration_s = (
+            self.metadata.end_time_epoch_ns - self.metadata.start_time_epoch_ns
+        ) / 1e9
+
+        if rate_tracker and configured_rates:
+            results: list[RateVerificationResult] = rate_tracker.verify_all(
+                configured_rates
+            )
+            for r in results:
+                self.metadata.stream_results[r.stream] = asdict(r)
+
+        self._write_manifest()
+
+    def _collect_clock_points(self) -> None:
         for key, fl in self._frame_loggers.items():
             # Recorded even without a device timestamp (Sense PPI frames carry 0).
             if fl.first_host_ns is not None:
@@ -225,24 +290,8 @@ class SessionManager:
                 else:
                     for dev in self.metadata.devices.values():
                         dev.clock_zero_points[key] = fl.first_ts_ns
-            fl.close()
 
-        # Finalize metadata
-        now_dt = datetime.now(timezone.utc)
-        self.metadata.end_time_iso = now_dt.isoformat()
-        self.metadata.end_time_epoch_ns = time.time_ns()
-        self.metadata.duration_s = (
-            self.metadata.end_time_epoch_ns - self.metadata.start_time_epoch_ns
-        ) / 1e9
-
-        if rate_tracker and configured_rates:
-            results: list[RateVerificationResult] = rate_tracker.verify_all(
-                configured_rates
-            )
-            for r in results:
-                self.metadata.stream_results[r.stream] = asdict(r)
-
-        # Write session_meta.json
+    def _write_manifest(self) -> None:
         meta_path = self.session_dir / "session_meta.json"
         try:
             with meta_path.open("w", encoding="utf-8") as f:

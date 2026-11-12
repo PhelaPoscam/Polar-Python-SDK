@@ -30,9 +30,9 @@ from polar_ble_sdk.connector.ble_discovery import (
     discover_polar_device,
     discover_polar_devices,
 )
-from polar_ble_sdk.connector.stream import create_polar_connector
+from polar_ble_sdk.connector.stream import PolarH10, create_polar_connector
 from polar_ble_sdk.diagnostics.battery import read_battery, update_battery_loop
-from polar_ble_sdk.diagnostics.rssi import FrameCountLogger, rssi_loop
+from polar_ble_sdk.diagnostics.frame_counts import FrameCountLogger
 from polar_ble_sdk.input.keyboard import (
     NonBlockingKeyboardReader,
     format_marker_legend,
@@ -203,7 +203,7 @@ async def _select_device(args: argparse.Namespace) -> Any:
         print("Invalid selection.")
 
 
-async def main() -> None:
+async def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -214,12 +214,12 @@ async def main() -> None:
                 parser.error(f"Unknown stream: {s}")
     else:
         requested_streams = None
-    if args.ppi:
+    if args.ppi or "ppi" in (requested_streams or []):
         if args.type == "h10":
-            parser.error("--ppi is only supported on Verity Sense devices.")
+            parser.error("PPI is only supported on Verity Sense devices.")
         if not args.no_sdk_mode:
             parser.error(
-                "--ppi is unavailable in SDK mode (SDK mode disables HR/PPI). Use --no-sdk-mode."
+                "PPI is unavailable in SDK mode (SDK mode disables HR/PPI). Use --no-sdk-mode."
             )
 
     try:
@@ -238,7 +238,7 @@ async def main() -> None:
     device = await _select_device(args)
     if not device:
         print("No Polar device found.")
-        return
+        return 1
 
     # ── Resolve device type and streams ──────────────────────────────
     device_name = getattr(device, "name", "") or ""
@@ -247,6 +247,10 @@ async def main() -> None:
     enabled_streams = requested_streams or _default_streams(is_h10, args.no_sdk_mode)
     if args.ppi and "ppi" not in enabled_streams:
         enabled_streams.append("ppi")
+    if not is_h10 and not args.no_sdk_mode and "hr" in enabled_streams:
+        parser.error(
+            "The Sense HR stream is unavailable in SDK mode (the default). Use --no-sdk-mode."
+        )
     device_type = "h10" if is_h10 else "sense"
 
     # ── Session & Storage Setup ───────────────────────────────────────
@@ -298,7 +302,7 @@ async def main() -> None:
         log_event(
             log_panel,
             msg,
-            "warning" if lost else "success",
+            "warning" if lost or "failed" in msg_lower else "success",
             device=device_name,
             log_file=session_mgr.log_file,
         )
@@ -319,7 +323,9 @@ async def main() -> None:
         "device",
         device_name or device_type,
         device,
-        create_polar_connector,
+        # Pinned once identified: a reconnect may rediscover the device before
+        # its name is known, and create_polar_connector chooses by name.
+        PolarH10 if is_h10 else create_polar_connector,
         callbacks,
         kwargs={
             "log_callback": lambda msg, sev="info": log_event(
@@ -328,6 +334,8 @@ async def main() -> None:
             **custom_kwargs,
         },
     )
+    # Shared list: the manifest lists every start's failed streams.
+    session_mgr.metadata.devices[device_type].stream_errors = conn.stream_error_log
 
     frame_count_logger = FrameCountLogger(
         log_panel, device=device_name, log_file=session_mgr.log_file
@@ -375,14 +383,22 @@ async def main() -> None:
             log_panel, msg, severity, device=device_name, log_file=session_mgr.log_file
         )
 
+    def on_write_error(key: str, msg: str) -> None:
+        _log(f"Writing raw {key}.csv failed; its data is being lost: {msg}", "error")
+        state["status"] = f"DISK WRITE FAILED ({key}): {msg}"
+
+    session_mgr.on_write_error = on_write_error
+
+    exit_code = 0
     with Live(build(), refresh_per_second=10) as live:
         battery_task = None
-        rssi_task = None
 
         try:
             _log("Starting connection...")
             if not (await adapter.start())["device"]:
                 raise RuntimeError(conn.last_error or "could not start streaming")
+            # --duration counts recording time, not the connection setup.
+            start = time.time()
 
             if conn.stream_errors:
                 failed = ", ".join(conn.stream_errors.keys())
@@ -422,11 +438,6 @@ async def main() -> None:
                 session_mgr.register_marker(marker)
 
             battery_task = asyncio.create_task(update_battery_loop(conn, state))
-            rssi_task = asyncio.create_task(
-                rssi_loop(
-                    conn, log_panel, device=device_name, log_file=session_mgr.log_file
-                )
-            )
 
             await run_dashboard(
                 live,
@@ -445,15 +456,16 @@ async def main() -> None:
         except asyncio.CancelledError:
             pass
         except Exception as e:
+            exit_code = 1
+            _log(f"Error: {e}", "error")
             state["status"] = f"Error: {e}"
             live.update(build())
             await asyncio.sleep(3)
         finally:
-            for task in (battery_task, rssi_task):
-                if task:
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+            if battery_task:
+                battery_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await battery_task
 
             # Save first: before the BLE teardown, which can take seconds (a second
             # Ctrl+C must not lose the manifest), and before touching the terminal,
@@ -485,6 +497,7 @@ async def main() -> None:
     if configured_rates:
         extra = ["ppi"] if "ppi" in enabled_streams else None
         print_hz_summary(configured_rates, rate_tracker, extra_streams=extra)
+    return exit_code
 
 
 def _entrypoint() -> None:

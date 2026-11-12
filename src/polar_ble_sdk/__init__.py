@@ -1,7 +1,7 @@
-"""Polar BLE Python SDK package.
+"""Polar BLE Python SDK package (unofficial; not affiliated with Polar Electro Oy).
 
 An open-source Python SDK for connecting, monitoring, and capturing raw physiological
-and IMU data from Polar BLE devices (H10, Verity Sense, Vantage/Grit watches).
+and IMU data from Polar BLE devices (H10, Verity Sense; watches are experimental).
 
 Research helpers (``polar_ble_sdk.research``) need the optional research extras
 (pandas, numpy, scipy, matplotlib) and are imported from that subpackage directly.
@@ -26,7 +26,11 @@ from polar_ble_sdk.session.session import (
     DeviceMetadata,
     SessionManager,
     SessionMetadata,
+    _sdk_version,
 )
+
+# From the installed package metadata, so pyproject.toml stays the one source.
+__version__ = _sdk_version()
 
 _LAZY_RESEARCH_SYMBOLS = {
     "load_session": "polar_ble_sdk.research.loader",
@@ -54,6 +58,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "__version__",
     # Discovery & Connection
     "discover_polar_device",
     "discover_dual_polar_devices",

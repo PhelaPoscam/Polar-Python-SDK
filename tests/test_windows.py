@@ -69,20 +69,22 @@ def _write_session(root: Path) -> list[float]:
         i += n
     (sense / "ppg.csv").write_text("\n".join(rows), encoding="utf-8")
 
-    # Sense acc.csv: still, then arm movement
+    # Sense acc.csv: still, then arm movement. Like the frame logger, one row
+    # per sample, every row of a 36-sample frame stamped with its last sample.
     ta = np.arange(0, DURATION_S, 1 / 52)
     moving = (ta >= MOTION_S[0]) & (ta < MOTION_S[1])
     z = 1000 + np.where(moving, 300 * np.sin(2 * np.pi * 0.8 * ta), 0)
-    acc = ["Timestamp_s,X_mG,Y_mG,Z_mG"] + [
-        f"{a:.4f},0,0,{v:.1f}" for a, v in zip(ta, z, strict=True)
-    ]
+    acc, acc_first = ["Timestamp_s,X_mG,Y_mG,Z_mG"], ta[35]
+    for i in range(0, len(ta), 36):
+        stamp = ta[min(i + 35, len(ta) - 1)] - acc_first
+        acc += [f"{stamp:.3f},0,0,{v:.1f}" for v in z[i : i + 36]]
     (sense / "acc.csv").write_text("\n".join(acc), encoding="utf-8")
 
     meta = {
         "clock_zero_points": {
             "h10_hr_host_epoch_ns": BASE_NS + int(first_notif * 1e9),
             "sense_ppg_host_epoch_ns": BASE_NS + int(first_last * 1e9),
-            "sense_acc_host_epoch_ns": BASE_NS,
+            "sense_acc_host_epoch_ns": BASE_NS + int(acc_first * 1e9),
         }
     }
     (root / "session_meta.json").write_text(json.dumps(meta), encoding="utf-8")
@@ -108,6 +110,18 @@ def test_windows_recover_truth_and_flag_motion(tmp_path: Path) -> None:
     moving = w[w["artifact"]]
     assert len(moving) == 1
     assert "motion" in moving["artifact_reason"].iloc[0]
+
+
+def test_missing_accelerometer_never_flags_motion(tmp_path: Path, caplog) -> None:
+    """No Sense ACC: motion is unknown, so no window is flagged for it."""
+    _write_session(tmp_path)
+    (tmp_path / "sense" / "raw" / "acc.csv").unlink()
+    with caplog.at_level("WARNING"):
+        w = build_windows(tmp_path, window_s=60)
+    assert len(w) == 3
+    assert w["motion_frac"].isna().all()
+    assert not w["artifact"].any()
+    assert "accelerometer" in caplog.text
 
 
 def test_ppi_from_older_sessions_is_shifted_to_beat_time(tmp_path: Path) -> None:

@@ -12,12 +12,14 @@ windows (default 60 s).
   recorded, the Sense's own PPI stream (``sense/raw/ppi.csv``).
 - Artifacts: flagged from the Sense's own data only (accelerometer motion, PPG
   signal quality and coverage, skin contact), never from the reference, so
-  excluding them cannot bias agreement towards the reference.
+  excluding them cannot bias agreement towards the reference. Missing
+  accelerometer or skin-contact data never flags a window (a warning is logged).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,7 @@ from polar_ble_sdk._pmd.constants import H10_RR_DELAY_S
 from polar_ble_sdk.metrics.hrv import calculate_rmssd, rr_valid_mask
 from polar_ble_sdk.research.loader import (
     _parse_wide_ppg_csv,
+    _read_stream_csv,
     host_zero,
     ppi_delay_to_remove,
 )
@@ -41,7 +44,10 @@ from polar_ble_sdk.research.ppg import (
     split_segments,
 )
 
+logger = logging.getLogger(__name__)
+
 WINDOW_S = 60
+LONG_WINDOW_S = 300  # Task Force minimum for LF power (``*_5m`` features)
 # Per-second SD of the Sense |acc|. Seated rest measured <= 5 mG, arm
 # movement >= 50 mG (session 20260923_115103); 20 mG sits between them.
 MOTION_SD_MG = 20.0
@@ -198,10 +204,9 @@ def load_motion(
     path, anchor = stream_source(session_dir, meta, device, "acc")
     if not path.exists() or anchor is None:
         return _EMPTY_SERIES.copy()
-    acc = pd.read_csv(path)
-    mag = (acc["X_mG"] ** 2 + acc["Y_mG"] ** 2 + acc["Z_mG"] ** 2) ** 0.5
+    acc = _read_stream_csv(path, "acc")  # per-sample times and ACC_Mag_mG
     t = _to_host(anchor, acc["Timestamp_s"])
-    return mag.groupby(t.floor("1s")).std()
+    return acc["ACC_Mag_mG"].groupby(t.floor("1s")).std()
 
 
 def _interval_stats(seq: list[float | None], window_s: float) -> dict[str, float]:
@@ -251,6 +256,10 @@ def build_windows(session_dir: Path | str, window_s: int = WINDOW_S) -> pd.DataF
     tests = [b["t"] for b in ppg.values()] + ([ppi["t"]] if len(ppi) else [])
     if ref.empty or not tests:
         return pd.DataFrame()
+    if motion.empty:
+        logger.warning("No Sense accelerometer data: windows not checked for motion.")
+    if len(ppi) and ppi["contact"].isna().all():
+        logger.warning("No Sense skin-contact data: PPI windows not checked for it.")
     start = max(ref["t"].min(), *(t.min() for t in tests)).ceil("1s")
     end = min(ref["t"].max(), *(t.max() for t in tests))
     markers = [
@@ -297,8 +306,10 @@ def build_windows(session_dir: Path | str, window_s: int = WINDOW_S) -> pd.DataF
         row["motion_frac"] = (
             float((m > MOTION_SD_MG).mean()) if len(m) else float("nan")
         )
+        # NaN (no accelerometer data) compares False: missing data never flags.
+        moving = bool(row["motion_frac"] > MOTION_MAX_FRAC)
         reasons = []
-        if not row["motion_frac"] <= MOTION_MAX_FRAC:
+        if moving:
             reasons.append("motion")
         if not row.get("ppg_sqi", np.nan) >= SQI_MIN:
             reasons.append("low_sqi")
@@ -322,7 +333,7 @@ def build_windows(session_dir: Path | str, window_s: int = WINDOW_S) -> pd.DataF
                 float((contact == 1).mean()) if len(contact) else float("nan")
             )
             row["ppi_artifact"] = bool(
-                not row["motion_frac"] <= MOTION_MAX_FRAC
+                moving
                 or not p["coverage"] >= MIN_COVERAGE
                 or row["contact_frac"] < MIN_CONTACT_FRAC
             )

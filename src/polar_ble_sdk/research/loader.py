@@ -183,7 +183,18 @@ def _read_stream_csv(csv_path: Path, stream: str | None = None) -> pd.DataFrame:
 
     df = pd.read_csv(csv_path)
     if "Timestamp_s" in df.columns:
-        df["Timestamp_s"] = pd.to_numeric(df["Timestamp_s"], errors="coerce")
+        ts = pd.to_numeric(df["Timestamp_s"], errors="coerce")
+        if stream_name in {"acc", "gyro", "mag"}:
+            # One row per sample, every row of a frame stamped with the frame's
+            # (last sample's) time: spread each run of equal stamps like ECG/PPG.
+            g = ts.groupby((ts != ts.shift()).cumsum(), sort=False)
+            sizes = g.size().tolist()
+            # nominal rate only matters for a file holding a single frame
+            ts = pd.Series(
+                _sample_times(g.first().tolist(), [[0] * n for n in sizes], 52.0),
+                index=df.index,
+            )
+        df["Timestamp_s"] = ts
     # Vector magnitude for 3-axis streams
     if {"X_mG", "Y_mG", "Z_mG"}.issubset(df.columns):
         df["ACC_Mag_mG"] = (df["X_mG"] ** 2 + df["Y_mG"] ** 2 + df["Z_mG"] ** 2) ** 0.5

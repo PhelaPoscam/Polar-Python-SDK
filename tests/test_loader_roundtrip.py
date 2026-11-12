@@ -80,6 +80,24 @@ class TestWideFrameLoaderRoundtrip:
         assert "ECG_uV" in df.columns
 
 
+def test_acc_rows_sharing_a_frame_stamp_are_spread(tmp_path):
+    """The logger stamps every ACC row of a frame with its last sample's time."""
+    lines = ["Timestamp_s,X_mG,Y_mG,Z_mG"]
+    for stamp in (0.06, 0.14, 0.22):  # 4 samples per frame at 50 Hz
+        lines += [f"{stamp:.3f},0,0,1000"] * 4
+    (tmp_path / "acc.csv").write_text("\n".join(lines), encoding="utf-8")
+    t = load_raw_stream(tmp_path, "acc")["Timestamp_s"].to_numpy()
+    assert t == pytest.approx(np.arange(12) * 0.02)
+
+    # Rows that already carry their own time are left alone.
+    (tmp_path / "gyro.csv").write_text(
+        "Timestamp_s,X_dps,Y_dps,Z_dps\n0.0,0,0,1\n0.019,0,0,1\n0.041,0,0,1\n",
+        encoding="utf-8",
+    )
+    t = load_raw_stream(tmp_path, "gyro")["Timestamp_s"].to_numpy()
+    assert t == pytest.approx([0.0, 0.019, 0.041])
+
+
 def test_variable_size_ppg_frames_keep_true_sample_rate(tmp_path):
     """Delta-compressed PPG frames vary in size; spacing must follow each frame."""
     from polar_ble_sdk.research.loader import _parse_wide_ppg_csv

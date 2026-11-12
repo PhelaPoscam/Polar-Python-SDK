@@ -30,7 +30,7 @@ from .cli_common import (
 from .connector.adapter import PolarAdapter
 from .connector.ble_discovery import discover_dual_polar_devices
 from .diagnostics.battery import read_battery, update_battery_loop
-from .diagnostics.rssi import FrameCountLogger, rssi_loop
+from .diagnostics.frame_counts import FrameCountLogger
 from .input.keyboard import NonBlockingKeyboardReader, parse_marker_specs
 from .lsl.bridge import HAS_PYLSL, PolarLSLBridge
 from .metrics.hrv import calculate_rmssd
@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def main(argv: Sequence[str] | None = None) -> None:
+async def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -232,7 +232,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
             if not dev
         ]
         print(f"Error: Missing devices: {', '.join(missing)}")
-        return
+        return 1
 
     # Created only once both devices are found, so a failed scan leaves no
     # empty session folder behind.
@@ -380,6 +380,23 @@ async def main(argv: Sequence[str] | None = None) -> None:
     )
     adapter.h10.dev = h10_dev
     adapter.sense.dev = sense_dev
+    # Shared lists: the manifest lists every start's failed streams.
+    session_mgr.metadata.devices["h10"].stream_errors = adapter.h10.stream_error_log
+    session_mgr.metadata.devices["sense"].stream_errors = adapter.sense.stream_error_log
+
+    def on_write_error(key: str, msg: str) -> None:
+        dev_label = "H10" if key.startswith("h10") else "Sense"
+        log_event(
+            log_panel,
+            f"Writing raw {key}.csv failed; its data is being lost: {msg}",
+            "error",
+            device=dev_label,
+            log_file=session_mgr.log_file,
+        )
+        state = state_h10 if dev_label == "H10" else state_sense
+        state["status"] = f"DISK WRITE FAILED ({key}): {msg}"
+
+    session_mgr.on_write_error = on_write_error
 
     h10_frame_counter = FrameCountLogger(
         log_panel, device="H10", log_file=session_mgr.log_file
@@ -466,6 +483,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         h10_frame_counter.check(state_h10, h10_streams)
         sense_frame_counter.check(state_sense, sense_streams)
 
+    exit_code = 0
     try:
         log_event(
             log_panel,
@@ -484,7 +502,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
                 "error",
                 log_file=session_mgr.log_file,
             )
-            return
+            return 1
+        # --duration counts recording time, not the connection setup.
+        start = time.time()
 
         if h10_ok:
             state_h10["status"] = "Connected! Streaming."
@@ -495,11 +515,21 @@ async def main(argv: Sequence[str] | None = None) -> None:
                 else "Connected! Streaming (SDK Mode: 135Hz PPG, HR disabled)."
             )
 
-        for label, proxy, state in (
-            ("H10", adapter.h10, state_h10),
-            ("Sense", adapter.sense, state_sense),
+        for label, link, state, ok in (
+            ("H10", adapter.h10, state_h10, h10_ok),
+            ("Sense", adapter.sense, state_sense, sense_ok),
         ):
-            state["battery"] = await read_battery(proxy)
+            if ok and link.stream_errors:
+                failed = ", ".join(link.stream_errors)
+                state["status"] = f"Connected. Failed: {failed}"
+                log_event(
+                    log_panel,
+                    f"Streams failed: {failed}",
+                    "warning",
+                    device=label,
+                    log_file=session_mgr.log_file,
+                )
+            state["battery"] = await read_battery(link)
             log_event(
                 log_panel,
                 f"{label} battery: {state['battery']}",
@@ -508,14 +538,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
                 log_file=session_mgr.log_file,
             )
             background_tasks.append(
-                asyncio.create_task(update_battery_loop(proxy, state))
-            )
-            background_tasks.append(
-                asyncio.create_task(
-                    rssi_loop(
-                        proxy, log_panel, device=label, log_file=session_mgr.log_file
-                    )
-                )
+                asyncio.create_task(update_battery_loop(link, state))
             )
 
         with Live(build(), refresh_per_second=10) as live:
@@ -535,6 +558,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
     except asyncio.CancelledError:
         pass
     except Exception as e:
+        exit_code = 1
         log_event(log_panel, f"Error: {e}", "error", log_file=session_mgr.log_file)
     finally:
         for task in background_tasks:
@@ -566,6 +590,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         for state in (state_h10, state_sense):
             state["status"] = "Disconnected."
             reset_device_state_on_disconnect(state)
+    return exit_code
 
 
 def _entrypoint() -> None:

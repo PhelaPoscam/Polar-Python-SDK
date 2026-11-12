@@ -152,20 +152,27 @@ def save_on_console_close(save: Callable[[], None]) -> None:
     ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, True)
 
 
-def run_cli(main: Callable[[], Coroutine[Any, Any, None]]) -> None:
-    """Console entry point: Ctrl+C, SIGTERM and SIGHUP all shut down cleanly."""
+def run_cli(main: Callable[[], Coroutine[Any, Any, int]]) -> None:
+    """Console entry point: Ctrl+C, SIGTERM and SIGHUP all shut down cleanly.
 
-    async def runner() -> None:
+    Exits with ``main``'s return code, so scripts can tell a failed run (no
+    device, nothing streamed) from a recording; stopping with Ctrl+C is 0.
+    """
+
+    async def runner() -> int:
         task = asyncio.current_task()
         loop = asyncio.get_running_loop()
         if task is not None and sys.platform != "win32":
             for sig in (signal.SIGTERM, signal.SIGHUP):
                 with contextlib.suppress(NotImplementedError, RuntimeError):
                     loop.add_signal_handler(sig, task.cancel)
-        await main()
+        return await main()
 
+    code = 0
     with contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError):
-        asyncio.run(runner())
+        code = asyncio.run(runner())
+    if code:
+        sys.exit(code)
 
 
 def stream_setting_kwargs(

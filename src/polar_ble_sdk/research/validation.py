@@ -27,6 +27,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .windows import LONG_WINDOW_S
+
 N_BOOT = 2000
 
 
@@ -332,6 +334,30 @@ COMPARISONS: tuple[tuple[str, str, str, str | None, bool], ...] = (
 )
 
 
+def comparison_rows(rows: pd.DataFrame, ref_col: str, test_col: str) -> pd.DataFrame:
+    """Rows to pair for one comparison.
+
+    A 5-minute feature (``*_5m``) comes from a 300 s span around each window,
+    so neighbouring rows share most of their beats and are not independent.
+    For those only rows whose spans (``start_5m``, else ``start``) don't overlap
+    are kept, picked in time order, separately per ``session`` when the frame
+    has that column (pooled analyses). Other comparisons keep every row.
+    """
+    if not ref_col.endswith("_5m"):
+        return rows
+    rows = rows.dropna(subset=[ref_col, test_col])
+    span = rows["start_5m"] if "start_5m" in rows else rows["start"]
+    session = rows["session"] if "session" in rows else pd.Series(0, rows.index)
+    long = pd.Timedelta(LONG_WINDOW_S, "s")
+    free: dict[Any, Any] = {}  # session -> end of its last kept span
+    keep = []
+    for i, s, t in zip(rows.index, session, pd.to_datetime(span), strict=True):
+        if s not in free or t >= free[s]:
+            keep.append(i)
+            free[s] = t + long
+    return rows.loc[keep]
+
+
 def validate_windows(
     windows: pd.DataFrame, n_boot: int = N_BOOT
 ) -> list[dict[str, Any]]:
@@ -339,25 +365,27 @@ def validate_windows(
 
     Windows whose *reference* is incomplete (``ref_ok`` False) are dropped from
     both, since that criterion never looks at the test device. ``all`` is the
-    primary result; ``clean`` is the sensitivity analysis.
+    primary result; ``clean`` is the sensitivity analysis. 5-minute features
+    use only windows whose 300 s spans don't overlap (:func:`comparison_rows`).
     """
     if windows.empty:
         return []
     ok = windows[windows["ref_ok"]] if "ref_ok" in windows else windows
     results = []
     for label, ref_col, test_col, art_col, log_ratio in COMPARISONS:
-        if test_col not in ok or ok[test_col].notna().sum() < 3:
+        if ref_col not in ok or test_col not in ok or ok[test_col].notna().sum() < 3:
             continue
+        rows = comparison_rows(ok, ref_col, test_col)
         res: dict[str, Any] = {
             "label": label,
             "n_windows": len(windows),
             "n_ref_ok": len(ok),
             "all": agreement(
-                ok[ref_col], ok[test_col], log_ratio=log_ratio, n_boot=n_boot
+                rows[ref_col], rows[test_col], log_ratio=log_ratio, n_boot=n_boot
             ),
         }
         if art_col and art_col in ok:
-            clean = ok[~ok[art_col].astype(bool)]
+            clean = comparison_rows(ok[~ok[art_col].astype(bool)], ref_col, test_col)
             res["n_artifact"] = int(ok[art_col].astype(bool).sum())
             res["clean"] = agreement(
                 clean[ref_col], clean[test_col], log_ratio=log_ratio, n_boot=n_boot

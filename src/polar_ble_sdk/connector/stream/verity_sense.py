@@ -1,4 +1,3 @@
-import contextlib
 import traceback
 from collections.abc import Callable
 
@@ -53,20 +52,26 @@ class PolarVeritySense(BasePolarDevice):
         want_sdk = custom.get("sdk_mode", self.ppi_callback is None)
         if want_sdk:
             try:
-                # Enable unconditionally (idempotent); the status pre-check can
-                # fail if the response format differs, so don't gate on it.
+                # Enable unconditionally ("already in state" counts as success);
+                # the status pre-check can fail if the response format differs.
                 await self.polar_device.enable_sdk_mode()
                 self._sdk_mode_enabled = True
-                self._log("[DEBUG] SDK mode enabled")
+                self._emit("SDK mode enabled")
             except Exception as e:
-                self._log(f"[DEBUG] SDK mode enable failed: {e}")
+                # Watches, old firmware and a device on its charger refuse it.
+                self._sdk_mode_enabled = False
+                self._ppg_default_rate = 55
+                self.stream_errors["SDK mode"] = f"{type(e).__name__}: {e}"
+                self._emit(
+                    f"SDK mode not enabled ({e}); PPG falls back to 55 Hz", "warning"
+                )
         else:
             try:
                 await self.polar_device.disable_sdk_mode()
-                self._sdk_mode_enabled = False
                 self._log("[DEBUG] SDK mode disabled")
             except Exception as e:
                 self._log(f"[DEBUG] SDK mode disable failed: {e}")
+            self._sdk_mode_enabled = False
             self._ppg_default_rate = 55
 
         # 1. Start standard Heart Rate stream
@@ -75,11 +80,9 @@ class PolarVeritySense(BasePolarDevice):
                 await self.polar_device.start_hr_stream(self._hr_handler)
                 self._log("[DEBUG] HR stream started OK")
             except Exception as e:
-                self._log(f"[DEBUG] HR stream failed: {e}")
                 if self._strict_hr:
                     raise
-                if self.verbose:
-                    traceback.print_exc()
+                self._stream_failed("HR", f"{type(e).__name__}: {e}")
 
         # 3. Start PPG stream
         await self._start_pmd_stream(
@@ -103,18 +106,16 @@ class PolarVeritySense(BasePolarDevice):
             "ACC",
         )
 
-        # 5. Start PPI stream
-        if self.ppi_callback and PmdMeasurementType.PPI in features:
-            try:
+        # 5. Start PPI stream (no settings to negotiate, so not _start_pmd_stream)
+        if self.ppi_callback:
+            if PmdMeasurementType.PPI not in features:
+                self._not_advertised("PPI")
+            elif await self._start_with_retry(
+                "PPI", lambda: self.polar_device.start_ppi_stream(self._ppi_handler)
+            ):
                 self._ppi_active = True
-                await self.polar_device.start_ppi_stream(self._ppi_handler)
                 self._active_streams.add(PmdMeasurementType.PPI)
-                self._log("[DEBUG] PPI stream started OK")
-            except Exception:
-                self._ppi_active = False
-                self._log("[DEBUG] PPI stream failed:")
-                if self.verbose:
-                    traceback.print_exc()
+                self._emit("PPI stream started", "success")
 
         # 6. Start Gyro stream
         await self._start_pmd_stream(
@@ -161,7 +162,8 @@ class PolarVeritySense(BasePolarDevice):
                 )
             ):
                 raise e
-            self._log("[DEBUG] get_available_features() failed:")
+            # Every PMD stream will then be reported as not advertised.
+            self._emit(f"Could not read PMD features: {e}", "error")
             if self.verbose:
                 traceback.print_exc()
             return []
@@ -171,11 +173,9 @@ class PolarVeritySense(BasePolarDevice):
         await super().stop_notify()
 
     def _hr_handler(self, hr_data) -> None:
-        if self.callback:
-            if hr_data.heartrate == 0:
-                return
-            with contextlib.suppress(Exception):
-                self.callback((hr_data.heartrate, hr_data.rr_intervals))
+        if hr_data.heartrate == 0:
+            return
+        self._forward("HR", self.callback, (hr_data.heartrate, hr_data.rr_intervals))
 
     def _ppi_handler(self, ppi_data) -> None:
         ppi_vals = []
@@ -193,29 +193,21 @@ class PolarVeritySense(BasePolarDevice):
                     s.invalid_ppi,
                 )
             )
-        if self.ppi_callback and ppi_vals:
-            with contextlib.suppress(Exception):
-                self.ppi_callback(ppi_vals)
-
-    def _forward(self, callback, frame, samples) -> None:
-        """Hand one parsed frame to a user callback without letting it kill the stream."""
-        if not callback:
-            return
-        try:
-            callback((frame.timestamp, samples))
-        except Exception:
-            traceback.print_exc()
+        if ppi_vals:
+            self._forward("PPI", self.ppi_callback, ppi_vals)
 
     def _ppg_handler(self, ppg_data) -> None:
-        self._forward(self.ppg_callback, ppg_data, ppg_data.samples)
+        self._forward("PPG", self.ppg_callback, (ppg_data.timestamp, ppg_data.samples))
 
     def _acc_handler(self, acc_data) -> None:
-        self._forward(self.acc_callback, acc_data, acc_data.data)
+        self._forward("ACC", self.acc_callback, (acc_data.timestamp, acc_data.data))
 
     def _gyro_handler(self, gyro_data) -> None:
-        self._forward(self.gyro_callback, gyro_data, gyro_data.data)
+        self._forward("GYRO", self.gyro_callback, (gyro_data.timestamp, gyro_data.data))
 
     def _mag_handler(self, mag_data) -> None:
         self._forward(
-            self.mag_callback, mag_data, [(s.x, s.y, s.z) for s in mag_data.data]
+            "MAG",
+            self.mag_callback,
+            (mag_data.timestamp, [(s.x, s.y, s.z) for s in mag_data.data]),
         )

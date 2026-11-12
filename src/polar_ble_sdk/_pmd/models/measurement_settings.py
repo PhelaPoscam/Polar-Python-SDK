@@ -55,7 +55,6 @@ class MeasurementSettings:
         """Parse PMD data from a bytearray (Response from device)."""
         if len(data) < 4:
             raise ControlPointResponseError(f"Control-point reply too short: {data!r}")
-        more_frames = len(data) > 4 and data[4] != 0
         try:
             measurement_type = PmdMeasurementType(data[2])
             error_code = PmdControlPointErrorCode(data[3])
@@ -63,6 +62,13 @@ class MeasurementSettings:
             raise ControlPointResponseError(
                 f"Unknown control-point reply: {data!r}"
             ) from exc
+        # As in PmdControlPointResponse.kt, only a successful reply has a
+        # "more" flag; byte 4 of an error reply means nothing.
+        more_frames = (
+            error_code == PmdControlPointErrorCode.SUCCESS
+            and len(data) > 4
+            and data[4] != 0
+        )
 
         settings = []
         index = 5

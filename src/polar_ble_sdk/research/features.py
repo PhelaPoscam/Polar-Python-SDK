@@ -9,9 +9,11 @@ given its ``start`` column). Column prefixes name the source:
   At 130 Hz one sample is 7.7 ms, which bounds every interval's precision.
   ``ecg_st_*`` is informational only: a single filtered lead is not diagnostic.
 - ``rr_`` (H10 RR), ``ppi_`` (Sense PPI stream), ``ppgbeat_`` (beats found in
-  raw Sense PPG): HRV. Time domain and Poincaré on the window itself; spectral
-  power, sample entropy and DFA α1 (``*_5m``) on a 300 s window centred on it,
-  shifted to stay inside the recording, NaN when valid beats cover < 80 % of it.
+  raw Sense PPG): HRV. Time domain and Poincaré on the window itself; LF/HF
+  power, sample entropy and DFA α1 (``*_5m``) on a 300 s span centred on it,
+  shifted to stay inside the time every interval source covers (so all sources
+  use the same span, given in ``start_5m``), NaN when valid beats cover < 80 %
+  of it. No VLF power: 5 min is too short for it (Task Force 1996).
 - ``ppg_``: band-passed raw Sense PPG, best channel per window by spectral SQI.
 - ``h10_acc_``, ``sense_acc_``, ``sense_gyro_``: magnitude statistics.
 
@@ -22,6 +24,7 @@ accelerometer shows motion. Filtering on it is left to the analysis.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,7 @@ from polar_ble_sdk.metrics.hrv import (
 from polar_ble_sdk.research.loader import _parse_wide_ecg_csv, _read_stream_csv
 from polar_ble_sdk.research.ppg import estimate_fs, spectral_sqi, split_segments
 from polar_ble_sdk.research.windows import (
+    LONG_WINDOW_S,
     MIN_COVERAGE,
     MOTION_MAX_FRAC,
     MOTION_SD_MG,
@@ -59,8 +63,8 @@ from polar_ble_sdk.research.windows import (
     stream_source,
 )
 
-LONG_WINDOW_S = 300  # Task Force minimum for LF power
-VLF = (0.0033, 0.04)
+logger = logging.getLogger(__name__)
+
 LF = (0.04, 0.15)
 HF = (0.15, 0.4)
 PSD_FREQS = np.arange(0.0033, 0.5, 0.001)
@@ -105,7 +109,9 @@ class SessionSignals:
     intervals: dict[str, pd.DataFrame] = field(default_factory=dict)  # t, ms
     ppg: dict[str, Signal] = field(default_factory=dict)
     imu: dict[str, pd.Series] = field(default_factory=dict)  # magnitude by host time
-    h10_motion: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
+    h10_motion: pd.Series = field(
+        default_factory=lambda: pd.Series(dtype=float, index=pd.DatetimeIndex([]))
+    )
 
 
 # --- ECG ---------------------------------------------------------------------
@@ -314,7 +320,6 @@ def hrv_long(t_s: np.ndarray, seq: list[float | None]) -> dict[str, float]:
     lf, hf = _band(f, p, LF), _band(f, p, HF)
     # ponytail: entropy/DFA run on valid beats joined across gaps; fine while gaps are rare
     return {
-        "vlf_5m": _band(f, p, VLF),
         "lf_5m": lf,
         "hf_5m": hf,
         "lf_hf_5m": lf / hf if hf > 0 else np.nan,
@@ -472,6 +477,13 @@ def extract_features(
             return pd.DataFrame()
         starts = pd.Series(pd.date_range(span[0], span[1] - win, freq=win))
     long = pd.Timedelta(LONG_WINDOW_S, "s")
+    intervals = {src: d for src, d in sig.intervals.items() if len(d)}
+    # The time every interval source covers: reference and test 5 min spans
+    # then hold the same beats, also where a recording starts or ends.
+    lo = max((d["t"].min() for d in intervals.values()), default=None)
+    hi = min((d["t"].max() for d in intervals.values()), default=None)
+    if sig.h10_motion.empty and not sig.ecg_beats.empty:
+        logger.warning("No H10 accelerometer data: ECG windows not checked for motion.")
 
     rows = []
     for a in starts:
@@ -479,7 +491,8 @@ def extract_features(
         row: dict[str, Any] = {"start": a}
 
         m = sig.h10_motion[(sig.h10_motion.index >= a) & (sig.h10_motion.index < b)]
-        motion = float((m > MOTION_SD_MG).mean()) if len(m) else 0.0
+        # NaN (no accelerometer data) never flags a window.
+        motion = float((m > MOTION_SD_MG).mean()) if len(m) else float("nan")
         if not sig.ecg_beats.empty:
             in_win = ((sig.ecg_beats["t"] >= a) & (sig.ecg_beats["t"] < b)).to_numpy()
             row.update(
@@ -491,11 +504,12 @@ def extract_features(
             feats = signal_features(_longest_run(sig.ecg, a, b), sig.ecg.fs)
             row.update({f"ecg_{k}": v for k, v in feats.items()})
 
-        for src, d in sig.intervals.items():
+        if intervals:
+            a5 = min(max(a + win / 2 - long / 2, lo), max(hi - long, lo))
+            row["start_5m"] = a5
+        for src, d in intervals.items():
             w = d[(d["t"] >= a) & (d["t"] < b)]
             row.update({f"{src}_{k}": v for k, v in hrv_short(_seq(w["ms"])).items()})
-            lo, hi = d["t"].min(), d["t"].max()
-            a5 = min(max(a + win / 2 - long / 2, lo), max(hi - long, lo))
             w5 = d[(d["t"] >= a5) & (d["t"] < a5 + long)]
             t5 = (w5["t"] - a5).dt.total_seconds().to_numpy()
             row.update(

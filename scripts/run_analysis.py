@@ -8,16 +8,18 @@ Usage:
 Per session: fixed windows on the host clock, Verity Sense PPG/PPI against the
 H10 RR reference, metrics on all windows (primary) and artifact-free windows
 (sensitivity). ``--pool`` adds Bland-Altman (2007) repeated-measures limits
-across participants (``participant_id`` in session_meta.json, else session id).
+across participants (``participant_id`` in session_meta.json, else session id),
+written to ``pooled_report.md`` in the folder holding the sessions.
 ``--features`` writes ``post-processed/features.csv`` and ``ecg_beats.csv`` per
-session (``data/pooled_features.csv`` with ``--pool``), adds the feature
-comparisons to the validation and a feature section and figures to the report.
-Single-device sessions get features only.
+session (``pooled_features.csv`` next to ``pooled_report.md`` with ``--pool``),
+adds the feature comparisons to the validation and a feature section and
+figures to the report. Single-device sessions get features only.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -41,7 +43,10 @@ from polar_ble_sdk.research import (  # noqa: E402
     validate_windows,
     verify_session_integrity,
 )
-from polar_ble_sdk.research.validation import COMPARISONS  # noqa: E402
+from polar_ble_sdk.research.validation import (  # noqa: E402
+    COMPARISONS,
+    comparison_rows,
+)
 from polar_ble_sdk.research.windows import WINDOW_S  # noqa: E402
 
 
@@ -211,11 +216,12 @@ def _fmt(v: float, spec: str = ".2f") -> str:
 def _print_results(
     console: Console, results: list[dict], windows: pd.DataFrame, window_s: int
 ) -> None:
-    n_art = int(windows["artifact"].sum()) if "artifact" in windows else 0
+    ok = windows[windows["ref_ok"]]
+    n_art = int(ok["artifact"].sum()) if "artifact" in ok else 0
     console.print(
         f"[bold]{len(windows)} windows x {window_s} s[/bold], "
-        f"{int(windows['ref_ok'].sum())} with a complete reference, "
-        f"{n_art} Sense artifact windows\n"
+        f"{len(ok)} with a complete reference, "
+        f"{n_art} of those Sense artifact windows\n"
     )
     for key, title in (
         ("all", "Primary: all windows"),
@@ -282,9 +288,12 @@ def _pooled_analysis(
             console.print(f"[yellow]Skipping {path.name}: no usable windows[/yellow]")
             continue
         w["participant"] = participant
+        w["session"] = str(path)  # comparison_rows keeps 5 min spans per session
         frames.append(w)
+    # Outputs go to the folder holding the sessions (e.g. data/dual).
+    out_dir = Path(os.path.commonpath([p.parent for p in sessions]))
     if feature_frames:
-        out = PROJECT_ROOT / "data" / "pooled_features.csv"
+        out = out_dir / "pooled_features.csv"
         pd.concat(feature_frames, ignore_index=True).to_csv(out, index=False)
         console.print(f"Pooled features: [cyan]{out}[/cyan]\n")
     if not frames:
@@ -292,21 +301,31 @@ def _pooled_analysis(
             return
         console.print("[bold red]No usable sessions.[/bold red]")
         sys.exit(1)
-    all_w = pd.concat(frames, ignore_index=True)
-    all_w = all_w[all_w["ref_ok"]]
+    windows = pd.concat(frames, ignore_index=True)
+    all_w = windows[windows["ref_ok"]]
     pooled = []
     for label, ref_col, test_col, art_col, log_ratio in COMPARISONS:
-        if test_col not in all_w:
+        if ref_col not in all_w or test_col not in all_w:
             continue
         subsets = [("all", all_w)]
         if art_col and art_col in all_w:
             subsets.append(("clean", all_w[~all_w[art_col].astype(bool)]))
         for subset, rows in subsets:
             res = repeated_measures_agreement(
-                rows, "participant", ref_col, test_col, log_ratio=log_ratio
+                comparison_rows(rows, ref_col, test_col),
+                "participant",
+                ref_col,
+                test_col,
+                log_ratio=log_ratio,
             )
             res["label"] = f"{label} ({subset})"
             pooled.append(res)
+    names = ", ".join(sorted({Path(s).name for s in windows["session"]}))
+    report_path = out_dir / "pooled_report.md"
+    report_path.write_text(
+        generate_markdown_report([], f"pooled: {names}", windows, window_s, pooled),
+        encoding="utf-8",
+    )
 
     table = Table(title="Pooled over participants (Bland & Altman 2007)")
     for col in (
@@ -331,6 +350,7 @@ def _pooled_analysis(
             f"[{_fmt(p['loa_upper_ci_low'])}, {_fmt(p['loa_upper_ci_high'])}]",
         )
     console.print(table)
+    console.print(f"Pooled report: [cyan]{report_path}[/cyan]")
 
 
 if __name__ == "__main__":

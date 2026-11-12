@@ -125,9 +125,45 @@ def test_primary_result_keeps_artifact_windows() -> None:
     assert results["PPG RMSSD"]["all"]["log_ratio"]
 
 
+def test_missing_reference_column_skips_comparison() -> None:
+    """H10 never reaching 5 min coverage leaves rr_lf_5m absent: no KeyError."""
+    w = _windows().assign(ppi_lf_5m=500.0)
+    labels = {r["label"] for r in validate_windows(w, n_boot=50)}
+    assert "PPG HR (beats)" in labels
+    assert not any("LF power" in label for label in labels)
+
+
+def test_five_minute_features_use_non_overlapping_spans() -> None:
+    """15 rows of 60 s hold 3 independent 300 s spans, whatever the clamping."""
+    n = 15
+    start = pd.date_range("2026-01-01", periods=n, freq="60s")
+    lo, hi = start[0], start[-1] + pd.Timedelta(60, "s")
+    long = pd.Timedelta(300, "s")
+    # centred spans shifted inside the recording, as research.features does
+    span = [min(max(a - pd.Timedelta(120, "s"), lo), hi - long) for a in start]
+    rng = np.random.default_rng(3)
+    lf = rng.uniform(300, 900, n)
+    w = pd.DataFrame(
+        {
+            "start": start,
+            "start_5m": span,
+            "ref_ok": True,
+            "ref_hr": lf / 10,
+            "ppi_hr": lf / 10 + 1,
+            "rr_lf_5m": lf,
+            "ppi_lf_5m": lf * 1.1,
+        }
+    )
+    results = {r["label"]: r for r in validate_windows(w, n_boot=50)}
+    assert results["Sense PPI LF power (5 min)"]["all"]["n"] == 3
+    assert results["Sense PPI HR"]["all"]["n"] == n  # 60 s features keep every row
+
+
 def test_markdown_report_has_primary_and_sensitivity() -> None:
     w = _windows()
     md = generate_markdown_report(validate_windows(w, n_boot=100), "s1", w, 60)
     assert "Primary: all windows" in md
     assert "Sensitivity: artifact windows excluded" in md
     assert "PPG HR (beats)" in md
+    assert "**Artifact windows**: 2 of 9" in md
+    assert "skin contact" not in md.split("Sense PPI comparisons")[0]

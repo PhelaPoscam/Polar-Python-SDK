@@ -1,12 +1,13 @@
 """High-frequency, full-resolution per-stream raw CSV logging.
 
-Records each individual sensor packet delivered by Polar PMD or Heart Rate characteristics
-with millisecond-accurate timestamps relative to the first received frame.
+Records each sensor packet delivered by the Polar PMD or Heart Rate
+characteristics, timestamped relative to the first received frame. Every row of
+a frame carries that frame's device timestamp, which marks its *last* sample;
+``research.loader`` spreads the samples of a frame over the frame interval.
 """
 
 from __future__ import annotations
 
-import contextlib
 import csv
 import logging
 import time
@@ -52,9 +53,22 @@ class StreamFrameLogger:
 
     _WIDE_COLUMNS: ClassVar[set[str]] = {"ecg", "ppg"}
 
-    def __init__(self, path: Path | str, stream: str) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        stream: str,
+        *,
+        on_error: Callable[[str], None] | None = None,
+        on_first_frame: Callable[[], None] | None = None,
+    ) -> None:
+        """``on_error`` is told about the first failed write (later ones are only
+        counted in ``write_errors``); ``on_first_frame`` runs once the clock
+        anchors of the first frame are set."""
         self._path = Path(path)
         self._stream = stream.lower()
+        self._on_error = on_error
+        self._on_first_frame = on_first_frame
+        self.write_errors = 0
         self._writer: Any = None
         self._file: Any = None
         self._first_ts_ns: int | None = None
@@ -87,22 +101,27 @@ class StreamFrameLogger:
         if self._first_ts_ns is None:
             self._first_ts_ns = timestamp_ns
             self.first_host_ns = time.time_ns()
+            self._first_frame()
 
         rel_s = (timestamp_ns - self._first_ts_ns) / 1e9
 
-        if self._stream == "hr":
-            hr_val, rr_list = data
-            rr_str = ";".join(f"{rr:.1f}" for rr in rr_list) if rr_list else ""
-            self._writer.writerow([f"{rel_s:.3f}", hr_val, rr_str])
-            self.samples_written += 1
-        elif self._stream in self._WIDE_COLUMNS:
-            self._writer.writerow([f"{rel_s:.3f}", *data])
-            self.samples_written += len(data)
-        else:
-            for sample in data:
-                self._writer.writerow([f"{rel_s:.3f}", *sample])
+        try:
+            if self._stream == "hr":
+                hr_val, rr_list = data
+                rr_str = ";".join(f"{rr:.1f}" for rr in rr_list) if rr_list else ""
+                self._writer.writerow([f"{rel_s:.3f}", hr_val, rr_str])
                 self.samples_written += 1
-        self._maybe_flush(100)
+            elif self._stream in self._WIDE_COLUMNS:
+                self._writer.writerow([f"{rel_s:.3f}", *data])
+                self.samples_written += len(data)
+            else:
+                for sample in data:
+                    self._writer.writerow([f"{rel_s:.3f}", *sample])
+                    self.samples_written += 1
+        except OSError as exc:
+            self._failed(exc)
+        # HR rows arrive about once a second: flush them sooner.
+        self._maybe_flush(10 if self._stream == "hr" else 100)
 
     def write_ppi_frames(self, data: list[Any]) -> None:
         """Write a batch of PPI samples with quality and skin-contact flags.
@@ -128,6 +147,7 @@ class StreamFrameLogger:
             self._ppi_cumulative_s = -(self.beat_delay_s or 0.0) - sum(
                 float(s[1]) / 1000.0 for s in data if len(s) > 1 and s[1]
             )
+            self._first_frame()
         elif self._first_ts_ns is None:
             # Beats lost in an outage/reconnect never reach the cumulative clock;
             # re-anchor to the host so later beats are not shifted early. The jump
@@ -165,20 +185,38 @@ class StreamFrameLogger:
                 ppi = sample[1] if len(sample) > 1 else None
                 err_est = hr = contact = contact_sup = invalid = None
 
-            self._writer.writerow(
-                [
-                    f"{round(rel_s, 6) + 0.0:.3f}",  # no "-0.000"
-                    ppi,
-                    "" if err_est is None else err_est,
-                    "" if hr is None else hr,
-                    "" if contact is None else int(bool(contact)),
-                    "" if contact_sup is None else int(bool(contact_sup)),
-                    "" if invalid is None else int(bool(invalid)),
-                ]
-            )
+            try:
+                self._writer.writerow(
+                    [
+                        f"{round(rel_s, 6) + 0.0:.3f}",  # no "-0.000"
+                        ppi,
+                        "" if err_est is None else err_est,
+                        "" if hr is None else hr,
+                        "" if contact is None else int(bool(contact)),
+                        "" if contact_sup is None else int(bool(contact_sup)),
+                        "" if invalid is None else int(bool(invalid)),
+                    ]
+                )
+            except OSError as exc:
+                self._failed(exc)
             self.samples_written += 1
 
-        self._maybe_flush(50)
+        self._maybe_flush(10)
+
+    def _first_frame(self) -> None:
+        if self._on_first_frame:
+            try:
+                self._on_first_frame()
+            except Exception:
+                logger.exception("First-frame hook failed for %s", self._path)
+
+    def _failed(self, exc: OSError) -> None:
+        """Count a failed write; report the first so data loss is never silent."""
+        self.write_errors += 1
+        if self.write_errors == 1:
+            logger.error("Writing %s failed: %s", self._path, exc)
+            if self._on_error:
+                self._on_error(f"{type(exc).__name__}: {exc}")
 
     def _maybe_flush(self, every: int) -> None:
         # Frames add many samples at once, so a modulo check would rarely hit.
@@ -189,8 +227,10 @@ class StreamFrameLogger:
     def flush(self) -> None:
         """Flush unwritten buffer to disk."""
         if self._file:
-            with contextlib.suppress(OSError):
+            try:
                 self._file.flush()
+            except OSError as exc:
+                self._failed(exc)
 
     def close(self) -> None:
         """Flush and close the underlying file handle."""
@@ -198,8 +238,8 @@ class StreamFrameLogger:
             try:
                 self._file.flush()
                 self._file.close()
-            except OSError as e:
-                logger.warning("Error closing frame log file %s: %s", self._path, e)
+            except OSError as exc:
+                self._failed(exc)
             finally:
                 self._file = None
                 self._writer = None

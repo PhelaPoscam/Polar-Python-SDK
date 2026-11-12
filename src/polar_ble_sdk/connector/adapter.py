@@ -10,6 +10,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from bleak.exc import BleakDeviceNotFoundError
+
 from .ble_discovery import discover_dual_polar_devices, discover_polar_device
 from .stream import PolarH10, PolarVeritySense
 from .stream.base import DISCONNECT_INFO, DisconnectReason, looks_like_bond_break
@@ -20,6 +22,9 @@ logger = logging.getLogger("polar_adapter")
 # (e.g. while it re-locks after motion), so they get a longer freeze budget.
 SLOW_STREAMS = frozenset({"hr", "ppi"})
 SLOW_STREAM_FACTOR = 3.0
+# The Sense stops sending PPI while the wearer moves. A silent PPI stream is
+# reported, but tearing down the link for it would cost PPG/ACC/HR data.
+WARN_ONLY_STREAMS = frozenset({"ppi"})
 
 
 @dataclass
@@ -46,7 +51,12 @@ class _Link:
     # (e.g. PPG) is caught even while others (ACC) keep flowing.
     last_packet: dict[str, float] = field(default_factory=dict)
     frozen_streams: list[str] = field(default_factory=list)
+    # Warn-only streams already reported silent; cleared when they deliver.
+    warned_streams: set[str] = field(default_factory=set)
     last_error: str = ""
+    # Failed streams of every (re)start this session, for session_meta.json:
+    # ``stream_errors`` only holds the current connection's.
+    stream_error_log: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def polar_device(self) -> Any:
@@ -72,6 +82,7 @@ class _Link:
             now = time.monotonic()
             self.last_packet_time = now
             self.last_packet[stream] = now
+            self.warned_streams.discard(stream)
             cb(data)
 
         return wrapped
@@ -80,6 +91,14 @@ class _Link:
         self.last_packet_time = time.monotonic()
         self.last_packet.clear()
         self.frozen_streams = []
+        self.warned_streams.clear()
+        if self.stream_errors:
+            self.stream_error_log.append(
+                {
+                    "time_epoch_s": round(time.time(), 3),
+                    "errors": dict(self.stream_errors),
+                }
+            )
 
     def build(self) -> None:
         """(Re)create the connector for this link from the current callbacks."""
@@ -106,7 +125,16 @@ class _Link:
             if now - t
             > freeze_timeout * (SLOW_STREAM_FACTOR if stream in SLOW_STREAMS else 1.0)
         ]
-        return DisconnectReason.STREAM_FROZEN if self.frozen_streams else None
+        if any(s not in WARN_ONLY_STREAMS for s in self.frozen_streams):
+            return DisconnectReason.STREAM_FROZEN
+        return None
+
+    def log(self, msg: str, severity: str = "warning") -> None:
+        """Event-log line for this device that leaves its status line alone."""
+        logger.warning("Polar %s: %s", self.label, msg)
+        log_cb = self.kwargs.get("log_callback")
+        if log_cb:
+            log_cb(msg, severity)
 
 
 class PolarAdapter:
@@ -262,6 +290,14 @@ class PolarAdapter:
                 reason = link.stall_reason(now, self.freeze_timeout)
                 if reason is not None:
                     self._create_task(self._reconnect(link, reason))
+                    continue
+                for stream in link.frozen_streams:  # warn-only streams
+                    if stream not in link.warned_streams:
+                        link.warned_streams.add(stream)
+                        link.log(
+                            f"{stream.upper()} silent (normal while the wearer "
+                            "moves); link kept up"
+                        )
 
     async def _reconnect(
         self, link: _Link, reason: DisconnectReason = DisconnectReason.LINK_LOSS
@@ -302,11 +338,19 @@ class PolarAdapter:
                 if link.conn:
                     await link.conn.start_notify()
                     link.mark_started()
-                    self._notify(link, "Connected! Streaming...")
+                    if link.stream_errors:
+                        failed = ", ".join(link.stream_errors)
+                        self._notify(link, f"Reconnected, but failed: {failed}")
+                    else:
+                        self._notify(link, "Connected! Streaming...")
                     logger.info(
                         "Polar %s reconnected and resumed streaming.", link.label
                     )
         except Exception as exc:
+            if isinstance(exc, BleakDeviceNotFoundError):
+                # The stored BLEDevice is stale (e.g. BlueZ dropped it after an
+                # outage): scan again on the next attempt.
+                link.dev = None
             fail_label, fail_guidance = DISCONNECT_INFO[
                 (
                     DisconnectReason.BOND_BROKEN

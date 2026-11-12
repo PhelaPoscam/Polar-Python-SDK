@@ -1,4 +1,3 @@
-import contextlib
 from collections.abc import Callable
 
 from ..._pmd.constants import PmdMeasurementType
@@ -23,7 +22,11 @@ class PolarH10(BasePolarDevice):
         self.acc_callback = acc_callback
 
     async def start_streams(self) -> None:
-        """Start the H10 specific streams (HR, ECG, ACC)."""
+        """Start the H10 specific streams (HR, ECG, ACC).
+
+        A PMD stream that still fails after its retries is left out and listed
+        in ``stream_errors``; HR failing aborts the connection attempt.
+        """
         features = await self.polar_device.get_available_features()
 
         # 1. Start standard Heart Rate stream
@@ -58,16 +61,10 @@ class PolarH10(BasePolarDevice):
         )
 
     def _hr_handler(self, hr_data) -> None:
-        if self.callback:
-            with contextlib.suppress(Exception):
-                self.callback((hr_data.heartrate, hr_data.rr_intervals))
+        self._forward("HR", self.callback, (hr_data.heartrate, hr_data.rr_intervals))
 
     def _ecg_handler(self, ecg_data) -> None:
-        if self.ecg_callback:
-            with contextlib.suppress(Exception):
-                self.ecg_callback((ecg_data.timestamp, ecg_data.data))
+        self._forward("ECG", self.ecg_callback, (ecg_data.timestamp, ecg_data.data))
 
     def _acc_handler(self, acc_data) -> None:
-        if self.acc_callback:
-            with contextlib.suppress(Exception):
-                self.acc_callback((acc_data.timestamp, acc_data.data))
+        self._forward("ACC", self.acc_callback, (acc_data.timestamp, acc_data.data))

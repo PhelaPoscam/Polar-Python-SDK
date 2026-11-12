@@ -28,8 +28,15 @@ def test_slash_prefix_keeps_free_text_intact() -> None:
     assert poll("/Start trial\r") == ["Start trial"]
 
 
-def test_plain_free_text_still_works() -> None:
-    assert poll("hello\r") == ["hello"]
+def test_stray_key_does_not_swallow_the_next_hotkey() -> None:
+    # Unbound keys used to start a hidden free-text buffer that ate every
+    # later hotkey until Enter was pressed.
+    assert poll("x9\x1bs") == ["stimulus_on"]
+    assert poll("hello\r") == []
+
+
+def test_escape_cancels_free_text() -> None:
+    assert poll("/oops\x1bb") == ["baseline_start"]
 
 
 def poll_posix(monkeypatch, line: str) -> list[str]:

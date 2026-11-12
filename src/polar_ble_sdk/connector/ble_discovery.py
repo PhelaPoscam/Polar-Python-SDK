@@ -89,8 +89,14 @@ async def discover_polar_device(
 
         name = _device_name(device, advertisement_data)
         if _device_matches_target(device, name, target):
-            selected_device = device
-            selected_event.set()
+            # A MAC target also matches advertisements that carry no name yet
+            # (common on Windows). Callers pick the connector (H10 vs Sense) by
+            # name, so keep scanning until a named one arrives; the nameless
+            # device is only returned if none does before the timeout.
+            if getattr(device, "name", None) or selected_device is None:
+                selected_device = device
+            if getattr(device, "name", None):
+                selected_event.set()
             return
 
         if target or not _is_polar_name(name):

@@ -32,6 +32,8 @@ class PmdDataFrame:
 
     DELTA_FRAME_BIT_MASK = 0x80
     DATA_FRAME_BIT_MASK = 0x7F
+    # PMD spec 4.2.9: the measurement type is the low 6 bits of byte 0.
+    MEASUREMENT_TYPE_BIT_MASK = 0x3F
 
     @classmethod
     def from_bytes(
@@ -40,7 +42,7 @@ class PmdDataFrame:
         if len(data) < 10:
             raise ValueError("Data is too short to parse PmdDataFrame")
 
-        measurement_type = PmdMeasurementType(data[0])
+        measurement_type = PmdMeasurementType(data[0] & cls.MEASUREMENT_TYPE_BIT_MASK)
         raw_timestamp = int.from_bytes(data[1:9], byteorder="little")
         timestamp = raw_timestamp + TIMESTAMP_OFFSET if raw_timestamp != 0 else 0
         frame_type_byte = data[9]
